@@ -129,6 +129,33 @@ def notices_on_date(target_date: str) -> list:
     return out
 
 
+def purge_notices_matching(substr: str, dry_run: bool = False) -> int:
+    """删除耐久日志中包含 ``substr`` 的行，返回命中行数。
+
+    用途：清理单测桩污染（如 ``理由=test`` 的假成交、非交易时段的假熔断）。
+    这些脏数据会直接抬高盘后复盘的熔断计数与交易流水。
+    写入前先备份为 ``<name>.bak``（只在非 dry_run 且有命中时）。
+    """
+    path = notices_log_path()
+    if not path.exists():
+        return 0
+    with _NOTICES_LOG_LOCK:
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+        except Exception:
+            return 0
+        keep = [ln for ln in lines if substr not in ln]
+        hit = len(lines) - len(keep)
+        if hit and not dry_run:
+            try:
+                path.with_suffix(path.suffix + ".bak").write_text(
+                    "".join(lines), encoding="utf-8")
+                path.write_text("".join(keep), encoding="utf-8")
+            except Exception:
+                return 0
+        return hit
+
+
 def latest_notices(limit: int = 50) -> list:
     """返回最近的系统提示（按时间升序），供 Web 端点调用。"""
     items = list(_NOTICES)

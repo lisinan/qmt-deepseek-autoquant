@@ -285,6 +285,45 @@ def test_risk_snapshot_written_on_change_but_throttled_when_identical():
     assert eng.storage.risk_snaps == 2, "状态变化（熔断）必须立刻写，不能被节流吞掉"
 
 
+def test_engine_state_becomes_authoritative_position_source():
+    """闭环验证：paper 引擎落盘 engine_state 后，复盘应改用它作权威持仓源。
+
+    为何重要：历史数据里 fills 重放算出 10 只持仓、而当日末权益快照只有 5 只
+    （旧引擎每次重启都用全新账本重新买入、从不卖出，且 engine_state 未落盘）。
+    这类历史不一致无法追溯修复，但只要 engine_state 开始落盘，复盘就应
+    自动摆脱对 fills 重放的依赖。本例验证这条链路真的通。
+    """
+    from core.data_models import Position
+    with tempfile.TemporaryDirectory() as td:
+        db = Path(td) / "t.db"
+        eng = EE.EventEngine(exec_mode="paper", auto_init_positions=False,
+                             enable_sector_scorer=False,
+                             enable_dynamic_universe=False,
+                             enable_llm_reranker=False,
+                             storage=Storage(db))
+        try:
+            eng.analyst = type("FakeAnalyst", (), {"enabled": False})()
+            eng._cash = 100_000.0
+            eng._positions = {"300308.SZ": Position(
+                code="300308.SZ", name="中际旭创", quantity=1000,
+                avg_cost=120.0, last_price=130.0)}
+            eng._last_equity_ts = 0.0        # 解除 60s 节流
+            eng._persist_equity(eng._total_asset())
+
+            c = eng.storage._conn_get()
+            assert c.execute(
+                "SELECT COUNT(*) FROM engine_state").fetchone()[0] == 1, \
+                "paper 模式下 _persist_equity 应落盘 engine_state"
+            sp = R._state_positions(c)
+            assert sp == {"300308.SZ": {"qty": 1000, "avg": 120.0}}, sp
+            # 快照持仓只数与 engine_state 一致 → 不应再告警
+            assert eng.storage._conn_get().execute(
+                "SELECT positions_count FROM equity_snapshots "
+                "ORDER BY id DESC LIMIT 1").fetchone()[0] == 1
+        finally:
+            eng.storage.close()
+
+
 if __name__ == "__main__":
     import pytest
     raise SystemExit(pytest.main([__file__, "-q"]))

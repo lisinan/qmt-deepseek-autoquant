@@ -32,3 +32,5 @@ logs/*.json
 logs/*.txt
 logs/engine.pid
 logs/STOP_ENGINE
+_backup/
+logs/*.bak

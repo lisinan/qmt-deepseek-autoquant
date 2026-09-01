@@ -446,8 +446,8 @@ class Storage:
                     out.append({"table": t, "rows": -1, "error": str(e)})
         return out
 
-    def prune(self, keep_days: int) -> dict:
-        """删除 ``PRUNABLE_TABLES`` 中超过保留窗口的行。返回每表删除行数。
+    def prune(self, keep_days: int, dry_run: bool = False) -> dict:
+        """删除 ``PRUNABLE_TABLES`` 中超过保留窗口的行。返回每表行数。
 
         为何需要：引擎曾把每个候选股每 tick 的信号（含 HOLD）全部入库，
         实测单日写入高达 81.8 万行，signals 累计 319 万行、qmt.db 涨到 **1.38GB**
@@ -456,19 +456,69 @@ class Storage:
         """
         cutoff = (datetime.now() - timedelta(days=max(0, int(keep_days)))
                   ).strftime("%Y-%m-%d")
+        return self.prune_before(cutoff, dry_run=dry_run)
+
+    def prune_before(self, cutoff: str, dry_run: bool = False) -> dict:
+        """删除 ``PRUNABLE_TABLES`` 中 ``日期 < cutoff`` 的行（cutoff 形如 'YYYY-MM-DD'）。
+
+        为何除了 keep_days 还需要显式 cutoff：本库的膨胀全部集中在**最近 8 天**
+        （多进程泄漏时代 2026-08-25..08-29 写了 297 万行），用「保留 30 天」这类
+        相对窗口一行也删不掉。一次性治理必须能指定绝对日期，且可 dry-run 审阅。
+        """
         deleted = {}
         with self._lock:
             c = self._conn_get()
             for t in self.PRUNABLE_TABLES:
                 try:
-                    cur = c.execute(f"DELETE FROM {t} WHERE substr(ts,1,10) < ?",
-                                    (cutoff,))
-                    deleted[t] = cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
+                    n = c.execute(
+                        f"SELECT COUNT(*) FROM {t} WHERE substr(ts,1,10) < ?",
+                        (cutoff,)).fetchone()[0]
+                    if not dry_run and n:
+                        c.execute(f"DELETE FROM {t} WHERE substr(ts,1,10) < ?",
+                                  (cutoff,))
+                    deleted[t] = n
                 except Exception as e:
                     logger.warning("prune %s 失败: %s", t, e)
                     deleted[t] = -1
         deleted["cutoff"] = cutoff
+        deleted["dry_run"] = dry_run
         return deleted
+
+    # 交易时段边界（与 core.market_calendar.DEFAULT_SESSIONS 一致）。
+    # 引擎有 SESSION_GUARD，真实下单/成交**只能**发生在这个区间内；
+    # 区间外的 orders/fills 必定是单测或一次性脚本写入的测试桩。
+    SESSION_START = "09:15"
+    SESSION_END = "15:05"
+
+    def purge_out_of_session(self, dry_run: bool = False) -> dict:
+        """删除**交易时段外**的 orders / fills（即测试桩污染）。
+
+        为何这个判据可靠：引擎开启 SESSION_GUARD（非交易时段不拉行情/不下单），
+        所以真实流水的 ts 必在 09:15—15:05。实测本库 48 笔盘外成交全部是
+        ``@100.00`` 的单测桩（因测试隔离修复前直写生产库而产生）。
+
+        注：orders/fills 属账务证据，常规 prune **永不触碰**；只有这个
+        显式、带 dry-run 的专用接口会删，且仅限时段外的行。
+        """
+        res = {}
+        cond = ("substr(ts,12,5) NOT BETWEEN ? AND ?")
+        args = (self.SESSION_START, self.SESSION_END)
+        with self._lock:
+            c = self._conn_get()
+            for t in ("orders", "fills"):
+                try:
+                    n = c.execute(
+                        f"SELECT COUNT(*) FROM {t} WHERE {cond}", args
+                    ).fetchone()[0]
+                    if not dry_run and n:
+                        c.execute(f"DELETE FROM {t} WHERE {cond}", args)
+                    res[t] = n
+                except Exception as e:
+                    logger.warning("purge_out_of_session %s 失败: %s", t, e)
+                    res[t] = -1
+        res["dry_run"] = dry_run
+        res["window"] = f"{self.SESSION_START}-{self.SESSION_END}"
+        return res
 
     def vacuum(self) -> bool:
         """回收空间（DELETE 不会自动缩小文件）。

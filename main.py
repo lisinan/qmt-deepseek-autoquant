@@ -381,21 +381,43 @@ def _db_maintenance(args) -> int:
     """
     from storage.db import Storage
     st = Storage()
+    dry = bool(getattr(args, "dry_run", False))
+    tag = "[DRY-RUN] " if dry else ""
     try:
         path = st.db_path
         size0 = path.stat().st_size if path.exists() else 0
         print(f"[db] {path}  ({size0 / 1024 / 1024:,.1f} MB)")
-        if args.prune_db is not None:
-            res = st.prune(args.prune_db)
-            cutoff = res.pop("cutoff", "?")
-            print(f"[db] prune: 删除 {cutoff} 之前的高频观测行（保留 "
-                  f"{args.prune_db} 天）")
+        cutoff = None
+        if args.prune_db_before:
+            cutoff = args.prune_db_before
+        elif args.prune_db is not None:
+            from datetime import datetime as _dt, timedelta as _td
+            cutoff = (_dt.now() - _td(days=args.prune_db)).strftime("%Y-%m-%d")
+        if cutoff:
+            res = st.prune_before(cutoff, dry_run=dry)
+            res.pop("dry_run", None)
+            res.pop("cutoff", None)
+            print(f"[db] {tag}prune: 删除日期 < {cutoff} 的高频观测行")
             for t, n in res.items():
-                print(f"       {t:<24} -{n}")
+                print(f"       {t:<24} -{n:,}")
             print("       orders / fills / equity_snapshots 未动（账务证据）")
-        if args.vacuum_db:
+            if not any(v for v in res.values() if isinstance(v, int) and v > 0):
+                print("       ⚠ 本次 cutoff 未命中任何行——确认 cutoff 是否太早？"
+                      "（用 --db-stats 看各表时间跨度）")
+        if args.purge_test_stubs:
+            from core.notices import notices_log_path, purge_notices_matching
+            r = st.purge_out_of_session(dry_run=dry)
+            print(f"[db] {tag}purge-test-stubs: 删除交易时段（{r['window']}）外的流水")
+            for t in ("orders", "fills"):
+                print(f"       {t:<24} -{r.get(t, 0):,}")
+            hit = purge_notices_matching("理由=test", dry_run=dry)
+            print(f"       notices.log(理由=test)  -{hit:,}"
+                  f"{'' if dry else f'  (已备份 {notices_log_path().name}.bak)'}")
+        if args.vacuum_db and not dry:
             ok = st.vacuum()
             print(f"[db] vacuum: {'OK' if ok else '失败（引擎在跑？先 python main.py --stop）'}")
+        elif args.vacuum_db and dry:
+            print("[db] [DRY-RUN] vacuum: 跳过")
         print("[db] 当前各表：")
         for r in st.table_stats():
             print(f"       {r['table']:<24} {r.get('rows', -1):>10,}  "
@@ -403,7 +425,7 @@ def _db_maintenance(args) -> int:
         size1 = path.stat().st_size if path.exists() else 0
         print(f"[db] 文件大小: {size0 / 1024 / 1024:,.1f} MB → "
               f"{size1 / 1024 / 1024:,.1f} MB")
-        if args.prune_db is not None and not args.vacuum_db:
+        if cutoff and not args.vacuum_db and not dry:
             print("[db] 提示：DELETE 不会自动缩小文件，需再跑一次 --vacuum-db")
     finally:
         st.close()
@@ -443,6 +465,14 @@ def main() -> int:
                     help="删除高频观测表（signals/risk_snapshots/"
                          "sector_recommendations）中超过 N 天的行后退出。"
                          "orders/fills 属账务证据，永不删除")
+    ap.add_argument("--prune-db-before", metavar="YYYY-MM-DD",
+                    help="同上，但用**绝对日期**作 cutoff（一次性治理用；"
+                         "当膨胀集中在最近几天时，相对窗口 --prune-db 会一行也删不掉）")
+    ap.add_argument("--purge-test-stubs", action="store_true",
+                    help="删除**交易时段外**的 orders/fills 与 notices 中 理由=test 的行"
+                         "（单测直写生产库遗留的测试桩）")
+    ap.add_argument("--dry-run", action="store_true",
+                    help="（与上述维护开关合用）只预览影响行数，不实际删除")
     ap.add_argument("--vacuum-db", action="store_true",
                     help="VACUUM 回收空间（需先 --stop 停引擎）")
     args = ap.parse_args()
@@ -450,7 +480,8 @@ def main() -> int:
     if args.stop:
         return _request_stop()
 
-    if args.db_stats or args.prune_db is not None or args.vacuum_db:
+    if (args.db_stats or args.prune_db is not None or args.prune_db_before
+            or args.purge_test_stubs or args.vacuum_db):
         return _db_maintenance(args)
 
     # 单实例互斥：只有真正会长跑的模式才需要（快照是一次性的）
