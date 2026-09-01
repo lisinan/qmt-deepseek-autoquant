@@ -330,6 +330,15 @@ class BacktestConfig:
     chandelier: bool = False         # True=用峰值时 ATR 吊灯止损（趋势跟随）
     entry_mode: str = "factor"       # "factor"=6因子评分; "trend"=日线突破追涨
     max_positions: int = 8
+    # ---- A 股 T+1 约束【P0 修正 2026-09-02】----
+    # 原事件时序：A) 执行昨日挂单（今日开盘成交，写入 positions）
+    #   → B) 逐仓检查离场。B 段遍历的是包含本日新建仓的全部持仓，于是
+    #   entry_day == i 的仓位当天就能触发 stop_loss / hard_stop / crash /
+    #   trend_break —— A 股 T+1 下这是做不到的。
+    # 后果：回测替策略规避了「买入当天大幅跳水只能扛到明天」的那部分损失，
+    #   系统性高估收益、低估回撤。
+    # True = 强制 T+1（建仓当日不可卖，仅标记权益）；False = 旧行为（仅供对照）。
+    t1_restriction: bool = True
     # ---- 分行业分散持仓（组合层风险约束，研究用）----
     # 与 max_positions（组合总上限）正交：在"总上限"之内，进一步限制
     # 同一 AI 产业链环节（光模块/AI芯片/晶圆代工/…）最多持几只。
@@ -900,6 +909,13 @@ def run_backtest(codes: List[str], cfg: BacktestConfig,
         # ================= B) 离场检查（今日 high/low/close） =================
         for code in list(positions.keys()):
             pos = positions[code]
+            # A 股 T+1：建仓当日不可卖出（仅持仓，次日才能离场）。
+            # 原实现里 A 段刚建的仓立即就能在本段被止损/破位卖出。
+            if cfg.t1_restriction and pos["entry_day"] == i:
+                # 仍跟踪峰值（影响后续吊灯/移动止损），但不做离场判定
+                if panel[code]["valid"][i]:
+                    pos["peak"] = max(pos["peak"], panel[code]["high"][i])
+                continue
             if not panel[code]["valid"][i]:
                 continue          # 停牌：持仓不动
             hi = panel[code]["high"][i]
