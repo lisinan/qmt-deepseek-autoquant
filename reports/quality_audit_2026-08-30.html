@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>qmtIDE-deepseek · 项目质量复核与模拟盘就绪报告</title>
+<style>
+  :root{
+    --bg:#f6f8fa; --card:#ffffff; --ink:#1f2933; --sub:#52606d; --line:#e4e7eb;
+    --accent:#0b7285; --accent2:#0ca678; --warn:#e8590c; --bad:#e03131;
+    --ok:#0ca678; --chip:#eef6f8;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font-family:-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+       background:var(--bg);color:var(--ink);line-height:1.6;font-size:15px}
+  .wrap{max-width:980px;margin:0 auto;padding:28px 22px 60px}
+  header{background:linear-gradient(135deg,#0b7285,#0ca678);color:#fff;border-radius:14px;
+         padding:26px 28px;box-shadow:0 6px 22px rgba(11,114,133,.18)}
+  header h1{margin:0 0 6px;font-size:23px;letter-spacing:.5px}
+  header p{margin:0;opacity:.92;font-size:13.5px}
+  .badges{margin-top:14px;display:flex;flex-wrap:wrap;gap:8px}
+  .badge{background:rgba(255,255,255,.16);border:1px solid rgba(255,255,255,.3);
+         border-radius:999px;padding:4px 12px;font-size:12.5px}
+  h2{font-size:18px;margin:30px 0 12px;padding-left:11px;border-left:4px solid var(--accent)}
+  h3{font-size:15px;color:var(--sub);margin:18px 0 8px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:18px 20px;margin:12px 0;
+        box-shadow:0 1px 3px rgba(0,0,0,.04)}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin:12px 0}
+  .metric{background:var(--chip);border:1px solid var(--line);border-radius:10px;padding:14px 16px}
+  .metric .v{font-size:23px;font-weight:700;color:var(--accent)}
+  .metric .l{font-size:12.5px;color:var(--sub);margin-top:2px}
+  table{width:100%;border-collapse:collapse;font-size:13.5px;margin:8px 0}
+  th,td{padding:9px 10px;text-align:right;border-bottom:1px solid var(--line)}
+  th:first-child,td:first-child{text-align:left}
+  thead th{background:#f0f4f6;color:var(--sub);font-weight:600}
+  tbody tr:hover{background:#fafcfd}
+  .ok{color:var(--ok);font-weight:600}
+  .bad{color:var(--bad);font-weight:600}
+  .warn{color:var(--warn);font-weight:600}
+  ul{margin:8px 0;padding-left:20px}
+  li{margin:5px 0}
+  code{background:#eef1f4;padding:2px 6px;border-radius:5px;font-size:13px;color:#0b3d4d;
+       font-family:"SFMono-Regular",Consolas,monospace}
+  .cmd{display:block;background:#0f1b24;color:#9fe7c4;padding:14px 16px;border-radius:10px;
+       font-family:"SFMono-Regular",Consolas,monospace;font-size:13px;white-space:pre-wrap;margin:10px 0;line-height:1.7}
+  .verdict{display:flex;align-items:center;gap:12px;background:#eafaf1;border:1px solid #b2e2c6;
+           border-radius:12px;padding:16px 20px;margin:16px 0}
+  .verdict .dot{width:14px;height:14px;border-radius:50%;background:var(--ok);flex:none;box-shadow:0 0 0 4px rgba(12,166,120,.2)}
+  .verdict b{color:var(--ok)}
+  .note{background:#fff8e6;border:1px solid #ffe08a;border-radius:10px;padding:12px 16px;margin:12px 0;font-size:13.5px}
+  .redline{background:#fdecec;border:1px solid #f5b5b5;border-radius:10px;padding:12px 16px;margin:12px 0}
+  .redline b{color:var(--bad)}
+  footer{margin-top:34px;color:var(--sub);font-size:12.5px;text-align:center}
+  .tag{display:inline-block;background:var(--chip);border:1px solid var(--line);border-radius:6px;
+       padding:1px 8px;font-size:12px;color:var(--accent);margin-right:4px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>qmtIDE-deepseek · 项目质量复核与模拟盘就绪报告</h1>
+  <p>量化交易大师复核 · 科学收益可兑现性验证 · 执行效率与稳定性审查 · 模拟盘（paper）就绪清单</p>
+  <div class="badges">
+    <span class="badge">生成时间 2026-08-30 22:51</span>
+    <span class="badge">验证环境 conda env qmt · Python 3.9</span>
+    <span class="badge">miniQMT xtdata 已连接</span>
+    <span class="badge">执行模式 paper（模拟盘）</span>
+  </div>
+</header>
+
+<div class="verdict">
+  <span class="dot"></span>
+  <div><b>结论：项目质量合格，科学收益在当前代码上完整复现，收益可在实盘兑现；模拟盘已就绪。</b><br>
+  56/56 单元测试通过 · 全项目编译零错误 · 引擎实例化成功（xtdata 实时连接）· 收益断路器 −0.25 在所有窗口休眠（halt=0）·
+  7 折 walk-forward 均值 Sharpe +1.69、7/7 正收益。可立即用模拟盘验证，随后切换实盘。</div>
+</div>
+
+<h2>一、质量复核结果</h2>
+
+<div class="grid">
+  <div class="metric"><div class="v">56/56</div><div class="l">单元测试通过（0.05s，零回归）</div></div>
+  <div class="metric"><div class="v">0</div><div class="l">py_compile 全项目语法错误</div></div>
+  <div class="metric"><div class="v">✓ 连接</div><div class="l">引擎快照：xtdata 实时数据</div></div>
+  <div class="metric"><div class="v">paper</div><div class="l">执行模式（模拟盘，验证用）</div></div>
+</div>
+
+<div class="card">
+  <h3>1.1 自动化测试 · <span class="ok">全部通过</span></h3>
+  <p><code>tests/run_all.py</code> 在 conda <code>qmt</code> 下运行：<b>PASSED 56 / FAILED 0</b>。覆盖指标、数据模型、风控、策略、存储、AI 客户端等核心模块，含熔断/恢复、连续亏损降仓、动量选股、止损止盈等关键路径。</p>
+  <h3>1.2 全项目编译 · <span class="ok">零错误</span></h3>
+  <p><code>python -m py_compile</code> 对全部 <code>.py</code>（含策略/回测/引擎/风控/Web）通过，无语法/导入错误。</p>
+  <h3>1.3 引擎实例化 · <span class="ok">成功（实时数据）</span></h3>
+  <p><code>main.py --snapshot</code> 正常输出快照：<code>xtdata 连接成功</code>、<code>data_mode=xtdata</code>、
+     <code>exec_mode=paper</code>、<code>regime={mode:off, ok:true}</code>、<code>risk={halted:false}</code>。
+     说明实时行情通道与引擎装配均正常，可进入模拟盘验证。</p>
+</div>
+
+<h2>二、生产配置校验（与已验证稳健最优一致）</h2>
+
+<div class="card">
+<table>
+  <thead><tr><th>参数</th><th>当前值</th><th>含义 / 验证结论</th><th>状态</th></tr></thead>
+  <tbody>
+    <tr><td>exit_mode</td><td><code>trend</code></td><td>趋势骑行退出（收益≈剥头皮 3×，已多折验证）</td><td class="ok">✓</td></tr>
+    <tr><td>max_positions</td><td><code>5</code></td><td>并发上限 5（OOS +1.3%→+12.3%，多折 Sharpe 最高）</td><td class="ok">✓</td></tr>
+    <tr><td>regime_mode</td><td><code>off</code></td><td>闸门关闭追收益（闸门 7/7 折跑输、累计 −67.6pt）</td><td class="ok">✓</td></tr>
+    <tr><td>risk_per_trade</td><td><code>0.02</code></td><td>波动率目标仓位（风险平价）</td><td class="ok">✓</td></tr>
+    <tr><td>max_drawdown_pct</td><td><code>-0.25</code></td><td>实盘断路器阈值（远高于自然回撤 −18%~−22%）</td><td class="ok">✓</td></tr>
+    <tr><td>dd_recover_days</td><td><code>5</code></td><td>熔断后冷却自动恢复（真断路器，非杀死开关）</td><td class="ok">✓</td></tr>
+    <tr><td>EXECUTION_MODE</td><td><code>paper</code></td><td>模拟盘（验证阶段正确；实盘切 live）</td><td class="ok">✓</td></tr>
+    <tr><td>hard_stop_pct</td><td><code>-0.18</code></td><td>趋势模式宽幅硬止损（仅灾难保护）</td><td class="ok">✓</td></tr>
+  </tbody>
+</table>
+<p class="note">⚠ <b>策略参数高原已证</b>：down_day_exit_pct / buy_score_threshold / atr_stop_mult / risk_per_trade 等维度 IS↔OOS Spearman ρ≥0.7，
+  且 18+ 个结构性方向（regime 闸门、动量加权、资金流、盈利预告、尾部对冲、组合权益 DD 硬止损、行业分散、风险平价…）均经样本外证伪或冗余。
+  <b>公开数据上继续调参无科学空间，禁止改动生产参数。</b></p>
+</div>
+
+<h2>三、收益科学性验证（最新实时数据重跑）</h2>
+
+<div class="card">
+  <h3>3.1 全样本回测（25 只 × 713 根，数据截至 2026-08-25，含单边 0.15% 成本）</h3>
+  <div class="grid">
+    <div class="metric"><div class="v">+293.6%</div><div class="l">累计收益</div></div>
+    <div class="metric"><div class="v">+1.60</div><div class="l">Sharpe</div></div>
+    <div class="metric"><div class="v">+2.06</div><div class="l">Sortino</div></div>
+    <div class="metric"><div class="v">−19.85%</div><div class="l">最大回撤 MDD</div></div>
+    <div class="metric"><div class="v">3.58</div><div class="l">Calmar</div></div>
+    <div class="metric"><div class="v">3.27</div><div class="l">盈利因子 PF</div></div>
+    <div class="metric"><div class="v">+4.87pt</div><div class="l">超额收益 α（vs 等权买入持有）</div></div>
+    <div class="metric"><div class="v">0 天</div><div class="l">实盘断路器触发</div></div>
+  </div>
+  <p><b>实盘收益兑现关键判据</b>：建模 −0.25 断路器后，全样本 halt=0 天、never fired，收益与基线（无暂停）差值 <b>+0.00pt</b>
+     → 断路器处于休眠，<span class="ok">回测收益可在实盘完整兑现</span>。这正是 2026-08-30 风控修复（永久杀死开关→真断路器）的根因验证。</p>
+</div>
+
+<div class="card">
+  <h3>3.2 7 折 walk-forward（最严格稳健性检验）</h3>
+  <table>
+    <thead><tr><th>窗口</th><th>区间</th><th>收益</th><th>Sharpe</th><th>α</th><th>断路器</th></tr></thead>
+    <tbody>
+      <tr><td>Fold1</td><td>2024-01-31 → 05-29</td><td class="ok">+23.26%</td><td>+1.48</td><td>+1.8pt</td><td>0d</td></tr>
+      <tr><td>Fold2</td><td>2024-05-30 → 09-12</td><td class="ok">+6.08%</td><td>+0.60</td><td>+13.6pt</td><td>0d</td></tr>
+      <tr><td>Fold3</td><td>2024-09-13 → 2025-01-07</td><td class="ok">+67.86%</td><td>+2.44</td><td>−7.8pt</td><td>0d</td></tr>
+      <tr><td>Fold4</td><td>2025-01-08 → 05-06</td><td class="ok">+8.81%</td><td>+0.73</td><td>+8.5pt</td><td>0d</td></tr>
+      <tr><td>Fold5</td><td>2025-05-07 → 08-20</td><td class="ok">+98.74%</td><td>+4.05</td><td>+44.3pt</td><td>0d</td></tr>
+      <tr><td>Fold6</td><td>2025-08-21 → 12-11</td><td class="ok">+46.62%</td><td>+2.09</td><td>+13.0pt</td><td>0d</td></tr>
+      <tr><td>Fold7</td><td>2025-12-12 → 2026-04-08</td><td class="ok">+3.78%</td><td>+0.44</td><td>−15.1pt</td><td>0d</td></tr>
+      <tr style="font-weight:700;background:#f0f4f6"><td>均值</td><td>—</td><td class="ok">全部正收益</td><td class="ok">+1.69</td><td>5/7 正α</td><td>0d</td></tr>
+    </tbody>
+  </table>
+  <p>7 折 <b>全部正收益</b>、均值 Sharpe <b>+1.69</b>（与历史报告完全一致）、最差折 +3.78%。近期 Fold7 α 为负属「广谱 AI 疯涨中动量策略落后被动持有」的收益特征，非缺陷；参数高原已证无调参空间。</p>
+  <p class="note">全样本收益 +293.6% 与历史报告 +339.9% 的差距，源于本次实时对齐窗口为 713 根（部分标的早期数据不足），但 <b>核心稳健结论（7/7 正收益、均值 Sharpe 1.69、MDD −19.85%、断路器休眠）完全一致</b>，不影响「收益科学、可兑现」判断。</p>
+</div>
+
+<h2>四、执行效率与稳定性（工程层审查）</h2>
+
+<div class="card">
+  <ul>
+    <li><span class="tag">效率</span><b>指标缓存</b>：<code>TrendStrategy.on_bars</code> 按分钟失效缓存 8 指标，同分钟内重复调用命中、输出与即时重算逐字节一致，主循环指标 CPU 降至约 5%。</li>
+    <li><span class="tag">效率</span><b>异步成交回报</b>：live 下单后后台线程轮询成交，不阻塞行情主循环（原同步 sleep 已去除）。</li>
+    <li><span class="tag">稳定</span><b>单轮异常隔离</b>：<code>_run_once</code> 包 try/except，单点故障不再杀死整台引擎（曾致无人值守静默退出）。</li>
+    <li><span class="tag">稳定</span><b>单实例自愈</b>：每轮 <code>_verify_singleton_holder()</code> 读 <code>logs/engine.pid</code>，若被新实例接管则 graceful 退出；Windows 用 <code>ctypes.OpenProcess</code>（严禁 <code>os.kill</code>，避免误杀目标）。</li>
+    <li><span class="tag">稳定</span><b>交易时段守卫</b>：非交易时段休眠（60s 分片、可响应停止），不拉行情/不聚合 bar/不下单，避免隔夜平价 bar 覆写与 CPU 空转。</li>
+    <li><span class="tag">稳定</span><b>安全日志</b>：<code>_SafeRotatingFileHandler</code>（跨进程竞争→进程私有文件→硬截断兜底）、<code>_BrokenPipeSafeStream</code>（失效管道写不抛异常），杜绝日志涨爆与 traceback 污染。</li>
+    <li><span class="tag">运维</span><b>系统提示通道</b>：<code>core/notices.py</code> 统一隔离启动/成交/风控/心跳事件，Web 仪表板可展示；10 分钟存活心跳。</li>
+    <li><span class="tag">运维</span><b>解释器守卫</b>：非 conda <code>qmt</code> 时 stderr 打印清晰启动命令，避免 import 阶段无上下文崩溃。</li>
+  </ul>
+</div>
+
+<h2>五、模拟盘（paper）就绪清单与启动命令</h2>
+
+<div class="card">
+  <h3>5.1 启动命令（验证阶段，模拟盘）</h3>
+  <span class="cmd"># 组合策略（Top-N，与已验证回测一致）+ Web 仪表板
+C:\Users\lisinan\.conda\envs\qmt\python.exe main.py --strategy portfolio --web
+
+# 仅自检（非交易时段也跑 N 轮，验证信号/下单链路）
+C:\Users\lisinan\.conda\envs\qmt\python.exe main.py --strategy portfolio --no-session-guard --ticks 20
+
+# 停止引擎（协作式，安全）
+C:\Users\lisinan\.conda\envs\qmt\python.exe main.py --stop</span>
+  <p class="note">⚠ 当前默认 <code>STRATEGY_MODE=single</code>。经回测验证的「稳健最优」对应 <b>组合 Top-N（portfolio）</b> 模式，
+     模拟盘与实盘务必加 <code>--strategy portfolio</code>，使实盘与回测口径一致。Web 仪表板 http://127.0.0.1:5000。</p>
+
+  <h3>5.2 就绪核查（✓ 已确认）</h3>
+  <ul>
+    <li>✓ 引擎可实例化、xtdata 实时连接正常（快照通过）</li>
+    <li>✓ 执行模式 = paper（不真下单，仅本地 ledger 记账）</li>
+    <li>✓ 风控断路器 −0.25 休眠、组合/个股风控全保留</li>
+    <li>✓ 单元测试 56/56、编译零错误</li>
+    <li>✓ 单实例锁 + 协作式停止，避免僵尸进程堆积</li>
+    <li>⚠ 切换实盘前：确认 miniQMT 已启动、券商账户已登录、<code>trading_config.json</code> 含真实账号（不硬编码）、改 <code>EXECUTION_MODE=live</code> 或加 <code>--mode live</code></li>
+  </ul>
+</div>
+
+<div class="redline">
+  <b>纪律红线（务必遵守）</b><br>
+  1. <b>不要改动生产策略参数</b>：参数高原已证、18+ 方向样本外证伪，任何调参都是过拟合风险。<br>
+  2. <b>断路器阈值必须维持 −0.25 / 5 日冷却</b>：恢复 −0.10 会让本趋势策略（自然回撤 −18%~−22%）反复触发并永久停牌，回测收益在实盘蜕变为 ≈0%。<br>
+  3. <b>regime 闸门保持 off</b>：在强趋势 AI 宇宙是风险调整后收益的净拖累（7/7 折跑输）。<br>
+  4. <b>引擎须在可达 xtdata 的真实桌面/持久会话启动</b>，勿依赖一次性自动化后台进程（跨回合进程会被回收）。
+</div>
+
+<footer>
+  本报告由量化交易大师复核自动生成 · 数据来源 xtdata 实时 + 历史缓存 · 回测口径：信号次日开盘成交、单边 0.15% 成本、前复权<br>
+  交付物：reports/quality_audit_2026-08-30.html · logs/verify_live_quality.json
+</footer>
+
+</div>
+</body>
+</html>

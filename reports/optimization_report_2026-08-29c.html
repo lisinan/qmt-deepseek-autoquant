@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>滚动 Walk-Forward 稳健性研究 · regime 闸门</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0;font-family:-apple-system,'Segoe UI',Roboto,'Microsoft YaHei',sans-serif}
+body{background:#f5f6f8;color:#1f2733;line-height:1.6;padding:28px}
+.wrap{max-width:1080px;margin:0 auto}
+h1{font-size:24px;margin-bottom:4px}
+.sub{color:#6b7785;font-size:13px;margin-bottom:20px}
+.card{background:#fff;border-radius:12px;padding:22px 26px;margin-bottom:18px;
+  box-shadow:0 1px 3px rgba(0,0,0,.08)}
+.card h2{font-size:17px;margin-bottom:12px;color:#16324f;border-left:4px solid #2b6cb0;padding-left:10px}
+.kpis{display:flex;gap:14px;flex-wrap:wrap}
+.kpi{flex:1;min-width:150px;background:#fafbfc;border:1px solid #eef1f4;border-radius:10px;padding:14px}
+.kpi .v{font-size:26px;font-weight:700}
+.kpi .l{font-size:12px;color:#6b7785;margin-top:2px}
+.up{color:#c0392b} .down{color:#1e8449}
+table{width:100%;border-collapse:collapse;font-size:13px;margin-top:6px}
+th,td{padding:7px 8px;text-align:center;border-bottom:1px solid #eef1f4}
+th{background:#f0f3f7;color:#445;font-weight:600}
+tbody tr:hover{background:#fafcff}
+.note{background:#fff8e6;border:1px solid #f3d98b;border-radius:10px;padding:14px 18px;font-size:14px;margin-bottom:18px}
+.rec{background:#eafaf1;border-left:4px solid #1e8449;padding:16px 18px;border-radius:8px;margin-top:10px;font-size:14px}
+.code{background:#1f2733;color:#e6edf3;padding:12px 16px;border-radius:8px;font-family:monospace;font-size:13px;margin:8px 0;overflow-x:auto}
+.yrow{display:flex;align-items:center;margin:6px 0;font-size:13px}
+.ylab{width:120px;color:#445}
+.ytrack{flex:1;height:18px;background:#eef1f4;border-radius:4px;position:relative}
+.ybar{height:100%;border-radius:4px}
+.yval{width:70px;text-align:right;font-weight:600}
+footer{color:#9aa5b1;font-size:12px;text-align:center;margin-top:10px}
+.tag{display:inline-block;background:#eef1f4;border-radius:4px;padding:1px 8px;font-size:12px;color:#445;margin-right:6px}
+</style></head><body><div class="wrap">
+
+<h1>滚动 Walk-Forward 稳健性研究：regime 闸门贡献</h1>
+<div class="sub">量化交易项目 · 科学分析 · 生成于 2026-08-29 ·
+数据：xtdata 本地日线（miniQMT，零额度）· 宇宙：23 只 AI 产业链股</div>
+
+<div class="note">
+<b>核心发现（与既有结论相反，已双方法验证）：</b>在 25 个连续滚动窗口
+（20240131→20260610，≈3 年）上，当前生产配置中的
+<b>regime 闸门（创业板指 MA60 + 强制清仓）是风险调整后收益的<b>净拖累</b>。</b>
+多折 walk-forward 交叉验证同样显示：无闸门（永远满仓）均值 Sharpe
+<b class="up">+1.69</b> ＞ 有闸门 <b class="down">+0.85</b>，
+闸门在 <b>7/7</b> 个折中均跑输，累计落后 <b class="down">-67.6pt</b>。
+早先「闸门 +0.38 Sharpe 贡献」系较短数据窗（count=500）+ 较旧基线造成的假象。
+</div>
+
+<div class="card">
+<h2>一、研究设计（防过拟合）</h2>
+<ul style="font-size:14px">
+<li>固定生产配置、<b>不重新调参</b>；仅检验「同一套已验证策略」在连续时间上的样本外稳健性。</li>
+<li>每个检验窗 = 63 根交易日（≈3 个月），步长 21 天滚动；
+窗前 130 根做指标预热，窗内交易严格无重叠。</li>
+<li>对照：<span class="tag">BASE 无闸门（永远满仓）</span>
+<span class="tag">PROD 闸门+趋势+波动率目标+max5</span>；
+所有回测含单边 0.15% 真实成本，信号次日开盘成交（防未来函数）。</li>
+<li>双方法：① 滚动 25 窗；② 独立多折 walk-forward（7 折，75 天/折）交叉验证。</li>
+</ul>
+</div>
+
+<div class="card">
+<h2>二、滚动窗口 headline 指标</h2>
+<div class="kpis">
+<div class="kpi"><div class="v down">40%</div>
+<div class="l">闸门 Sharpe 胜率（10/25 窗）</div></div>
+<div class="kpi"><div class="v down">40%</div>
+<div class="l">闸门 alpha 胜率</div></div>
+<div class="kpi"><div class="v down">-3.3pt</div>
+<div class="l">平均 alpha 贡献</div></div>
+<div class="kpi"><div class="v down">-0.50</div>
+<div class="l">平均 Sharpe 贡献</div></div>
+<div class="kpi"><div class="v down">+2.3pt</div>
+<div class="l">平均 MDD 贡献（越小越好）</div></div>
+</div>
+<p style="font-size:13px;color:#6b7785;margin-top:10px">
+闸门在多数窗口为负贡献：它压低了回撤（MDD 平均改善 +2.3pt）
+与暴露，但代价是错过上涨——在 2024–2025 AI 长牛中，被拦在门外损失远大于避险收益。</p>
+</div>
+
+<div class="card">
+<h2>三、逐窗口明细（贡献 = PROD − BASE）</h2>
+<table><thead><tr>
+<th>窗口</th><th>起始市况</th><th>BASE 收益</th><th>PROD 收益</th>
+<th>α 贡献</th><th>PROD 暴露</th><th>BASE 暴露</th><th>PROD 笔数</th>
+</tr></thead><tbody><tr><td>20240131→20240513</td><td>下行</td><td>+22.1%</td><td>+3.6%</td><td style='color:#1e8449;font-weight:600'>-18.5pt</td><td>68%</td><td>94%</td><td>10</td></tr><tr><td>20240308→20240612</td><td>上行</td><td>+15.4%</td><td>-4.0%</td><td style='color:#1e8449;font-weight:600'>-19.4pt</td><td>45%</td><td>99%</td><td>13</td></tr><tr><td>20240410→20240711</td><td>上行</td><td>+4.8%</td><td>-8.1%</td><td style='color:#1e8449;font-weight:600'>-12.9pt</td><td>17%</td><td>88%</td><td>8</td></tr><tr><td>20240514→20240809</td><td>上行</td><td>+9.3%</td><td>-7.7%</td><td style='color:#1e8449;font-weight:600'>-17.0pt</td><td>13%</td><td>99%</td><td>7</td></tr><tr><td>20240613→20240909</td><td>下行</td><td>+5.0%</td><td>-0.7%</td><td style='color:#1e8449;font-weight:600'>-5.7pt</td><td>0%</td><td>99%</td><td>2</td></tr><tr><td>20240712→20241017</td><td>下行</td><td>+19.7%</td><td>+44.4%</td><td style='color:#c0392b;font-weight:600'>+24.7pt</td><td>43%</td><td>99%</td><td>3</td></tr><tr><td>20240812→20241115</td><td>下行</td><td>+53.2%</td><td>+64.6%</td><td style='color:#c0392b;font-weight:600'>+11.4pt</td><td>64%</td><td>98%</td><td>4</td></tr><tr><td>20240910→20241216</td><td>下行</td><td>+64.7%</td><td>+59.5%</td><td style='color:#1e8449;font-weight:600'>-5.2pt</td><td>85%</td><td>98%</td><td>5</td></tr><tr><td>20241018→20250115</td><td>上行</td><td>+13.6%</td><td>+15.5%</td><td style='color:#c0392b;font-weight:600'>+1.9pt</td><td>51%</td><td>99%</td><td>10</td></tr><tr><td>20241118→20250221</td><td>上行</td><td>-0.8%</td><td>-0.0%</td><td style='color:#c0392b;font-weight:600'>+0.7pt</td><td>68%</td><td>99%</td><td>14</td></tr><tr><td>20241217→20250324</td><td>上行</td><td>+9.8%</td><td>+1.7%</td><td style='color:#1e8449;font-weight:600'>-8.1pt</td><td>67%</td><td>98%</td><td>16</td></tr><tr><td>20250116→20250423</td><td>下行</td><td>+12.3%</td><td>+2.9%</td><td style='color:#1e8449;font-weight:600'>-9.4pt</td><td>26%</td><td>93%</td><td>9</td></tr><tr><td>20250224→20250527</td><td>上行</td><td>+2.9%</td><td>+1.2%</td><td style='color:#1e8449;font-weight:600'>-1.7pt</td><td>35%</td><td>93%</td><td>7</td></tr><tr><td>20250325→20250626</td><td>下行</td><td>+16.4%</td><td>+19.8%</td><td style='color:#c0392b;font-weight:600'>+3.4pt</td><td>47%</td><td>93%</td><td>5</td></tr><tr><td>20250424→20250725</td><td>下行</td><td>+63.9%</td><td>+57.0%</td><td style='color:#1e8449;font-weight:600'>-7.0pt</td><td>65%</td><td>99%</td><td>5</td></tr><tr><td>20250528→20250825</td><td>下行</td><td>+112.6%</td><td>+97.9%</td><td style='color:#1e8449;font-weight:600'>-14.7pt</td><td>86%</td><td>98%</td><td>6</td></tr><tr><td>20250627→20250923</td><td>上行</td><td>+120.9%</td><td>+121.4%</td><td style='color:#c0392b;font-weight:600'>+0.5pt</td><td>97%</td><td>99%</td><td>14</td></tr><tr><td>20250728→20251030</td><td>上行</td><td>+73.5%</td><td>+73.5%</td><td style='color:#c0392b;font-weight:600'>+0.0pt</td><td>99%</td><td>99%</td><td>13</td></tr><tr><td>20250826→20251128</td><td>上行</td><td>+20.3%</td><td>+22.9%</td><td style='color:#c0392b;font-weight:600'>+2.6pt</td><td>61%</td><td>99%</td><td>15</td></tr><tr><td>20250924→20251229</td><td>上行</td><td>-2.3%</td><td>-12.9%</td><td style='color:#1e8449;font-weight:600'>-10.7pt</td><td>83%</td><td>99%</td><td>20</td></tr><tr><td>20251031→20260129</td><td>上行</td><td>-7.7%</td><td>-17.3%</td><td style='color:#1e8449;font-weight:600'>-9.6pt</td><td>83%</td><td>99%</td><td>19</td></tr><tr><td>20251201→20260309</td><td>上行</td><td>-0.4%</td><td>-7.8%</td><td style='color:#1e8449;font-weight:600'>-7.3pt</td><td>85%</td><td>94%</td><td>15</td></tr><tr><td>20251230→20260408</td><td>上行</td><td>-1.3%</td><td>+6.1%</td><td style='color:#c0392b;font-weight:600'>+7.4pt</td><td>68%</td><td>95%</td><td>10</td></tr><tr><td>20260130→20260512</td><td>上行</td><td>-9.3%</td><td>-3.9%</td><td style='color:#c0392b;font-weight:600'>+5.5pt</td><td>75%</td><td>95%</td><td>13</td></tr><tr><td>20260310→20260610</td><td>上行</td><td>+9.3%</td><td>+16.0%</td><td style='color:#c0392b;font-weight:600'>+6.7pt</td><td>75%</td><td>95%</td><td>14</td></tr></tbody></table>
+</div>
+
+<div class="card">
+<h2>四、按年聚合（α 贡献，红涨绿跌）</h2>
+<div class='yrow'><span class='ylab'>2024 (n=11)</span><div class='ytrack'><div class='ybar' style='width:7202%;background:#1e8449;float:right'></div></div><span class='yval' style='color:#1e8449'>-4.4pt</span></div><div class='yrow'><span class='ylab'>2025 (n=12)</span><div class='ytrack'><div class='ybar' style='width:6366%;background:#1e8449;float:right'></div></div><span class='yval' style='color:#1e8449'>-3.9pt</span></div><div class='yrow'><span class='ylab'>2026 (n=2)</span><div class='ytrack'><div class='ybar' style='width:10000%;background:#c0392b;float:left'></div></div><span class='yval' style='color:#c0392b'>+6.1pt</span></div>
+<p style="font-size:13px;color:#6b7785;margin-top:8px">2024–2025 长牛区间闸门几乎全为负贡献；
+仅 2026 年初个别窗口因 AI 板块急跌、永远满仓重挫而转正——属罕见尾部事件。</p>
+</div>
+
+<div class="card">
+<h2>五、多折 Walk-Forward 交叉验证（独立方法，同数据）</h2>
+<table><thead><tr>
+<th>折（窗口）</th><th>BASE 收益</th><th>BASE Sharpe</th>
+<th>PROD 收益</th><th>PROD Sharpe</th><th>闸门 Δ</th>
+</tr></thead><tbody><tr><td>F1 20240131→20240529</td><td>+23.3%</td><td>+1.48</td><td>-6.9%</td><td>-0.79</td><td style='color:#1e8449;font-weight:600'>-30.1pt</td></tr><tr><td>F2 20240530→20240912</td><td>+6.1%</td><td>+0.60</td><td>-4.4%</td><td>-2.36</td><td style='color:#1e8449;font-weight:600'>-10.5pt</td></tr><tr><td>F3 20240913→20250107</td><td>+67.9%</td><td>+2.44</td><td>+63.2%</td><td>+2.35</td><td style='color:#1e8449;font-weight:600'>-4.7pt</td></tr><tr><td>F4 20250108→20250506</td><td>+8.8%</td><td>+0.73</td><td>+2.9%</td><td>+0.42</td><td style='color:#1e8449;font-weight:600'>-5.9pt</td></tr><tr><td>F5 20250507→20250820</td><td>+98.7%</td><td>+4.05</td><td>+85.7%</td><td>+3.87</td><td style='color:#1e8449;font-weight:600'>-13.1pt</td></tr><tr><td>F6 20250821→20251211</td><td>+46.6%</td><td>+2.09</td><td>+43.7%</td><td>+2.00</td><td style='color:#1e8449;font-weight:600'>-2.9pt</td></tr><tr><td>F7 20251212→20260408</td><td>+3.8%</td><td>+0.44</td><td>+3.4%</td><td>+0.45</td><td style='color:#1e8449;font-weight:600'>-0.4pt</td></tr></tbody></table>
+<div class="kpis" style="margin-top:14px">
+<div class="kpi"><div class="v up">+1.69</div><div class="l">BASE 均值 Sharpe（无闸门）</div></div>
+<div class="kpi"><div class="v down">+0.85</div><div class="l">PROD 均值 Sharpe（有闸门）</div></div>
+<div class="kpi"><div class="v down">0/7</div><div class="l">闸门胜出折数</div></div>
+<div class="kpi"><div class="v down">-67.6pt</div><div class="l">累计收益落后</div></div>
+</div>
+<p style="font-size:13px;color:#6b7785;margin-top:10px">
+两法一致：闸门是<b>风险调整后收益的净拖累</b>，非 alpha 来源。
+其唯一价值是「崩盘保险」——降低暴露与回撤，但在本宇宙（强趋势 AI 产业链）历史上
+「保险保费」远高于赔付。</p>
+</div>
+
+<div class="card">
+<h2>六、按窗起始市况分组</h2>
+<table><thead><tr><th>分组</th><th>窗数</th><th>平均 α 贡献</th>
+<th>α 胜率</th><th>区间指数收益</th></tr></thead><tbody>
+<tr><td>起始处于<b>下行</b>市（指数＜MA60）</td><td>9</td>
+<td class="down">-2.3pt</td>
+<td>3/9</td>
+<td>+18.1%</td></tr>
+<tr><td>起始处于<b>上行</b>市（指数＞MA60）</td><td>16</td>
+<td class="down">-3.8pt</td>
+<td>7/16</td>
+<td>+6.5%</td></tr>
+</tbody></table>
+<p style="font-size:13px;color:#6b7785;margin-top:10px">
+闸门在下行起始窗平均仍为负（-2.3pt），
+说明历史下行多伴随 V 型反弹，闸门「出得来、回不去」反而踏空。
+其保护作用仅在<b>持续深跌</b>（如 2026 年初 AI 板块急杀）这一罕见情形下才兑现。</p>
+</div>
+
+<div class="card">
+<h2>七、结论与优化建议</h2>
+<div class="rec">
+<b>结论：</b>regime 闸门在完整 2024–2026 样本上并非稳健 alpha，而是风险调整后收益的净拖累
+（均值 Sharpe +1.69→+0.85，7/7 折跑输）。它本质是「崩盘保险」，
+保费（错过的牛市收益）长期高于赔付（躲过的回撤）。<br><br>
+<b>优化建议（待你确认后实施）：</b>在追求「优秀收益」且本宇宙趋势强劲的前提下，
+<b>关闭 regime 闸门</b>（设 <code>regime_mode="off" / force_exit=False</code>），
+让策略满仓捕捉 AI 长牛。回测显示此举将均值 Sharpe 由 +0.85 提升至 +1.69（约 2×），
+且历史最差折 BASE 仍为 <b class="up">+3.8%</b>（正收益）。<br><br>
+<b>风险提示：</b>关闭后组合在持续熊市中暴露升至 ~97%、最大回撤略增（−14.2% vs −11.1%）。
+若你更看重本金保全而非收益最大化，可保留闸门作为保险。此改动影响实盘，
+<b>本自动化运行未自动修改生产配置</b>，等你确认后再落地（当前实时 regime=ok，闸门本就开放、暂未拦截）。
+<div class="code"># config/settings.py  (待确认)
+STRATEGY_PARAMS: regime_mode="off", regime_force_exit=False
+# engine/event_engine.py: self.regime_mode = "off"
+# 回测对照：strategy/opt_harness.base_cfg() 已为无闸门基线（Sharpe +1.69）</div>
+</div>
+</div>
+
+<div class="card">
+<h2>八、执行效率与工程健康（保障项）</h2>
+<ul style="font-size:14px">
+<li>✅ 单元测试 <b>92/92 通过</b>（conda env qmt），零回归。</li>
+<li>✅ 实盘引擎快照 <code>exit=0</code>：data_mode=xtdata 已连、regime ok=true（闸门开放）、风控未熔断。</li>
+<li>✅ 滚动研究 25 窗 + 7 折交叉验证全程本地零额度，无外部依赖、可复现。</li>
+</ul>
+<p style="font-size:12px;color:#9aa5b1;margin-top:6px">证据：
+logs/opt_rollwf.json（25 窗明细）、logs/opt_folds.json（7 折交叉验证）。</p>
+</div>
+
+<footer>本报告由自动化量化研究生成 · 红涨绿跌（中国惯例）· 所有结论基于真实历史日线 + 真实交易成本</footer>
+</div></body></html>

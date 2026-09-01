@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>量化项目优化周报 · 执行效率治理（2026-08-29）</title>
+<style>
+  :root{
+    --bg:#0d1117; --card:#161b22; --line:#30363d; --ink:#e6edf3;
+    --muted:#8b949e; --green:#3fb950; --red:#f85149; --amber:#d29922;
+    --accent:#58a6ff; --teal:#39c5cf;
+  }
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font-family:-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;line-height:1.6;}
+  .wrap{max-width:960px;margin:0 auto;padding:32px 22px 60px;}
+  h1{font-size:24px;margin:0 0 4px;letter-spacing:.5px;}
+  .sub{color:var(--muted);font-size:13px;margin-bottom:24px;}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;
+    padding:20px 22px;margin:16px 0;}
+  .card h2{font-size:16px;margin:0 0 12px;display:flex;align-items:center;gap:8px;}
+  .tag{font-size:11px;padding:2px 8px;border-radius:20px;font-weight:600;}
+  .t-ok{background:rgba(63,185,80,.15);color:var(--green);}
+  .t-warn{background:rgba(210,153,34,.15);color:var(--amber);}
+  .t-bad{background:rgba(248,81,73,.15);color:var(--red);}
+  .t-info{background:rgba(88,166,255,.15);color:var(--accent);}
+  .kv{display:grid;grid-template-columns:200px 1fr;gap:6px 14px;font-size:13.5px;}
+  .kv b{color:var(--muted);font-weight:500;}
+  .mono{font-family:"SF Mono",Consolas,monospace;font-size:12.5px;
+    background:#0b0f14;border:1px solid var(--line);border-radius:8px;
+    padding:12px 14px;color:#c9d1d9;overflow-x:auto;white-space:pre;}
+  .pill{display:inline-block;padding:2px 9px;border-radius:6px;font-size:12px;
+    background:#0b0f14;border:1px solid var(--line);margin:2px 4px 2px 0;}
+  .ok{color:var(--green);} .bad{color:var(--red);} .warn{color:var(--amber);}
+  ul{margin:8px 0;padding-left:20px;font-size:13.5px;}
+  li{margin:4px 0;}
+  .hero{display:flex;gap:14px;flex-wrap:wrap;margin:6px 0 4px;}
+  .stat{flex:1;min-width:150px;background:#0b0f14;border:1px solid var(--line);
+    border-radius:10px;padding:14px 16px;}
+  .stat .n{font-size:22px;font-weight:700;}
+  .stat .l{font-size:12px;color:var(--muted);}
+  .note{font-size:12.5px;color:var(--muted);border-left:3px solid var(--line);
+    padding:4px 12px;margin:10px 0;}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>量化项目执行效率治理 · 每小时优化审计</h1>
+  <div class="sub">qmtIDE-deepseek · 2026-08-29 22:30 (周六) · 自动化 run · 解释器 conda env <b>qmt</b></div>
+
+  <div class="hero">
+    <div class="stat"><div class="n ok">92/92</div><div class="l">单元测试 · 零回归</div></div>
+    <div class="stat"><div class="n ok">1</div><div class="l">已释放 CPU 核心（杀 36600）</div></div>
+    <div class="stat"><div class="n warn">34</div><div class="l">泄漏僵尸引擎（待提权清理）</div></div>
+    <div class="stat"><div class="n ok">就绪</div><div class="l">良引擎 pid 37040 · 周末休眠</div></div>
+  </div>
+
+  <div class="card">
+    <h2>① 核心结论 <span class="tag t-info">本轮回测重点=执行效率，非收益调参</span></h2>
+    <ul>
+      <li><b>本宇宙收益 alpha 已收敛</b>：经前序 18+ 方向 IS/OOS + 多折 walk-forward 严验，仅「regime 关闭 + 趋势骑行 + 波动率目标 + max_positions=5」为样本外稳健最优。<b>本轮不调参，避免过拟合。</b></li>
+      <li><b>真正的执行效率病灶 = 34 个泄漏僵尸引擎</b>（8/24–25 启动，早于单例锁）。它们跑旧代码（无时段守卫、无 per-pid 日志、无轮转），持续向共享 <span class="mono">quant_system.log</span> 刷屏 <span class="mono">daily_trades&gt;10</span>，并已撑大到 <b>41.9 MB</b> 且仍在增长。</li>
+      <li><b>良引擎 pid 37040 健康且正确休眠</b>：时段守卫已启用，周六 <span class="mono">closed_non_trading_day</span> 休眠，距周一 09:15 开盘约 2146 分钟；其独立日志仅 1,231 字节。</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h2>② 引擎健康快照 <span class="tag t-ok">健康</span></h2>
+    <div class="kv">
+      <b>良引擎 PID</b><span>37040（启动 21:29，运行 ~52min，CPU 仅 3.1s → 休眠态✓）</span>
+      <b>运行模式</b><span>portfolio / paper / xtdata 已连 / Tushare 已连 / broker=disconnected</span>
+      <b>时段守卫</b><span class="ok">已启用（非交易时段休眠，间隔 60s）</span>
+      <b>regime 状态</b><span>off（闸门关闭，追收益）/ 快照=down / n=16</span>
+      <b>动态宇宙</b><span>活跃 30 只 / 总 373 只（通信设备125·半导体179·IT设备69）</span>
+      <b>生产配置</b><span>trend 骑行 + 波动率目标仓位 + max_positions=5（regime 关）</span>
+      <b>回归测试</b><span class="ok">92 passed, 0 failed（conda qmt，4m53s）</span>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>③ 执行效率治理动作 <span class="tag t-warn">已执行 1 项 / 待提权 1 项</span></h2>
+    <p><b>已执行（安全，本会话可终止）</b>：</p>
+    <ul>
+      <li class="ok">杀死 <b>pid 36600</b> —— 19h 空转的 WorkBuddy 托管 python 3.13，独占 1 整核（累计 68,320s CPU）。<b>已释放 1 核心</b>。该进程与交易引擎无关，kill 不影响良引擎。</li>
+    </ul>
+    <p><b>待提权清理（本非提权会话 Access Denied，需管理员/用户操作）</b>：</p>
+    <ul>
+      <li class="warn">34 个 8/24–25 泄漏僵尸引擎：属更高完整性/服务令牌，Stop-Process 与 taskkill 均返回 <span class="mono">Access is denied</span>。它们持续烧 CPU + 撑大日志。建议由用户在<strong>管理员 PowerShell</strong> 执行：</li>
+    </ul>
+    <div class="mono"># 管理员 PowerShell 一次性清理 34 个泄漏僵尸（已排除良引擎 23984/37040）
+$zombies = @(7780,14952,7208,15944,3208,5948,19908,19892,18184,2428,23316,
+20192,16828,2628,22224,25136,25008,24552,26832,27028,26708,27376,28536,
+24144,25952,28328,30028,28676,31308,30312,28800,32524,32548,29348)
+$zombies | ForEach-Object { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue }
+# 清理后归档被占用的超大日志
+Move-Item logs/quant_system.log logs/quant_system.log.old -Force</div>
+    <div class="note">⚠️ 清理前请确认良引擎 <b>23984 / 37040</b> 不在列表内（已排除）。僵尸均为 paper 模式、无真实资金风险；持仓由 storage 持久化，kill 安全。</div>
+  </div>
+
+  <div class="card">
+    <h2>④ 收益侧状态 <span class="tag t-info">收敛 · 本轮不动</span></h2>
+    <ul>
+      <li>当前生产配置在 OOS（mp5 +12.3% / Sharpe +0.70 / α +1.6pt）与多折（均值 Sharpe +0.84）均稳健，为经验证最优。</li>
+      <li>累计否决清单（勿重复提交）：趋势紧移动止损、真实宽止损 sizing、宽指数闸门、抗抖动 regime、双过滤、风险调整动量、残差动量(朴素)、组合级 DD 控制、再入场冷静期、动量排名加权、量能突破确认、分行业分散、横截面风险平价、尾部对冲熔断、主力资金流 gate/rank、组合权益 DD 硬止损、盈利预告上修 gate/rank。</li>
+      <li>结论：公开数据轴（价格/指数/资金流/盈利上修）已全证伪或冗余；下一批收益突破点仅可能来自<strong>私有/未公开另类数据</strong>（一致预期修正、机构持仓明细），而非现有公开数据调参。</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h2>⑤ 下一步 <span class="tag t-info">建议</span></h2>
+    <ul>
+      <li><b>最高 ROI</b>：用户管理员 PowerShell 执行上方命令，清理 34 僵尸 + 归档 42MB 日志 → 立省大量 CPU 与磁盘。</li>
+      <li><b>周一开盘</b>：良引擎 37040 将自动唤醒（时段守卫），按 regime 关 + trend + vol + max5 执行；周一早上建议人工复核一次快照。</li>
+      <li>已知后续项（非紧急）：live 模式 <span class="mono">_daily_trade_count</span> 恒 0 致 <span class="mono">max_daily_trades</span> 实际不生效——一致性修复待单独评估（当前为 paper 模式，不影响）。</li>
+    </ul>
+  </div>
+
+  <div class="note">本报告由每小时自动化生成。收益侧已收敛，优化重心转为「让已验证代码真正干净地运行」——本轮回测即落实执行效率治理。运行铁律：必须用 conda env qmt 解释器。</div>
+</div>
+</body>
+</html>

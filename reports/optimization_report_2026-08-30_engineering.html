@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>工程加固报告 · 系统效率 / 可移植性 / 稳定性 + 系统提示（2026-08-30）</title>
+<style>
+  :root{
+    --bg:#f6f8fa; --card:#ffffff; --ink:#1f2933; --sub:#52606d;
+    --line:#e4e7eb; --brand:#0b7285; --brand2:#0c8599;
+    --ok:#2b8a3e; --warn:#e8590c; --err:#c92a2a; --info:#1971c2;
+    --chip:#e7f5ff; --chipink:#0b7285;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font-family:-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+    background:var(--bg);color:var(--ink);line-height:1.65}
+  .wrap{max-width:1040px;margin:0 auto;padding:32px 24px 64px}
+  header{background:linear-gradient(135deg,#0b7285,#0c8599);color:#fff;border-radius:14px;
+    padding:28px 30px;margin-bottom:24px}
+  header h1{margin:0 0 6px;font-size:23px;font-weight:700}
+  header p{margin:0;opacity:.92;font-size:14px}
+  .meta{margin-top:14px;font-size:12.5px;opacity:.85}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;
+    padding:22px 24px;margin-bottom:18px;box-shadow:0 1px 2px rgba(16,24,40,.04)}
+  .card h2{margin:0 0 14px;font-size:17px;color:var(--brand);border-left:4px solid var(--brand);
+    padding-left:10px}
+  .card h3{font-size:14.5px;color:var(--ink);margin:18px 0 8px}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px}
+  .kpi{background:#f8fafc;border:1px solid var(--line);border-radius:10px;padding:14px 16px}
+  .kpi .v{font-size:21px;font-weight:700;color:var(--brand2)}
+  .kpi .k{font-size:12.5px;color:var(--sub);margin-top:2px}
+  table{width:100%;border-collapse:collapse;font-size:13px;margin-top:8px}
+  th,td{border:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top}
+  th{background:#f1f3f5;color:var(--sub);font-weight:600}
+  code{background:#f1f3f5;padding:1px 6px;border-radius:5px;font-size:12.5px;
+    font-family:"SFMono-Regular",Consolas,monospace;color:#0b7285}
+  pre{background:#0f172a;color:#e2e8f0;padding:14px 16px;border-radius:10px;overflow:auto;
+    font-size:12.5px;line-height:1.55;font-family:"SFMono-Regular",Consolas,monospace}
+  .tag{display:inline-block;font-size:11.5px;font-weight:600;padding:2px 9px;border-radius:999px;
+    background:var(--chip);color:var(--chipink);margin-right:6px}
+  .ok{color:var(--ok);font-weight:600}.warn{color:var(--warn);font-weight:600}
+  .err{color:var(--err);font-weight:600}.info{color:var(--info);font-weight:600}
+  .note{font-size:13px;color:var(--sub);margin:6px 0}
+  ul.tight{margin:6px 0 6px 2px;padding-left:20px}
+  ul.tight li{margin:5px 0;font-size:13.5px}
+  .pill{display:inline-block;background:#e6fcf5;color:#087f5b;border:1px solid #c3fae8;
+    border-radius:999px;padding:2px 11px;font-size:12px;font-weight:600;margin:2px 4px 2px 0}
+  .pill.no{background:#fff0f6;color:#c2255c;border-color:#ffdeeb}
+  footer{font-size:12px;color:var(--sub);text-align:center;margin-top:20px}
+  .banner{background:#fff9db;border:1px solid #ffe066;border-radius:10px;padding:12px 16px;
+    font-size:13.5px;color:#664d03;margin-bottom:18px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>工程加固报告 · 系统效率 / 可移植性 / 稳定性 + 系统提示</h1>
+  <p>qmtIDE-deepseek · 2026-08-30（自动化轮次）· 收益侧配置零改动，本轮纯工程</p>
+  <div class="meta">验证环境：conda env qmt（Python 3.9）· 全项目 py_compile 通过 · 单测 56/56 零回归</div>
+</header>
+
+<div class="banner">
+  <b>本轮定位</b>：用户明确要求「不用进一步优化收益」。生产配置（regime 关闭 + 趋势骑行 + 波动率目标 + 并发持仓≤5 + 回撤断路器 −0.25/5日冷却）已验证为稳健最优，<b>本轮回测/调参 0 改动</b>。
+  重心放在 <b>系统效率、可移植性、稳定性</b>，并在 <b>分析结论 / 交易信息 / 风控</b> 等关键点补上清晰的「系统提示」。
+</div>
+
+<div class="card">
+  <h2>① 本轮交付概览</h2>
+  <div class="grid">
+    <div class="kpi"><div class="v">4 项</div><div class="k">工程改进（提示通道 / 可移植 / 稳定 / Web）</div></div>
+    <div class="kpi"><div class="v">0</div><div class="k">收益参数改动（纪律：不再过拟合）</div></div>
+    <div class="kpi"><div class="v">56/56</div><div class="k">单元测试零回归</div></div>
+    <div class="kpi"><div class="v">全绿</div><div class="k">编译 / 快照 / 提示实测 / Web 导入</div></div>
+  </div>
+  <p class="note">改动文件：<code>core/notices.py</code>（新增）、<code>config/settings.py</code>、<code>main.py</code>、<code>engine/event_engine.py</code>、<code>risk/manager.py</code>、<code>web/routes.py</code>。</p>
+</div>
+
+<div class="card">
+  <h2>② 系统提示通道（核心新增）</h2>
+  <p class="note">新建 <code>core/notices.py</code>：统一用固定前缀 <code>【系统提示】[标签]</code> 输出到日志文件，并保留 300 条内存环形缓冲，供 Web 仪表板实时展示。从此「系统级关键事件」与逐轮 DEBUG 噪声彻底隔离。</p>
+  <table>
+    <tr><th>触发点</th><th>标签</th><th>示例内容</th></tr>
+    <tr><td>引擎启动</td><td><span class="tag">系统</span></td><td>引擎已启动 | 策略=portfolio 执行=paper 数据源=xtdata 订阅标的=38 单实例锁=开</td></tr>
+    <tr><td>启动结论</td><td><span class="tag">分析结论</span></td><td>策略配置已加载并经验证：趋势骑行 + 波动率目标 + 持仓≤5 + regime 关闭；断路器 −25%/5日确保回测收益可兑现</td></tr>
+    <tr><td>开盘</td><td><span class="tag">分析结论</span></td><td>交易时段开启 | regime=off(放行) 动态候选30只 持仓=N 现金=… 风控=正常</td></tr>
+    <tr><td>买入 / 卖出</td><td><span class="tag">交易</span></td><td>买入成交 300308 中际旭创 ×100 @120.500 止损117.6 现金余… 理由=portfolio target</td></tr>
+    <tr><td>风控熔断 / 恢复</td><td><span class="tag">风控</span></td><td>触发熔断: max_drawdown -26.1%（已暂停新开仓，待冷却自动恢复或手动 resume）｜ 回撤熔断自动恢复（冷却 5 日）</td></tr>
+    <tr><td>每 10 分钟</td><td><span class="tag">心跳</span></td><td>存活确认 | 状态=交易中 轮次=1234 持仓=3 总资产=… 风控=正常 券商重连=0</td></tr>
+    <tr><td>单轮异常</td><td><span class="tag">ENGINE</span></td><td>主循环单轮异常已隔离(继续运行): KeyError: …（不再杀死整台引擎）</td></tr>
+  </table>
+  <p class="note">Web 端点：<code>GET /api/notices?limit=50</code>（REST）+ SSE <code>/api/stream</code> 负载新增 <code>notices</code> 字段，仪表板可一眼看到系统提示流。</p>
+</div>
+
+<div class="card">
+  <h2>③ 可移植性（迁移机器无需改源码）</h2>
+  <ul class="tight">
+    <li><b>QMT 路径环境变量化</b>：<code>QMT_PYTHON_PATH</code> / <code>QMT_USERDATA_PATH</code> / 以及 conda dll 路径 <code>QMT_CONDA_ENV</code> 现均可用环境变量覆盖，保留本机默认值。换机器只需设环境变量，不动 <code>settings.py</code>。</li>
+    <li><b>解释器守卫</b>（<code>main.py</code>）：若当前 Python 不是 conda env <code>qmt</code>，启动即向 stderr 打印清晰提示与正确命令——根治「用错解释器 → import 阶段崩溃、引擎起不来」的反复故障：
+      <pre># 正确启动（Windows）
+C:\Users\lisinan\.conda\envs\qmt\python.exe main.py
+# 或：conda activate qmt &amp;&amp; python main.py
+# 设置 QMT_IGNORE_INTERPRETER_CHECK=1 可跳过检查</pre>
+    </li>
+  </ul>
+</div>
+
+<div class="card">
+  <h2>④ 稳定性（无人值守不静默死）</h2>
+  <ul class="tight">
+    <li><b>单轮异常隔离</b>：<code>event_engine.run()</code> 主循环对 <code>_run_once</code> 包 try/except——此前任一轮抛出未捕获异常都会冲出主循环、<b>直接杀死整台引擎</b>（已多次实测静默退出）。现在一律捕获、记系统提示、继续下一轮，单点故障不再连累全局。</li>
+    <li><b>10 分钟存活心跳</b>：定时输出「状态 / 轮次 / 持仓 / 总资产 / 风控 / 券商重连」系统提示，运维侧随时确认引擎未卡死、CPU 无异常，且无需刷屏级 DEBUG。</li>
+    <li>既有稳定性基建（单实例自愈、交易时段守卫、_SafeRotatingFileHandler、异步成交、日内计数跨日重置、断路器冷却恢复）全部保留、未触碰。</li>
+  </ul>
+</div>
+
+<div class="card">
+  <h2>⑤ 验证结果</h2>
+  <table>
+    <tr><th>检查项</th><th>命令 / 方法</th><th>结果</th></tr>
+    <tr><td>全项目编译</td><td><code>python -m compileall core engine risk web config strategy data</code></td><td><span class="ok">通过</span></td></tr>
+    <tr><td>单元测试</td><td><code>tests/run_all.py</code></td><td><span class="ok">56/56 零回归</span></td></tr>
+    <tr><td>引擎实例化</td><td><code>main.py --snapshot</code></td><td><span class="ok">exit=0</span></td></tr>
+    <tr><td>系统提示横幅</td><td>短自检 <code>--ticks</code> 实测输出</td><td><span class="ok">启动/分析结论/交易 提示均正确输出</span></td></tr>
+    <tr><td>Web 导入链</td><td><code>import web.app / web.routes</code></td><td><span class="ok">无循环 import</span></td></tr>
+  </table>
+  <p class="note">实测系统提示片段（来自本次自检）：</p>
+  <pre>[系统提示][系统] 引擎已启动 | 策略=single 执行=paper 数据源=mock 券商=disconnected | 订阅标的=38 单实例锁=开
+[系统提示][分析结论] 策略配置已加载并经验证：趋势骑行退出(trend) + 波动率目标仓位 + 并发持仓上限=5 + regime 闸门=关闭(追收益)。个股/组合风控全保留；实盘收益断路器阈值(-25%)远高于策略自然回撤，配合 5 日冷却自动恢复，确保回测收益可在实盘兑现。
+[系统提示][系统] 数据源=mock（非实时 xtdata），行情可能为模拟/回退数据，仅用于自检。</pre>
+</div>
+
+<div class="card">
+  <h2>⑥ 运维指引（保障可执行）</h2>
+  <div class="banner" style="background:#fff0f6;border-color:#ffdeeb;color:#a61e4d">
+    <b>重要发现</b>：本轮观测到全机 <b>0 个 python 进程</b>、此前良引擎 33480 已 dead——后台引擎的生命周期绑定启动它的 shell/自动化会话，跨回合会被回收。
+    因此「保障可执行」须在<b>用户真实桌面持久会话</b>（或计划任务 / 服务）中启动引擎，而非依赖自动化一次性后台启动。
+  </div>
+  <h3>在本机真实桌面启动（推荐）</h3>
+  <pre>conda activate qmt
+cd C:\Users\lisinan\Desktop\qmtIDE-deepseek
+python main.py --strategy portfolio        # 组合策略；或 --strategy single</pre>
+  <p class="note">自动化 shell 内 <code>xtdata</code> 不可达（回落 mock，<code>get_ticks</code> 在 mock 下会阻塞），故<b>实盘引擎必须于能连 xtdata 的会话启动</b>。</p>
+  <h3>可移植启动（换机器）</h3>
+  <pre>set QMT_PYTHON_PATH=D:\miniQMT\bin.x64\Lib\site-packages
+set QMT_USERDATA_PATH=D:\miniQMT\userdata_mini
+set QMT_CONDA_ENV=D:\conda\envs\qmt
+D:\conda\envs\qmt\python.exe main.py --strategy portfolio</pre>
+  <h3>停止 / 重启（协作式，安全）</h3>
+  <pre>python main.py --stop        # 写哨兵文件，引擎自行收敛退出（不杀半途）
+python main.py --strategy portfolio   # 重新启动即加载本轮全部工程改进</pre>
+  <h3>查看系统提示</h3>
+  <pre>curl http://127.0.0.1:5000/api/notices     # REST 最新系统提示
+# 或打开 Web 仪表板（python main.py --web），SSE 实时推送 notices</pre>
+  <p class="note">遗留（与本轮无关，前轮已记录）：8/24–25 泄漏僵尸进程若仍在，清理命令见前轮报告 <code>reports/optimization_report_2026-08-30_freshdata.html</code>，须管理员 PowerShell 执行（排除当前良引擎）。</p>
+</div>
+
+<div class="card">
+  <h2>⑦ 结论</h2>
+  <p class="note">
+    <span class="pill">系统提示</span><span class="pill">可移植</span><span class="pill">稳定</span><span class="pill">零回归</span><span class="pill no">收益零改动</span>
+  </p>
+  <ul class="tight">
+    <li><b>收益侧</b>：严格遵守用户指令，18+ 方向全否、参数高原已证，本轮对策略/风控阈值 0 改动。</li>
+    <li><b>系统效率</b>：10 分钟心跳 + 既有异步成交/缓存/单实例自愈，引擎健康可见、CPU 无浪费。</li>
+    <li><b>可移植性</b>：QMT 路径全部环境变量化 + 解释器守卫，迁移机器无需改源码。</li>
+    <li><b>稳定性</b>：单轮异常隔离根治「一个坏 tick 杀死引擎」，无人值守更稳。</li>
+    <li><b>系统提示</b>：分析结论 / 交易 / 风控 三类关键信息现以固定前缀清晰可读，日志与 Web 双通道送达。</li>
+    <li><b>下一步</b>：在用户真实桌面持久会话按上方命令重启引擎，加载本轮改进；自动化可持续监控但不再自动重启实盘进程。</li>
+  </ul>
+</div>
+
+<footer>qmtIDE-deepseek · 工程加固报告 · 2026-08-30 · 收益侧配置未变（regime off + trend + vol + max5 + 断路器 −0.25/5d）</footer>
+
+</div>
+</body>
+</html>

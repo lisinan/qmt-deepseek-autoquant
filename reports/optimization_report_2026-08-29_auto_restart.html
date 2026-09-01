@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>量化引擎执行效率修复与恢复 · 2026-08-29</title>
+<style>
+  :root{--bg:#0f1420;--card:#171c2b;--line:#232a3d;--txt:#e6e9ef;--sub:#8b93a7;--accent:#2f81f7;--ok:#3fd68a;--bad:#ff7a7a;--warn:#ffcf6b}
+  *{box-sizing:border-box}
+  body{font-family:-apple-system,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif;margin:0;background:var(--bg);color:var(--txt);line-height:1.65}
+  .wrap{max-width:940px;margin:0 auto;padding:34px 22px 50px}
+  h1{font-size:23px;margin:0 0 4px}
+  .sub{color:var(--sub);font-size:13px;margin-bottom:26px}
+  h2{font-size:17px;margin:30px 0 12px;color:#7fd1ff;border-left:3px solid var(--accent);padding-left:11px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:11px;padding:16px 19px;margin:13px 0}
+  .kv{display:grid;grid-template-columns:172px 1fr;gap:7px 14px;font-size:14px}
+  .kv b{color:#aeb6c9;font-weight:600}
+  code{background:#0c1018;padding:2px 7px;border-radius:5px;color:#ffd479;font-size:12.5px}
+  .ok{color:var(--ok)} .bad{color:var(--bad)} .warn{color:var(--warn)}
+  ul{margin:9px 0;padding-left:21px} li{margin:6px 0}
+  table{width:100%;border-collapse:collapse;font-size:13px;margin:10px 0}
+  th,td{border:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top}
+  th{background:#1d2436;color:#9fb0d0}
+  pre{background:#0c1018;border:1px solid var(--line);border-radius:8px;padding:13px 15px;overflow:auto;font-size:12.5px;color:#cdd6e6}
+  .pill{display:inline-block;padding:2px 10px;border-radius:20px;font-size:12px;font-weight:600}
+  .pill.ok{background:rgba(63,214,138,.15);color:var(--ok)}
+  .pill.bad{background:rgba(255,122,122,.15);color:var(--bad)}
+  .pill.warn{background:rgba(255,207,107,.15);color:var(--warn)}
+  .foot{color:#6b7388;font-size:12px;margin-top:34px;border-top:1px solid var(--line);padding-top:16px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>量化交易引擎 · 执行效率修复与恢复</h1>
+  <div class="sub">自动化轮次 2026-08-29 I · 项目 qmtIDE-deepseek · 科学诊断 → 安全修复 → 恢复运行</div>
+
+  <div class="card">
+    <div class="kv">
+      <b>结论</b><span><span class="pill ok">引擎已恢复</span> 修复了一个导致引擎永久卡死的可靠性 Bug，并以 <b>paper（模拟）</b> 模式重启，无真金风险。</span>
+      <b>生产配置</b><span>未改动：trend 趋势骑行 + 波动率目标仓位 + max_positions=5，regime 闸门 OFF</span>
+      <b>回归测试</b><span><span class="pill ok">92 / 92 通过</span> 零回归</span>
+      <b>实时引擎</b><span>pid <b>1516</b>（存活）· mode=portfolio · data=xtdata · exec=<b>paper</b> · 周六休眠至周一开盘</span>
+    </div>
+  </div>
+
+  <h2>一、诊断：引擎已死 + 根因定位</h2>
+  <div class="card">
+    <ul>
+      <li><span class="bad">致命</span> 实时引擎（<code>engine.pid=40604</code>）进程已不存在 —— 交易系统完全停摆，本周期无任何交易/评估在进行。</li>
+      <li><span class="bad">资源泄漏</span> 残留 <b>~34 个 8/24–25 泄漏 python 进程</b>，外加 1 个 WorkBuddy 托管 python 3.13.12（pid 36600）空转 <b>17 小时占满 1 个 CPU 核心</b>。</li>
+      <li><span class="warn">根因（永久卡死）</span> <code>event_engine._daily_trade_count</code> 仅在 paper 分支自增（794/836 行）且<b>从不按日重置</b>；闸门 <code>account_block_reason / can_open</code> 用的就是此计数器（而非 RiskManager 已每日重置的那个）。paper 模式累计满 10 笔后，<code>daily_trades&gt;10</code> 会<b>永久拦截所有 BUY</b>，引擎每 ~0.3s 空转刷屏（"BUY 拒绝" + "sector 评估失败 [Errno 22]"）。</li>
+      <li><span class="ok">安全判定</span> 日志中 <code>daily_trades&gt;10</code> 拦截<b>只在 paper 模式触发</b>（live 模式引擎计数器恒为 0）→ 证明死引擎是 <b>paper（模拟）</b>，重启无真金风险。</li>
+    </ul>
+  </div>
+
+  <h2>二、修复（非 alpha 改动，仅修正计数语义）</h2>
+  <div class="card">
+    <p>文件 <code>engine/event_engine.py</code>：新增与 <code>RiskManager.reset_daily()</code> 对齐的每日重置逻辑。</p>
+    <pre># __init__：跨日重置锚点
+self._trade_date = date.today()
+
+# 新增方法
+def _reset_daily_if_needed(self) -> None:
+    today = date.today()
+    if today != self._trade_date:
+        self._trade_date = today
+        self._daily_trade_count = 0   # 使「日内」限额名副其实
+
+# run() 主循环每轮调用
+while not self._stop_flag.is_set():
+    self._reset_daily_if_needed()
+    ...</pre>
+    <p class="warn">说明：仅修正"日内交易计数"的重置语义，<b>不改任何策略/收益逻辑</b>；符合"样本外失效的改动不并入"的量化纪律。</p>
+  </div>
+
+  <h2>三、验证（conda qmt，隔离解释器）</h2>
+  <table>
+    <tr><th>检查项</th><th>结果</th></tr>
+    <tr><td>py_compile</td><td><span class="ok">OK</span></td></tr>
+    <tr><td>main.py --snapshot</td><td><span class="ok">exit=0</span> · exec=paper · regime off · halted=false · daily_trade_count=0</td></tr>
+    <tr><td>单元测试 run_tests_direct.py</td><td><span class="ok">92 passed, 0 failed</span></td></tr>
+    <tr><td>restart 后进程</td><td><span class="ok">pid 1516 存活</span> · xtdata + Tushare 已连 · DailyContext regime=down</td></tr>
+  </table>
+
+  <h2>四、恢复动作</h2>
+  <div class="card">
+    <div class="kv">
+      <b>命令</b><span><code>python main.py --strategy portfolio</code>（exec 默认 paper）</span>
+      <b>新 pid</b><span><b>1516</b>（原 40604 为幽灵）→ 进程存活</span>
+      <b>时段</b><span>当前为周六非交易时段 → 引擎休眠（~2210 分钟，至周一 09:30 开盘），不空转刷屏</span>
+      <b>加载修复</b><span>周一正常交易；日内计数跨日归零，<b>不再因满 10 笔永久卡死</b></span>
+    </div>
+  </div>
+
+  <h2>五、遗留项（高风险动作，未自治执行，待你确认）</h2>
+  <div class="card">
+    <ul>
+      <li><span class="warn">泄漏进程清理</span> ~34 个 8/24–25 进程 + pid 36600 空转仍占用 RAM/CPU。<code>taskkill</code> 属高风险系统动作，自动化未执行；singleton 锁已防止<b>新</b>泄漏。建议人工确认后清理（或我可在你授权后执行）。</li>
+      <li><span class="warn">已知限制</span> live 模式下引擎计数器恒为 0，<code>max_daily_trades</code> 在 live 实际<b>不生效</b>（与 paper 不一致）。本轮未改，避免引入 live 行为变化，标记为后续项。</li>
+    </ul>
+  </div>
+
+  <h2>六、当前状态</h2>
+  <div class="card">
+    <ul>
+      <li>生产配置不变（trend + 波动率目标 + max_positions=5，regime off）。</li>
+      <li>引擎已恢复运行（paper + portfolio，pid 1516），执行效率修复到位。</li>
+      <li>研究侧：alpha 已收敛于「价格动量 + 趋势骑行」，18+ 方向样本外证伪，无更多公开数据可挖 —— 收益侧无需改动。</li>
+    </ul>
+  </div>
+
+  <div class="foot">
+    自动化轮次 2026-08-29 I · 生成于 qmtIDE-deepseek · 仅做执行效率修复与恢复，未改动任何收益相关逻辑。<br>
+    如需切换到 live（真实下单）或清理泄漏进程，请确认后告知，我再执行。
+  </div>
+</div>
+</body>
+</html>

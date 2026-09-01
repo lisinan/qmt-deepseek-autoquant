@@ -1,0 +1,79 @@
+<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>盘后复盘 2026-08-25</title>
+<style>
+* { box-sizing: border-box; }
+body { font-family: -apple-system,"PingFang SC","Microsoft YaHei",sans-serif;
+  margin:0; background:#f5f7fa; color:#1f2937; }
+.wrap { max-width: 1000px; margin: 24px auto; padding: 0 16px; }
+h1 { font-size: 22px; margin: 0 0 4px; }
+.sub { color:#6b7280; font-size: 13px; margin-bottom: 18px; }
+.card { background:#fff; border-radius: 12px; padding: 18px 20px; margin-bottom: 16px;
+  box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+.card h2 { font-size: 16px; margin: 0 0 12px; border-left: 4px solid #1565c0; padding-left: 10px; }
+table { width:100%; border-collapse: collapse; font-size: 13px; }
+th,td { text-align:left; padding: 7px 8px; border-bottom: 1px solid #eef0f3; }
+th { color:#6b7280; font-weight:600; }
+.kpis { display:flex; gap:12px; flex-wrap:wrap; }
+.kpi { flex:1; min-width:140px; background:#f8fafc; border-radius:10px; padding:12px 14px; }
+.kpi .v { font-size:20px; font-weight:700; }
+.kpi .l { font-size:12px; color:#6b7280; }
+.pos { color:#c62828; } .neg { color:#2e7d32; }
+code { background:#eef2f7; padding:1px 5px; border-radius:4px; }
+</style></head><body><div class="wrap">
+<h1>📊 盘后复盘报告 · 2026-08-25</h1>
+<div class="sub">生成于 2026-08-30 23:45:48 ｜ 数据源 storage/qmt.db + logs/notices.log</div>
+
+<div class="card"><div class="kpis">
+  <div class="kpi"><div class="v">250</div><div class="l">成交笔数</div></div>
+  <div class="kpi"><div class="v">658602</div><div class="l">信号笔数</div></div>
+  <div class="kpi"><div class="v pos">-19,003.00</div><div class="l">已实现盈亏(¥)</div></div>
+  <div class="kpi"><div class="v">8658</div><div class="l">风控熔断次数</div></div>
+  <div class="kpi"><div class="v">5</div><div class="l">最大连亏</div></div>
+</div></div>
+
+<div class="card"><h2>① 成交与盈亏</h2>
+<table><tr><th>代码</th><th>买入金额</th><th>卖出金额</th></tr>
+<tr><td>合计</td><td>4,778,604.00</td><td>4,759,601.00</td></tr></table>
+<h3 style="font-size:14px;margin:14px 0 6px">已实现盈亏（按代码）</h3>
+<table><tr><th>代码</th><th>已实现盈亏(¥)</th></tr><tr><td>300857.SZ</td><td>82.00</td></tr><tr><td>301165.SZ</td><td>68.00</td></tr><tr><td>300502.SZ</td><td>28.00</td></tr><tr><td>688041.SH</td><td>0.00</td></tr><tr><td>002281.SZ</td><td>0.00</td></tr><tr><td>601138.SH</td><td>-8.00</td></tr><tr><td>601869.SH</td><td>-20.00</td></tr><tr><td>688111.SH</td><td>-88.00</td></tr><tr><td>688082.SH</td><td>-144.00</td></tr><tr><td>002230.SZ</td><td>-457.00</td></tr><tr><td>688012.SH</td><td>-637.00</td></tr><tr><td>300033.SZ</td><td>-1,696.00</td></tr><tr><td>688120.SH</td><td>-16,131.00</td></tr></table>
+<h3 style="font-size:14px;margin:14px 0 6px">EOD 净持仓</h3>
+<table><tr><th>代码</th><th>净持仓(股)</th><th>当日实现盈亏(¥)</th></tr><tr><td colspan="3" style="color:#888">无净持仓（当日已平仓）</td></tr></table>
+</div>
+
+<div class="card"><h2>② 信号 → 成交转化</h2>
+<table><tr><th>指标</th><th>值</th></tr>
+<tr><td>信号笔数（BUY）</td><td>658602</td></tr>
+<tr><td>成交笔数</td><td>250</td></tr>
+<tr><td>涉及代码数</td><td>13（002230.SZ, 002281.SZ, 300033.SZ, 300502.SZ, 300857.SZ, 301165.SZ, 601138.SH, 601869.SH, 688012.SH, 688041.SH, 688082.SH, 688111.SH）</td></tr>
+</table></div>
+
+<div class="card"><h2>③ 风控事件</h2>
+<p style="font-size:13px;color:#6b7280">当日熔断触发 <b>8658</b> 次（仅列前 50 条明细）。原因分布：</p>
+<table><tr><th>熔断原因</th><th>次数</th></tr>
+<tr><td>consec_loss=5</td><td>13655</td></tr>
+</table>
+<p style="font-size:12px;color:#888">明细（前 50）：</p>
+<table><tr><th>时间</th><th>熔断原因</th></tr>
+<tr><td>2026-08-25T09:23:15.360875</td><td>consec_loss=5</td></tr><tr><td>2026-08-25T09:23:21.483083</td><td>consec_loss=5</td></tr><tr><td>2026-08-25T09:23:45.980096</td><td>consec_loss=5</td></tr><tr><td>2026-08-25T09:23:52.094122</td><td>consec_loss=5</td></tr><tr><td>2026-08-25T09:24:16.565208</td><td>consec_loss=5</td></tr><tr><td>2026-08-25T09:24:24.879874</td><td>consec_loss=5</td></tr><tr><td>2026-08-25T09:24:40.736420</td><td>consec_loss=5</td></tr><tr><td>2026-08-25T09:24:43.007890</td><td>consec_loss=5</td></tr><tr><td>2026-08-25T09:24:55.398182</td><td>consec_loss=5</td></tr><tr><td>2026-08-25T09:25:12.283212</td><td>consec_loss=5</td></tr><tr><td>2026-08-25T09:25:14.563473</td><td>consec_loss=5</td></tr><tr><td>2026-08-25T09:25:27.491607</td><td>consec_loss=5</td></tr><tr><td>2026-08-25T09:25:42.854117</td><td>consec_loss=5</td></tr><tr><td>2026-08-25T09:25:44.949088</td><td>consec_loss=5</td></tr><tr><td>2026-08-25T09:25:49.056384</td><td>consec_loss=5</td></tr><tr><td>2026-08-25T09:25:58.026394</td><td>consec_loss=5</td></tr><tr><td>2026-08-25T09:26:21.290152</td><td>consec_loss=5</td></tr><tr><td>2026-08-25T09:26:27.416720</td><td>consec_loss=5</td></tr><tr><td>2026-08-25T09:26:35.178365</td><td>consec_loss=5</td></tr><tr><td>2026-08-25T09:26:51.647431</td><td>consec_loss=5</td></tr><tr><td>2026-08-25T09:26:58.112344</td><td>consec_loss=5</td></tr><tr><td>2026-08-25T09:27:05.815288</td><td>consec_loss=5</td></tr><tr><td>2026-08-25T09:27:21.997567</td><td>consec_loss=5</td></tr><tr><td>2026-08-25T09:27:28.744701</td><td>consec_loss=5</td></tr><tr><td>2026-08-25T09:27:36.332935</td><td>consec_loss=5</td></tr><tr><td>2026-08-25T09:27:52.339767</td><td>consec_loss=5</td></tr><tr><td>2026-08-25T09:27:59.351795</td><td>consec_loss=5</td></tr><tr><td>2026-08-25T09:28:06.906970</td><td>consec_loss=5</td></tr><tr><td>2026-08-25T09:28:22.715230</td><td>consec_loss=5</td></tr><tr><td>2026-08-25T09:28:29.956642</td><td>consec_loss=5</td></tr><tr><td>2026-08-25T09:28:37.442933</td><td>consec_loss=5</td></tr><tr><td>2026-08-25T09:28:53.154151</td><td>consec_loss=5</td></tr><tr><td>2026-08-25T09:29:03.912410</td><td>consec_loss=5</td></tr><tr><td>2026-08-25T09:29:11.563955</td><td>consec_loss=5</td></tr><tr><td>2026-08-25T09:29:24.819770</td><td>consec_loss=5</td></tr><tr><td>2026-08-25T09:29:28.381865</td><td>consec_loss=5</td></tr><tr><td>2026-08-25T09:29:34.524584</td><td>consec_loss=5</td></tr><tr><td>2026-08-25T09:29:42.107933</td><td>consec_loss=5</td></tr><tr><td>2026-08-25T09:29:56.513505</td><td>consec_loss=5</td></tr><tr><td>2026-08-25T09:30:00.392482</td><td>consec_loss=5</td></tr><tr><td>2026-08-25T09:30:06.471151</td><td>consec_loss=5</td></tr><tr><td>2026-08-25T09:30:13.957614</td><td>consec_loss=5</td></tr><tr><td>2026-08-25T09:30:21.376260</td><td>consec_loss=5</td></tr><tr><td>2026-08-25T09:30:25.895775</td><td>consec_loss=5</td></tr><tr><td>2026-08-25T09:30:26.958297</td><td>consec_loss=5</td></tr><tr><td>2026-08-25T09:30:31.063322</td><td>consec_loss=5</td></tr><tr><td>2026-08-25T09:30:37.155728</td><td>consec_loss=5</td></tr><tr><td>2026-08-25T09:30:44.606299</td><td>consec_loss=5</td></tr><tr><td>2026-08-25T09:30:51.656870</td><td>consec_loss=5</td></tr><tr><td>2026-08-25T09:30:56.294117</td><td>consec_loss=5</td></tr>
+</table>
+<p style="font-size:13px;color:#6b7280">最大连亏 5 次 ｜ 末笔日内盈亏 -906.0</p>
+</div>
+
+<div class="card"><h2>④ 与回测基准对照</h2>
+<p style="font-size:13px;color:#6b7280">回测验证基准（非当日收益，仅供策略一致性参照）：（无基准文件）</p>
+<table><tr><th>状态</th><th>项目</th><th>说明</th></tr><tr><td><span style="color:#fff;background:#ef6c00;padding:2px 8px;border-radius:10px;font-size:12px">WARN</span></td><td>风控熔断</td><td>当日触发 8658 次熔断：['consec_loss=5', 'consec_loss=5', 'consec_loss=5', 'consec_loss=5', 'consec_loss=5', 'consec_loss=5', 'consec_loss=5', 'consec_loss=5', 'consec_loss=5', 'consec_loss=5', 'consec_loss=5', 'consec_loss=5', 'consec_loss=5', 'consec_loss=5', 'consec_loss=5', 'consec_loss=5', 'consec_loss=5', 'consec_loss=5', 'consec_loss=5', 'consec_loss=5', 'consec_loss=5', 'consec_loss=5', 'consec_loss=5', 'consec_loss=5', 'consec_loss=5', 'consec_loss=5', 'consec_loss=5', 'consec_loss=5', 'consec_loss=5', 'consec_loss=5', 'consec_loss=5', 'consec_loss=5', 'consec_loss=5', 'consec_loss=5', 'consec_loss=5', 'consec_loss=5', 'consec_loss=5', 'consec_loss=5', 'consec_loss=5', 'consec_loss=5', 'consec_loss=5', 'consec_loss=5', 'consec_loss=5', 'consec_loss=5', 'consec_loss=5', 'consec_loss=5', 'consec_loss=5', 'consec_loss=5', 'consec_loss=5', 'consec_loss=5']。已修复为可冷却恢复断路器，复盘时确认次日已 resume 即可。</td></tr><tr><td><span style="color:#fff;background:#1565c0;padding:2px 8px;border-radius:10px;font-size:12px">INFO</span></td><td>成交代码数</td><td>当日涉及 13 只代码（>max_positions=5），多为日内轮换属正常；若 EOD 净持仓 > 5 只才需警惕超限。</td></tr></table>
+</div>
+
+<div class="card"><h2>⑤ 系统提示流水（0 条）</h2>
+<table><tr><th>时间</th><th>分类</th><th>级别</th><th>内容</th></tr><tr><td colspan="4" style="color:#888">当日无系统提示记录</td></tr></table>
+</div>
+
+<div class="card" style="background:#eef6ff"><h2>📌 复盘结论与优化线索</h2>
+<p style="font-size:13px;line-height:1.7">
+• 本工具从结构化记录重建当日表现，<b>记录完整、可复盘</b>（成交/信号/风控/系统提示均已落盘）。<br>
+• 若当日触发熔断：确认其在冷却窗口（连亏/日亏 1 日、回撤 5 日）后已自动恢复，否则手动 <code>RiskManager.resume()</code>。<br>
+• 实盘收益对照回测基准：若长期 α 显著为负，回到策略层排查（参数高原已证无调参空间，优先查数据源/执行滑点）。<br>
+• 优化迭代：将本日 JSON（logs/review_2026-08-25.json）与历史日对比，定位回归。
+</p></div>
+</div></body></html>

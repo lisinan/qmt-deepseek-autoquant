@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>qmtIDE-deepseek 实时仪表板</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/main.css') }}">
+</head>
+<body>
+  <header>
+    <h1>qmtIDE-deepseek
+      <span class="badge" id="data-mode">data: ?</span>
+      <span class="badge" id="broker-mode">broker: ?</span>
+      <span class="badge" id="exec-mode">exec: ?</span>
+      <span class="badge" id="strat-mode">strategy: ?</span>
+    </h1>
+    <div class="actions">
+      <button id="btn-start">启动</button>
+      <button id="btn-stop" class="danger">停止</button>
+      <button id="btn-rerank">LLM 重排序</button>
+      <button id="btn-refresh">刷新</button>
+      <span class="conn-status" id="conn-status">● 离线</span>
+    </div>
+  </header>
+
+  <main>
+    <!-- 上：产业链热力图 + 动态候选池摘要 + LLM 分析 -->
+    <section class="panel wide" id="top-panel">
+      <h2>产业链热力图</h2>
+      <div class="heatmap" id="sector-heatmap">
+        <div class="muted">等待数据...</div>
+      </div>
+
+      <h2>动态候选池 <span class="muted" id="universe-summary">--</span></h2>
+      <div class="universe-info" id="universe-info">
+        <div class="muted">等待刷新...</div>
+      </div>
+
+      <h2>LLM 重排序 <span class="muted" id="llm-status">未运行</span>
+        <button id="btn-rerank-small" class="mini">手动触发</button>
+      </h2>
+      <div class="llm-box" id="llm-box">
+        <div class="llm-meta">
+          <span id="llm-macro">--</span>
+          <span id="llm-model">--</span>
+        </div>
+        <div class="llm-analysis" id="llm-analysis">（无）</div>
+        <div id="llm-rank-list"></div>
+      </div>
+    </section>
+
+    <!-- 左：行情 -->
+    <section class="panel">
+      <h2>行情 <span class="muted" id="tick-count">0 ticks</span></h2>
+      <div class="scroll">
+        <table id="tick-table">
+          <thead>
+            <tr><th>代码</th><th>名称</th><th>价</th><th>涨跌%</th><th>量</th><th>来源</th></tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- 中：信号 + 成交 -->
+    <section class="panel">
+      <h2>推荐池 <span class="muted" id="rec-pool-summary">--</span></h2>
+      <div class="scroll">
+        <table id="rec-table">
+          <thead>
+            <tr>
+              <th>排名</th><th>代码</th><th>名称</th><th>环节</th>
+              <th>综合</th><th>热度</th><th>技术</th><th>基本面</th>
+              <th>PE</th><th>ROE</th><th>LLM 调整</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <h2>实时信号</h2>
+      <div class="scroll">
+        <table id="signal-table">
+          <thead>
+            <tr><th>时间</th><th>代码</th><th>方向</th><th>评分</th><th>价</th><th>原因</th></tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <h2>最近成交</h2>
+      <div class="scroll">
+        <table id="fill-table">
+          <thead>
+            <tr><th>时间</th><th>代码</th><th>方向</th><th>数量</th><th>价</th><th>金额</th></tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- 右：持仓 + 风控 + 资产 -->
+    <section class="panel">
+      <h2>资产</h2>
+      <div class="kpis">
+        <div class="kpi"><label>总资产</label><span id="kpi-asset">--</span></div>
+        <div class="kpi"><label>现金</label><span id="kpi-cash">--</span></div>
+        <div class="kpi"><label>持仓数</label><span id="kpi-pos">0</span></div>
+      </div>
+      <h2>持仓</h2>
+      <div class="scroll">
+        <table id="pos-table">
+          <thead>
+            <tr><th>代码</th><th>数量</th><th>成本</th><th>现价</th><th>盈亏%</th></tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <h2>风控</h2>
+      <div id="risk-box" class="risk-box">
+        <div><label>状态:</label> <span id="risk-halted">--</span></div>
+        <div><label>日内盈亏:</label> <span id="risk-pnl">--</span></div>
+        <div><label>连续亏损:</label> <span id="risk-consec">--</span></div>
+        <div><label>仓位倍数:</label> <span id="risk-scale">--</span></div>
+        <div><label>日内成交:</label> <span id="risk-trades">--</span></div>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    window.UNIVERSE = {{ universe | tojson }};
+    window.STOCK_NAMES = {{ stock_names | tojson }};
+  </script>
+  <script src="{{ url_for('static', filename='js/dashboard.js') }}"></script>
+</body>
+</html>

@@ -1,0 +1,2700 @@
+{
+  "last_refresh": "2026-09-01T17:48:40.563819",
+  "industries": [
+    "通信设备",
+    "半导体",
+    "IT设备"
+  ],
+  "n_total": 373,
+  "active_pool_size": 30,
+  "by_industry": {
+    "通信设备": 125,
+    "半导体": 179,
+    "IT设备": 69
+  },
+  "active_pool": [
+    "601138.SH",
+    "688981.SH",
+    "300308.SZ",
+    "688256.SH",
+    "688041.SH",
+    "300502.SZ",
+    "002371.SZ",
+    "688347.SH",
+    "688012.SH",
+    "601869.SH",
+    "002415.SZ",
+    "603986.SH",
+    "300394.SZ",
+    "688008.SH",
+    "688072.SH",
+    "688498.SH",
+    "300604.SZ",
+    "600487.SH",
+    "000063.SZ",
+    "301308.SZ",
+    "688702.SH",
+    "002281.SZ",
+    "688082.SH",
+    "301165.SZ",
+    "600584.SH",
+    "603019.SH",
+    "688120.SH",
+    "000977.SZ",
+    "688146.SH",
+    "300857.SZ"
+  ],
+  "universe": {
+    "000063.SZ": {
+      "name": "中兴通讯",
+      "industry": "通信设备",
+      "list_date": "19971118",
+      "market": "主板"
+    },
+    "000066.SZ": {
+      "name": "中国长城",
+      "industry": "IT设备",
+      "list_date": "19970626",
+      "market": "主板"
+    },
+    "000070.SZ": {
+      "name": "特发信息",
+      "industry": "通信设备",
+      "list_date": "20000511",
+      "market": "主板"
+    },
+    "000547.SZ": {
+      "name": "航天发展",
+      "industry": "通信设备",
+      "list_date": "19931130",
+      "market": "主板"
+    },
+    "000561.SZ": {
+      "name": "烽火电子",
+      "industry": "通信设备",
+      "list_date": "19940509",
+      "market": "主板"
+    },
+    "000586.SZ": {
+      "name": "汇源通信",
+      "industry": "通信设备",
+      "list_date": "19951220",
+      "market": "主板"
+    },
+    "000815.SZ": {
+      "name": "美利云",
+      "industry": "通信设备",
+      "list_date": "19980609",
+      "market": "主板"
+    },
+    "000889.SZ": {
+      "name": "中嘉博创",
+      "industry": "通信设备",
+      "list_date": "19971218",
+      "market": "主板"
+    },
+    "000938.SZ": {
+      "name": "紫光股份",
+      "industry": "IT设备",
+      "list_date": "19991104",
+      "market": "主板"
+    },
+    "000977.SZ": {
+      "name": "浪潮信息",
+      "industry": "IT设备",
+      "list_date": "20000608",
+      "market": "主板"
+    },
+    "000997.SZ": {
+      "name": "新大陆",
+      "industry": "IT设备",
+      "list_date": "20000807",
+      "market": "主板"
+    },
+    "001229.SZ": {
+      "name": "魅视科技",
+      "industry": "IT设备",
+      "list_date": "20220808",
+      "market": "主板"
+    },
+    "001267.SZ": {
+      "name": "汇绿生态",
+      "industry": "通信设备",
+      "list_date": "20211117",
+      "market": "主板"
+    },
+    "001270.SZ": {
+      "name": "铖昌科技",
+      "industry": "半导体",
+      "list_date": "20220606",
+      "market": "主板"
+    },
+    "001309.SZ": {
+      "name": "德明利",
+      "industry": "半导体",
+      "list_date": "20220701",
+      "market": "主板"
+    },
+    "001339.SZ": {
+      "name": "智微智能",
+      "industry": "IT设备",
+      "list_date": "20220815",
+      "market": "主板"
+    },
+    "002017.SZ": {
+      "name": "东信和平",
+      "industry": "通信设备",
+      "list_date": "20040713",
+      "market": "主板"
+    },
+    "002049.SZ": {
+      "name": "紫光国微",
+      "industry": "半导体",
+      "list_date": "20050606",
+      "market": "主板"
+    },
+    "002077.SZ": {
+      "name": "大港股份",
+      "industry": "半导体",
+      "list_date": "20061116",
+      "market": "主板"
+    },
+    "002104.SZ": {
+      "name": "恒宝股份",
+      "industry": "通信设备",
+      "list_date": "20070110",
+      "market": "主板"
+    },
+    "002119.SZ": {
+      "name": "康强电子",
+      "industry": "半导体",
+      "list_date": "20070302",
+      "market": "主板"
+    },
+    "002151.SZ": {
+      "name": "北斗星通",
+      "industry": "通信设备",
+      "list_date": "20070813",
+      "market": "主板"
+    },
+    "002152.SZ": {
+      "name": "广电运通",
+      "industry": "IT设备",
+      "list_date": "20070813",
+      "market": "主板"
+    },
+    "002156.SZ": {
+      "name": "通富微电",
+      "industry": "半导体",
+      "list_date": "20070816",
+      "market": "主板"
+    },
+    "002161.SZ": {
+      "name": "远望谷",
+      "industry": "通信设备",
+      "list_date": "20070821",
+      "market": "主板"
+    },
+    "002180.SZ": {
+      "name": "奔图科技",
+      "industry": "IT设备",
+      "list_date": "20071113",
+      "market": "主板"
+    },
+    "002185.SZ": {
+      "name": "华天科技",
+      "industry": "半导体",
+      "list_date": "20071120",
+      "market": "主板"
+    },
+    "002194.SZ": {
+      "name": "武汉凡谷",
+      "industry": "通信设备",
+      "list_date": "20071207",
+      "market": "主板"
+    },
+    "002197.SZ": {
+      "name": "证通电子",
+      "industry": "IT设备",
+      "list_date": "20071218",
+      "market": "主板"
+    },
+    "002213.SZ": {
+      "name": "大为股份",
+      "industry": "半导体",
+      "list_date": "20080201",
+      "market": "主板"
+    },
+    "002236.SZ": {
+      "name": "大华股份",
+      "industry": "IT设备",
+      "list_date": "20080520",
+      "market": "主板"
+    },
+    "002268.SZ": {
+      "name": "电科网安",
+      "industry": "IT设备",
+      "list_date": "20080811",
+      "market": "主板"
+    },
+    "002281.SZ": {
+      "name": "光迅科技",
+      "industry": "通信设备",
+      "list_date": "20090821",
+      "market": "主板"
+    },
+    "002296.SZ": {
+      "name": "辉煌科技",
+      "industry": "通信设备",
+      "list_date": "20090929",
+      "market": "主板"
+    },
+    "002313.SZ": {
+      "name": "日海智能",
+      "industry": "通信设备",
+      "list_date": "20091203",
+      "market": "主板"
+    },
+    "002351.SZ": {
+      "name": "漫步者",
+      "industry": "IT设备",
+      "list_date": "20100205",
+      "market": "主板"
+    },
+    "002369.SZ": {
+      "name": "卓翼科技",
+      "industry": "通信设备",
+      "list_date": "20100316",
+      "market": "主板"
+    },
+    "002371.SZ": {
+      "name": "北方华创",
+      "industry": "半导体",
+      "list_date": "20100316",
+      "market": "主板"
+    },
+    "002376.SZ": {
+      "name": "新北洋",
+      "industry": "IT设备",
+      "list_date": "20100323",
+      "market": "主板"
+    },
+    "002383.SZ": {
+      "name": "合众思壮",
+      "industry": "通信设备",
+      "list_date": "20100402",
+      "market": "主板"
+    },
+    "002396.SZ": {
+      "name": "星网锐捷",
+      "industry": "通信设备",
+      "list_date": "20100623",
+      "market": "主板"
+    },
+    "002409.SZ": {
+      "name": "雅克科技",
+      "industry": "半导体",
+      "list_date": "20100525",
+      "market": "主板"
+    },
+    "002413.SZ": {
+      "name": "雷科防务",
+      "industry": "通信设备",
+      "list_date": "20100528",
+      "market": "主板"
+    },
+    "002415.SZ": {
+      "name": "海康威视",
+      "industry": "IT设备",
+      "list_date": "20100528",
+      "market": "主板"
+    },
+    "002446.SZ": {
+      "name": "盛路通信",
+      "industry": "通信设备",
+      "list_date": "20100713",
+      "market": "主板"
+    },
+    "002449.SZ": {
+      "name": "国星光电",
+      "industry": "半导体",
+      "list_date": "20100716",
+      "market": "主板"
+    },
+    "002465.SZ": {
+      "name": "海格通信",
+      "industry": "通信设备",
+      "list_date": "20100831",
+      "market": "主板"
+    },
+    "002491.SZ": {
+      "name": "通鼎互联",
+      "industry": "通信设备",
+      "list_date": "20101021",
+      "market": "主板"
+    },
+    "002519.SZ": {
+      "name": "银河电子",
+      "industry": "通信设备",
+      "list_date": "20101207",
+      "market": "主板"
+    },
+    "002544.SZ": {
+      "name": "普天科技",
+      "industry": "通信设备",
+      "list_date": "20110128",
+      "market": "主板"
+    },
+    "002577.SZ": {
+      "name": "雷柏科技",
+      "industry": "IT设备",
+      "list_date": "20110428",
+      "market": "主板"
+    },
+    "002583.SZ": {
+      "name": "海能达",
+      "industry": "通信设备",
+      "list_date": "20110527",
+      "market": "主板"
+    },
+    "002792.SZ": {
+      "name": "通宇通讯",
+      "industry": "通信设备",
+      "list_date": "20160328",
+      "market": "主板"
+    },
+    "002796.SZ": {
+      "name": "世嘉科技",
+      "industry": "通信设备",
+      "list_date": "20160510",
+      "market": "主板"
+    },
+    "002835.SZ": {
+      "name": "同为股份",
+      "industry": "IT设备",
+      "list_date": "20161228",
+      "market": "主板"
+    },
+    "002866.SZ": {
+      "name": "传艺科技",
+      "industry": "IT设备",
+      "list_date": "20170426",
+      "market": "主板"
+    },
+    "002869.SZ": {
+      "name": "金溢科技",
+      "industry": "通信设备",
+      "list_date": "20170515",
+      "market": "主板"
+    },
+    "002902.SZ": {
+      "name": "铭普光磁",
+      "industry": "通信设备",
+      "list_date": "20170929",
+      "market": "主板"
+    },
+    "002912.SZ": {
+      "name": "中新赛克",
+      "industry": "IT设备",
+      "list_date": "20171121",
+      "market": "主板"
+    },
+    "002929.SZ": {
+      "name": "润建股份",
+      "industry": "通信设备",
+      "list_date": "20180301",
+      "market": "主板"
+    },
+    "002955.SZ": {
+      "name": "鸿合科技",
+      "industry": "IT设备",
+      "list_date": "20190523",
+      "market": "主板"
+    },
+    "002970.SZ": {
+      "name": "锐明技术",
+      "industry": "IT设备",
+      "list_date": "20191217",
+      "market": "主板"
+    },
+    "003004.SZ": {
+      "name": "声迅股份",
+      "industry": "IT设备",
+      "list_date": "20201126",
+      "market": "主板"
+    },
+    "003026.SZ": {
+      "name": "中晶科技",
+      "industry": "半导体",
+      "list_date": "20201218",
+      "market": "主板"
+    },
+    "003040.SZ": {
+      "name": "楚天龙",
+      "industry": "通信设备",
+      "list_date": "20210322",
+      "market": "主板"
+    },
+    "003043.SZ": {
+      "name": "华亚智能",
+      "industry": "半导体",
+      "list_date": "20210406",
+      "market": "主板"
+    },
+    "300025.SZ": {
+      "name": "华星创业",
+      "industry": "通信设备",
+      "list_date": "20091030",
+      "market": "创业板"
+    },
+    "300042.SZ": {
+      "name": "朗科科技",
+      "industry": "IT设备",
+      "list_date": "20100108",
+      "market": "创业板"
+    },
+    "300045.SZ": {
+      "name": "华力创通",
+      "industry": "IT设备",
+      "list_date": "20100120",
+      "market": "创业板"
+    },
+    "300046.SZ": {
+      "name": "台基股份",
+      "industry": "半导体",
+      "list_date": "20100120",
+      "market": "创业板"
+    },
+    "300050.SZ": {
+      "name": "世纪鼎利",
+      "industry": "通信设备",
+      "list_date": "20100120",
+      "market": "创业板"
+    },
+    "300053.SZ": {
+      "name": "航宇微",
+      "industry": "半导体",
+      "list_date": "20100211",
+      "market": "创业板"
+    },
+    "300077.SZ": {
+      "name": "国民技术",
+      "industry": "半导体",
+      "list_date": "20100430",
+      "market": "创业板"
+    },
+    "300079.SZ": {
+      "name": "数码视讯",
+      "industry": "IT设备",
+      "list_date": "20100430",
+      "market": "创业板"
+    },
+    "300101.SZ": {
+      "name": "振芯科技",
+      "industry": "通信设备",
+      "list_date": "20100806",
+      "market": "创业板"
+    },
+    "300102.SZ": {
+      "name": "乾照光电",
+      "industry": "半导体",
+      "list_date": "20100812",
+      "market": "创业板"
+    },
+    "300130.SZ": {
+      "name": "新国都",
+      "industry": "IT设备",
+      "list_date": "20101019",
+      "market": "创业板"
+    },
+    "300134.SZ": {
+      "name": "大富科技",
+      "industry": "通信设备",
+      "list_date": "20101026",
+      "market": "创业板"
+    },
+    "300155.SZ": {
+      "name": "安居宝",
+      "industry": "IT设备",
+      "list_date": "20110107",
+      "market": "创业板"
+    },
+    "300177.SZ": {
+      "name": "中海达",
+      "industry": "通信设备",
+      "list_date": "20110215",
+      "market": "创业板"
+    },
+    "300183.SZ": {
+      "name": "东软载波",
+      "industry": "通信设备",
+      "list_date": "20110222",
+      "market": "创业板"
+    },
+    "300213.SZ": {
+      "name": "佳讯飞鸿",
+      "industry": "通信设备",
+      "list_date": "20110505",
+      "market": "创业板"
+    },
+    "300223.SZ": {
+      "name": "君正股份",
+      "industry": "半导体",
+      "list_date": "20110531",
+      "market": "创业板"
+    },
+    "300236.SZ": {
+      "name": "上海新阳",
+      "industry": "半导体",
+      "list_date": "20110629",
+      "market": "创业板"
+    },
+    "300241.SZ": {
+      "name": "瑞丰光电",
+      "industry": "半导体",
+      "list_date": "20110712",
+      "market": "创业板"
+    },
+    "300249.SZ": {
+      "name": "依米康",
+      "industry": "IT设备",
+      "list_date": "20110803",
+      "market": "创业板"
+    },
+    "300252.SZ": {
+      "name": "金信诺",
+      "industry": "通信设备",
+      "list_date": "20110818",
+      "market": "创业板"
+    },
+    "300270.SZ": {
+      "name": "中威电子",
+      "industry": "IT设备",
+      "list_date": "20111012",
+      "market": "创业板"
+    },
+    "300302.SZ": {
+      "name": "同有科技",
+      "industry": "IT设备",
+      "list_date": "20120321",
+      "market": "创业板"
+    },
+    "300303.SZ": {
+      "name": "聚飞光电",
+      "industry": "半导体",
+      "list_date": "20120319",
+      "market": "创业板"
+    },
+    "300308.SZ": {
+      "name": "中际旭创",
+      "industry": "通信设备",
+      "list_date": "20120410",
+      "market": "创业板"
+    },
+    "300310.SZ": {
+      "name": "宜通世纪",
+      "industry": "通信设备",
+      "list_date": "20120425",
+      "market": "创业板"
+    },
+    "300323.SZ": {
+      "name": "华灿光电",
+      "industry": "半导体",
+      "list_date": "20120601",
+      "market": "创业板"
+    },
+    "300327.SZ": {
+      "name": "中颖电子",
+      "industry": "半导体",
+      "list_date": "20120613",
+      "market": "创业板"
+    },
+    "300333.SZ": {
+      "name": "兆日科技",
+      "industry": "IT设备",
+      "list_date": "20120628",
+      "market": "创业板"
+    },
+    "300346.SZ": {
+      "name": "南大光电",
+      "industry": "半导体",
+      "list_date": "20120807",
+      "market": "创业板"
+    },
+    "300353.SZ": {
+      "name": "东土科技",
+      "industry": "通信设备",
+      "list_date": "20120927",
+      "market": "创业板"
+    },
+    "300368.SZ": {
+      "name": "汇金股份",
+      "industry": "IT设备",
+      "list_date": "20140123",
+      "market": "创业板"
+    },
+    "300373.SZ": {
+      "name": "扬杰科技",
+      "industry": "半导体",
+      "list_date": "20140123",
+      "market": "创业板"
+    },
+    "300386.SZ": {
+      "name": "飞天诚信",
+      "industry": "IT设备",
+      "list_date": "20140626",
+      "market": "创业板"
+    },
+    "300394.SZ": {
+      "name": "天孚通信",
+      "industry": "通信设备",
+      "list_date": "20150217",
+      "market": "创业板"
+    },
+    "300397.SZ": {
+      "name": "天和防务",
+      "industry": "通信设备",
+      "list_date": "20140910",
+      "market": "创业板"
+    },
+    "300414.SZ": {
+      "name": "中光防雷",
+      "industry": "通信设备",
+      "list_date": "20150513",
+      "market": "创业板"
+    },
+    "300449.SZ": {
+      "name": "汉邦高科",
+      "industry": "IT设备",
+      "list_date": "20150422",
+      "market": "创业板"
+    },
+    "300455.SZ": {
+      "name": "航天智装",
+      "industry": "IT设备",
+      "list_date": "20150515",
+      "market": "创业板"
+    },
+    "300456.SZ": {
+      "name": "赛微电子",
+      "industry": "半导体",
+      "list_date": "20150514",
+      "market": "创业板"
+    },
+    "300458.SZ": {
+      "name": "全志科技",
+      "industry": "半导体",
+      "list_date": "20150515",
+      "market": "创业板"
+    },
+    "300502.SZ": {
+      "name": "新易盛",
+      "industry": "通信设备",
+      "list_date": "20160303",
+      "market": "创业板"
+    },
+    "300504.SZ": {
+      "name": "天邑股份",
+      "industry": "通信设备",
+      "list_date": "20180330",
+      "market": "创业板"
+    },
+    "300531.SZ": {
+      "name": "优博讯",
+      "industry": "IT设备",
+      "list_date": "20160809",
+      "market": "创业板"
+    },
+    "300546.SZ": {
+      "name": "雄帝科技",
+      "industry": "IT设备",
+      "list_date": "20160928",
+      "market": "创业板"
+    },
+    "300548.SZ": {
+      "name": "长芯博创",
+      "industry": "通信设备",
+      "list_date": "20161012",
+      "market": "创业板"
+    },
+    "300552.SZ": {
+      "name": "万集科技",
+      "industry": "IT设备",
+      "list_date": "20161021",
+      "market": "创业板"
+    },
+    "300560.SZ": {
+      "name": "中富通",
+      "industry": "通信设备",
+      "list_date": "20161101",
+      "market": "创业板"
+    },
+    "300563.SZ": {
+      "name": "神宇股份",
+      "industry": "通信设备",
+      "list_date": "20161114",
+      "market": "创业板"
+    },
+    "300565.SZ": {
+      "name": "科信技术",
+      "industry": "通信设备",
+      "list_date": "20161122",
+      "market": "创业板"
+    },
+    "300570.SZ": {
+      "name": "太辰光",
+      "industry": "通信设备",
+      "list_date": "20161206",
+      "market": "创业板"
+    },
+    "300578.SZ": {
+      "name": "会畅科技",
+      "industry": "通信设备",
+      "list_date": "20170125",
+      "market": "创业板"
+    },
+    "300588.SZ": {
+      "name": "熙菱信息",
+      "industry": "IT设备",
+      "list_date": "20170105",
+      "market": "创业板"
+    },
+    "300590.SZ": {
+      "name": "移为通信",
+      "industry": "通信设备",
+      "list_date": "20170111",
+      "market": "创业板"
+    },
+    "300597.SZ": {
+      "name": "吉大通信",
+      "industry": "通信设备",
+      "list_date": "20170123",
+      "market": "创业板"
+    },
+    "300603.SZ": {
+      "name": "立昂技术",
+      "industry": "通信设备",
+      "list_date": "20170126",
+      "market": "创业板"
+    },
+    "300604.SZ": {
+      "name": "长川科技",
+      "industry": "半导体",
+      "list_date": "20170417",
+      "market": "创业板"
+    },
+    "300613.SZ": {
+      "name": "富瀚微",
+      "industry": "半导体",
+      "list_date": "20170220",
+      "market": "创业板"
+    },
+    "300615.SZ": {
+      "name": "欣天科技",
+      "industry": "通信设备",
+      "list_date": "20170215",
+      "market": "创业板"
+    },
+    "300620.SZ": {
+      "name": "光库科技",
+      "industry": "通信设备",
+      "list_date": "20170310",
+      "market": "创业板"
+    },
+    "300623.SZ": {
+      "name": "捷捷微电",
+      "industry": "半导体",
+      "list_date": "20170314",
+      "market": "创业板"
+    },
+    "300627.SZ": {
+      "name": "华测导航",
+      "industry": "通信设备",
+      "list_date": "20170321",
+      "market": "创业板"
+    },
+    "300628.SZ": {
+      "name": "亿联网络",
+      "industry": "通信设备",
+      "list_date": "20170317",
+      "market": "创业板"
+    },
+    "300632.SZ": {
+      "name": "光莆股份",
+      "industry": "半导体",
+      "list_date": "20170406",
+      "market": "创业板"
+    },
+    "300638.SZ": {
+      "name": "广和通",
+      "industry": "通信设备",
+      "list_date": "20170413",
+      "market": "创业板"
+    },
+    "300655.SZ": {
+      "name": "晶瑞电材",
+      "industry": "半导体",
+      "list_date": "20170523",
+      "market": "创业板"
+    },
+    "300656.SZ": {
+      "name": "民德电子",
+      "industry": "IT设备",
+      "list_date": "20170519",
+      "market": "创业板"
+    },
+    "300659.SZ": {
+      "name": "中孚信息",
+      "industry": "IT设备",
+      "list_date": "20170526",
+      "market": "创业板"
+    },
+    "300661.SZ": {
+      "name": "圣邦股份",
+      "industry": "半导体",
+      "list_date": "20170606",
+      "market": "创业板"
+    },
+    "300666.SZ": {
+      "name": "江丰电子",
+      "industry": "半导体",
+      "list_date": "20170615",
+      "market": "创业板"
+    },
+    "300671.SZ": {
+      "name": "富满微",
+      "industry": "半导体",
+      "list_date": "20170705",
+      "market": "创业板"
+    },
+    "300672.SZ": {
+      "name": "国科微",
+      "industry": "半导体",
+      "list_date": "20170712",
+      "market": "创业板"
+    },
+    "300689.SZ": {
+      "name": "澄天伟业",
+      "industry": "通信设备",
+      "list_date": "20170809",
+      "market": "创业板"
+    },
+    "300698.SZ": {
+      "name": "万马科技",
+      "industry": "通信设备",
+      "list_date": "20170831",
+      "market": "创业板"
+    },
+    "300708.SZ": {
+      "name": "聚灿光电",
+      "industry": "半导体",
+      "list_date": "20171016",
+      "market": "创业板"
+    },
+    "300710.SZ": {
+      "name": "万隆光电",
+      "industry": "通信设备",
+      "list_date": "20171019",
+      "market": "创业板"
+    },
+    "300711.SZ": {
+      "name": "广哈通信",
+      "industry": "通信设备",
+      "list_date": "20171101",
+      "market": "创业板"
+    },
+    "300736.SZ": {
+      "name": "百邦科技",
+      "industry": "通信设备",
+      "list_date": "20180109",
+      "market": "创业板"
+    },
+    "300743.SZ": {
+      "name": "天地数码",
+      "industry": "IT设备",
+      "list_date": "20180427",
+      "market": "创业板"
+    },
+    "300762.SZ": {
+      "name": "上海瀚讯",
+      "industry": "通信设备",
+      "list_date": "20190314",
+      "market": "创业板"
+    },
+    "300771.SZ": {
+      "name": "智莱科技",
+      "industry": "IT设备",
+      "list_date": "20190422",
+      "market": "创业板"
+    },
+    "300782.SZ": {
+      "name": "卓胜微",
+      "industry": "半导体",
+      "list_date": "20190618",
+      "market": "创业板"
+    },
+    "300793.SZ": {
+      "name": "佳禾智能",
+      "industry": "IT设备",
+      "list_date": "20191018",
+      "market": "创业板"
+    },
+    "300857.SZ": {
+      "name": "协创数据",
+      "industry": "IT设备",
+      "list_date": "20200727",
+      "market": "创业板"
+    },
+    "300884.SZ": {
+      "name": "狄耐克",
+      "industry": "IT设备",
+      "list_date": "20201112",
+      "market": "创业板"
+    },
+    "300913.SZ": {
+      "name": "兆龙互连",
+      "industry": "通信设备",
+      "list_date": "20201207",
+      "market": "创业板"
+    },
+    "300941.SZ": {
+      "name": "创识科技",
+      "industry": "IT设备",
+      "list_date": "20210209",
+      "market": "创业板"
+    },
+    "301042.SZ": {
+      "name": "安联锐视",
+      "industry": "IT设备",
+      "list_date": "20210805",
+      "market": "创业板"
+    },
+    "301095.SZ": {
+      "name": "广立微",
+      "industry": "半导体",
+      "list_date": "20220805",
+      "market": "创业板"
+    },
+    "301165.SZ": {
+      "name": "锐捷网络",
+      "industry": "通信设备",
+      "list_date": "20221121",
+      "market": "创业板"
+    },
+    "301189.SZ": {
+      "name": "奥尼电子",
+      "industry": "IT设备",
+      "list_date": "20211228",
+      "market": "创业板"
+    },
+    "301191.SZ": {
+      "name": "菲菱科思",
+      "industry": "通信设备",
+      "list_date": "20220526",
+      "market": "创业板"
+    },
+    "301205.SZ": {
+      "name": "联特科技",
+      "industry": "通信设备",
+      "list_date": "20220913",
+      "market": "创业板"
+    },
+    "301269.SZ": {
+      "name": "华大九天",
+      "industry": "半导体",
+      "list_date": "20220729",
+      "market": "创业板"
+    },
+    "301297.SZ": {
+      "name": "富乐德",
+      "industry": "半导体",
+      "list_date": "20221230",
+      "market": "创业板"
+    },
+    "301307.SZ": {
+      "name": "美利信",
+      "industry": "通信设备",
+      "list_date": "20230424",
+      "market": "创业板"
+    },
+    "301308.SZ": {
+      "name": "江波龙",
+      "industry": "半导体",
+      "list_date": "20220805",
+      "market": "创业板"
+    },
+    "301318.SZ": {
+      "name": "维海德",
+      "industry": "IT设备",
+      "list_date": "20220810",
+      "market": "创业板"
+    },
+    "301330.SZ": {
+      "name": "熵基科技",
+      "industry": "IT设备",
+      "list_date": "20220817",
+      "market": "创业板"
+    },
+    "301339.SZ": {
+      "name": "通行宝",
+      "industry": "IT设备",
+      "list_date": "20220909",
+      "market": "创业板"
+    },
+    "301348.SZ": {
+      "name": "蓝箭电子",
+      "industry": "半导体",
+      "list_date": "20230810",
+      "market": "创业板"
+    },
+    "301369.SZ": {
+      "name": "联动科技",
+      "industry": "半导体",
+      "list_date": "20220922",
+      "market": "创业板"
+    },
+    "301391.SZ": {
+      "name": "卡莱特",
+      "industry": "IT设备",
+      "list_date": "20221201",
+      "market": "创业板"
+    },
+    "301419.SZ": {
+      "name": "阿莱德",
+      "industry": "通信设备",
+      "list_date": "20230209",
+      "market": "创业板"
+    },
+    "301491.SZ": {
+      "name": "汉桑科技",
+      "industry": "IT设备",
+      "list_date": "20250806",
+      "market": "创业板"
+    },
+    "301503.SZ": {
+      "name": "智迪科技",
+      "industry": "IT设备",
+      "list_date": "20230717",
+      "market": "创业板"
+    },
+    "301536.SZ": {
+      "name": "星宸科技",
+      "industry": "半导体",
+      "list_date": "20240328",
+      "market": "创业板"
+    },
+    "301578.SZ": {
+      "name": "辰奕智能",
+      "industry": "IT设备",
+      "list_date": "20231228",
+      "market": "创业板"
+    },
+    "301581.SZ": {
+      "name": "黄山谷捷",
+      "industry": "半导体",
+      "list_date": "20250103",
+      "market": "创业板"
+    },
+    "301589.SZ": {
+      "name": "诺瓦星云",
+      "industry": "IT设备",
+      "list_date": "20240208",
+      "market": "创业板"
+    },
+    "301600.SZ": {
+      "name": "慧翰股份",
+      "industry": "通信设备",
+      "list_date": "20240911",
+      "market": "创业板"
+    },
+    "301608.SZ": {
+      "name": "博实结",
+      "industry": "通信设备",
+      "list_date": "20240801",
+      "market": "创业板"
+    },
+    "301611.SZ": {
+      "name": "珂玛科技",
+      "industry": "半导体",
+      "list_date": "20240816",
+      "market": "创业板"
+    },
+    "301629.SZ": {
+      "name": "矽电股份",
+      "industry": "半导体",
+      "list_date": "20250324",
+      "market": "创业板"
+    },
+    "301678.SZ": {
+      "name": "新恒汇",
+      "industry": "半导体",
+      "list_date": "20250620",
+      "market": "创业板"
+    },
+    "600100.SH": {
+      "name": "同方股份",
+      "industry": "IT设备",
+      "list_date": "19970627",
+      "market": "主板"
+    },
+    "600105.SH": {
+      "name": "永鼎股份",
+      "industry": "通信设备",
+      "list_date": "19970929",
+      "market": "主板"
+    },
+    "600131.SH": {
+      "name": "国网信通",
+      "industry": "通信设备",
+      "list_date": "19980402",
+      "market": "主板"
+    },
+    "600171.SH": {
+      "name": "上海贝岭",
+      "industry": "半导体",
+      "list_date": "19980924",
+      "market": "主板"
+    },
+    "600198.SH": {
+      "name": "大唐电信",
+      "industry": "通信设备",
+      "list_date": "19981021",
+      "market": "主板"
+    },
+    "600206.SH": {
+      "name": "有研新材",
+      "industry": "半导体",
+      "list_date": "19990319",
+      "market": "主板"
+    },
+    "600345.SH": {
+      "name": "长江通信",
+      "industry": "通信设备",
+      "list_date": "20001222",
+      "market": "主板"
+    },
+    "600360.SH": {
+      "name": "华微电子",
+      "industry": "半导体",
+      "list_date": "20010316",
+      "market": "主板"
+    },
+    "600460.SH": {
+      "name": "士兰微",
+      "industry": "半导体",
+      "list_date": "20030311",
+      "market": "主板"
+    },
+    "600487.SH": {
+      "name": "亨通光电",
+      "industry": "通信设备",
+      "list_date": "20030822",
+      "market": "主板"
+    },
+    "600498.SH": {
+      "name": "烽火通信",
+      "industry": "通信设备",
+      "list_date": "20010823",
+      "market": "主板"
+    },
+    "600520.SH": {
+      "name": "三佳科技",
+      "industry": "半导体",
+      "list_date": "20020108",
+      "market": "主板"
+    },
+    "600522.SH": {
+      "name": "中天科技",
+      "industry": "通信设备",
+      "list_date": "20021024",
+      "market": "主板"
+    },
+    "600562.SH": {
+      "name": "国睿科技",
+      "industry": "通信设备",
+      "list_date": "20030128",
+      "market": "主板"
+    },
+    "600584.SH": {
+      "name": "长电科技",
+      "industry": "半导体",
+      "list_date": "20030603",
+      "market": "主板"
+    },
+    "600590.SH": {
+      "name": "泰豪科技",
+      "industry": "通信设备",
+      "list_date": "20020703",
+      "market": "主板"
+    },
+    "600641.SH": {
+      "name": "先导基电",
+      "industry": "半导体",
+      "list_date": "19930407",
+      "market": "主板"
+    },
+    "600667.SH": {
+      "name": "太极实业",
+      "industry": "半导体",
+      "list_date": "19930728",
+      "market": "主板"
+    },
+    "600703.SH": {
+      "name": "三安光电",
+      "industry": "半导体",
+      "list_date": "19960528",
+      "market": "主板"
+    },
+    "600775.SH": {
+      "name": "南京熊猫",
+      "industry": "通信设备",
+      "list_date": "19961118",
+      "market": "主板"
+    },
+    "600776.SH": {
+      "name": "东方通信",
+      "industry": "通信设备",
+      "list_date": "19961126",
+      "market": "主板"
+    },
+    "600877.SH": {
+      "name": "电科芯片",
+      "industry": "半导体",
+      "list_date": "19951013",
+      "market": "主板"
+    },
+    "600990.SH": {
+      "name": "四创电子",
+      "industry": "通信设备",
+      "list_date": "20040510",
+      "market": "主板"
+    },
+    "601138.SH": {
+      "name": "工业富联",
+      "industry": "通信设备",
+      "list_date": "20180608",
+      "market": "主板"
+    },
+    "601869.SH": {
+      "name": "长飞光纤",
+      "industry": "通信设备",
+      "list_date": "20180720",
+      "market": "主板"
+    },
+    "603005.SH": {
+      "name": "晶方科技",
+      "industry": "半导体",
+      "list_date": "20140210",
+      "market": "主板"
+    },
+    "603019.SH": {
+      "name": "中科曙光",
+      "industry": "IT设备",
+      "list_date": "20141106",
+      "market": "主板"
+    },
+    "603042.SH": {
+      "name": "华脉科技",
+      "industry": "通信设备",
+      "list_date": "20170602",
+      "market": "主板"
+    },
+    "603061.SH": {
+      "name": "金海通",
+      "industry": "半导体",
+      "list_date": "20230303",
+      "market": "主板"
+    },
+    "603068.SH": {
+      "name": "博通集成",
+      "industry": "半导体",
+      "list_date": "20190415",
+      "market": "主板"
+    },
+    "603078.SH": {
+      "name": "江化微",
+      "industry": "半导体",
+      "list_date": "20170410",
+      "market": "主板"
+    },
+    "603083.SH": {
+      "name": "剑桥科技",
+      "industry": "通信设备",
+      "list_date": "20171110",
+      "market": "主板"
+    },
+    "603106.SH": {
+      "name": "恒银科技",
+      "industry": "IT设备",
+      "list_date": "20170920",
+      "market": "主板"
+    },
+    "603118.SH": {
+      "name": "共进股份",
+      "industry": "通信设备",
+      "list_date": "20150225",
+      "market": "主板"
+    },
+    "603160.SH": {
+      "name": "汇顶科技",
+      "industry": "半导体",
+      "list_date": "20161017",
+      "market": "主板"
+    },
+    "603206.SH": {
+      "name": "嘉环科技",
+      "industry": "通信设备",
+      "list_date": "20220506",
+      "market": "主板"
+    },
+    "603220.SH": {
+      "name": "中贝通信",
+      "industry": "通信设备",
+      "list_date": "20181115",
+      "market": "主板"
+    },
+    "603236.SH": {
+      "name": "移远通信",
+      "industry": "通信设备",
+      "list_date": "20190716",
+      "market": "主板"
+    },
+    "603290.SH": {
+      "name": "斯达半导",
+      "industry": "半导体",
+      "list_date": "20200204",
+      "market": "主板"
+    },
+    "603322.SH": {
+      "name": "超讯科技",
+      "industry": "通信设备",
+      "list_date": "20160728",
+      "market": "主板"
+    },
+    "603341.SH": {
+      "name": "龙旗科技",
+      "industry": "通信设备",
+      "list_date": "20240301",
+      "market": "主板"
+    },
+    "603375.SH": {
+      "name": "盛景微",
+      "industry": "半导体",
+      "list_date": "20240124",
+      "market": "主板"
+    },
+    "603421.SH": {
+      "name": "鼎信通讯",
+      "industry": "通信设备",
+      "list_date": "20161011",
+      "market": "主板"
+    },
+    "603496.SH": {
+      "name": "恒为科技",
+      "industry": "IT设备",
+      "list_date": "20170607",
+      "market": "主板"
+    },
+    "603501.SH": {
+      "name": "豪威集团",
+      "industry": "半导体",
+      "list_date": "20170504",
+      "market": "主板"
+    },
+    "603508.SH": {
+      "name": "思维列控",
+      "industry": "IT设备",
+      "list_date": "20151224",
+      "market": "主板"
+    },
+    "603516.SH": {
+      "name": "淳中科技",
+      "industry": "IT设备",
+      "list_date": "20180202",
+      "market": "主板"
+    },
+    "603559.SH": {
+      "name": "中通国脉",
+      "industry": "通信设备",
+      "list_date": "20161202",
+      "market": "主板"
+    },
+    "603602.SH": {
+      "name": "纵横通信",
+      "industry": "通信设备",
+      "list_date": "20170810",
+      "market": "主板"
+    },
+    "603660.SH": {
+      "name": "苏州科达",
+      "industry": "IT设备",
+      "list_date": "20161201",
+      "market": "主板"
+    },
+    "603690.SH": {
+      "name": "至纯科技",
+      "industry": "半导体",
+      "list_date": "20170113",
+      "market": "主板"
+    },
+    "603712.SH": {
+      "name": "七一二",
+      "industry": "通信设备",
+      "list_date": "20180226",
+      "market": "主板"
+    },
+    "603803.SH": {
+      "name": "瑞斯康达",
+      "industry": "通信设备",
+      "list_date": "20170420",
+      "market": "主板"
+    },
+    "603893.SH": {
+      "name": "瑞芯微",
+      "industry": "半导体",
+      "list_date": "20200207",
+      "market": "主板"
+    },
+    "603986.SH": {
+      "name": "兆易创新",
+      "industry": "半导体",
+      "list_date": "20160818",
+      "market": "主板"
+    },
+    "603991.SH": {
+      "name": "领先股份",
+      "industry": "半导体",
+      "list_date": "20170308",
+      "market": "主板"
+    },
+    "605111.SH": {
+      "name": "新洁能",
+      "industry": "半导体",
+      "list_date": "20200928",
+      "market": "主板"
+    },
+    "605358.SH": {
+      "name": "立昂微",
+      "industry": "半导体",
+      "list_date": "20200911",
+      "market": "主板"
+    },
+    "688002.SH": {
+      "name": "睿创微纳",
+      "industry": "通信设备",
+      "list_date": "20190722",
+      "market": "科创板"
+    },
+    "688008.SH": {
+      "name": "澜起科技",
+      "industry": "半导体",
+      "list_date": "20190722",
+      "market": "科创板"
+    },
+    "688012.SH": {
+      "name": "中微公司",
+      "industry": "半导体",
+      "list_date": "20190722",
+      "market": "科创板"
+    },
+    "688018.SH": {
+      "name": "乐鑫科技",
+      "industry": "半导体",
+      "list_date": "20190722",
+      "market": "科创板"
+    },
+    "688019.SH": {
+      "name": "安集科技",
+      "industry": "半导体",
+      "list_date": "20190722",
+      "market": "科创板"
+    },
+    "688027.SH": {
+      "name": "国盾量子",
+      "industry": "通信设备",
+      "list_date": "20200709",
+      "market": "科创板"
+    },
+    "688035.SH": {
+      "name": "德邦科技",
+      "industry": "半导体",
+      "list_date": "20220919",
+      "market": "科创板"
+    },
+    "688036.SH": {
+      "name": "传音控股",
+      "industry": "通信设备",
+      "list_date": "20190930",
+      "market": "科创板"
+    },
+    "688037.SH": {
+      "name": "芯源微",
+      "industry": "半导体",
+      "list_date": "20191216",
+      "market": "科创板"
+    },
+    "688041.SH": {
+      "name": "海光信息",
+      "industry": "半导体",
+      "list_date": "20220812",
+      "market": "科创板"
+    },
+    "688045.SH": {
+      "name": "必易微",
+      "industry": "半导体",
+      "list_date": "20220526",
+      "market": "科创板"
+    },
+    "688047.SH": {
+      "name": "龙芯中科",
+      "industry": "半导体",
+      "list_date": "20220624",
+      "market": "科创板"
+    },
+    "688048.SH": {
+      "name": "长光华芯",
+      "industry": "半导体",
+      "list_date": "20220401",
+      "market": "科创板"
+    },
+    "688049.SH": {
+      "name": "炬芯科技",
+      "industry": "半导体",
+      "list_date": "20211129",
+      "market": "科创板"
+    },
+    "688052.SH": {
+      "name": "纳芯微",
+      "industry": "半导体",
+      "list_date": "20220422",
+      "market": "科创板"
+    },
+    "688060.SH": {
+      "name": "云涌科技",
+      "industry": "IT设备",
+      "list_date": "20200710",
+      "market": "科创板"
+    },
+    "688061.SH": {
+      "name": "灿瑞科技",
+      "industry": "半导体",
+      "list_date": "20221018",
+      "market": "科创板"
+    },
+    "688072.SH": {
+      "name": "拓荆科技",
+      "industry": "半导体",
+      "list_date": "20220420",
+      "market": "科创板"
+    },
+    "688080.SH": {
+      "name": "映翰通",
+      "industry": "通信设备",
+      "list_date": "20200212",
+      "market": "科创板"
+    },
+    "688082.SH": {
+      "name": "盛美上海",
+      "industry": "半导体",
+      "list_date": "20211118",
+      "market": "科创板"
+    },
+    "688099.SH": {
+      "name": "晶晨股份",
+      "industry": "半导体",
+      "list_date": "20190808",
+      "market": "科创板"
+    },
+    "688100.SH": {
+      "name": "威胜信息",
+      "industry": "通信设备",
+      "list_date": "20200121",
+      "market": "科创板"
+    },
+    "688107.SH": {
+      "name": "安路科技",
+      "industry": "半导体",
+      "list_date": "20211112",
+      "market": "科创板"
+    },
+    "688110.SH": {
+      "name": "东芯股份",
+      "industry": "半导体",
+      "list_date": "20211210",
+      "market": "科创板"
+    },
+    "688120.SH": {
+      "name": "华海清科",
+      "industry": "半导体",
+      "list_date": "20220608",
+      "market": "科创板"
+    },
+    "688123.SH": {
+      "name": "聚辰股份",
+      "industry": "半导体",
+      "list_date": "20191223",
+      "market": "科创板"
+    },
+    "688126.SH": {
+      "name": "沪硅产业",
+      "industry": "半导体",
+      "list_date": "20200420",
+      "market": "科创板"
+    },
+    "688130.SH": {
+      "name": "晶华微",
+      "industry": "半导体",
+      "list_date": "20220729",
+      "market": "科创板"
+    },
+    "688132.SH": {
+      "name": "邦彦技术",
+      "industry": "通信设备",
+      "list_date": "20220923",
+      "market": "科创板"
+    },
+    "688135.SH": {
+      "name": "利扬芯片",
+      "industry": "半导体",
+      "list_date": "20201111",
+      "market": "科创板"
+    },
+    "688138.SH": {
+      "name": "清溢光电",
+      "industry": "半导体",
+      "list_date": "20191120",
+      "market": "科创板"
+    },
+    "688141.SH": {
+      "name": "杰华特",
+      "industry": "半导体",
+      "list_date": "20221223",
+      "market": "科创板"
+    },
+    "688143.SH": {
+      "name": "长盈通",
+      "industry": "通信设备",
+      "list_date": "20221212",
+      "market": "科创板"
+    },
+    "688146.SH": {
+      "name": "中船特气",
+      "industry": "半导体",
+      "list_date": "20230421",
+      "market": "科创板"
+    },
+    "688153.SH": {
+      "name": "唯捷创芯",
+      "industry": "半导体",
+      "list_date": "20220412",
+      "market": "科创板"
+    },
+    "688159.SH": {
+      "name": "有方科技",
+      "industry": "通信设备",
+      "list_date": "20200123",
+      "market": "科创板"
+    },
+    "688172.SH": {
+      "name": "燕东微",
+      "industry": "半导体",
+      "list_date": "20221216",
+      "market": "科创板"
+    },
+    "688173.SH": {
+      "name": "希荻微",
+      "industry": "半导体",
+      "list_date": "20220121",
+      "market": "科创板"
+    },
+    "688175.SH": {
+      "name": "高凌信息",
+      "industry": "通信设备",
+      "list_date": "20220315",
+      "market": "科创板"
+    },
+    "688182.SH": {
+      "name": "灿勤科技",
+      "industry": "通信设备",
+      "list_date": "20211116",
+      "market": "科创板"
+    },
+    "688200.SH": {
+      "name": "华峰测控",
+      "industry": "半导体",
+      "list_date": "20200218",
+      "market": "科创板"
+    },
+    "688205.SH": {
+      "name": "德科立",
+      "industry": "通信设备",
+      "list_date": "20220809",
+      "market": "科创板"
+    },
+    "688206.SH": {
+      "name": "概伦电子",
+      "industry": "半导体",
+      "list_date": "20211228",
+      "market": "科创板"
+    },
+    "688208.SH": {
+      "name": "道通科技",
+      "industry": "IT设备",
+      "list_date": "20200213",
+      "market": "科创板"
+    },
+    "688209.SH": {
+      "name": "英集芯",
+      "industry": "半导体",
+      "list_date": "20220419",
+      "market": "科创板"
+    },
+    "688213.SH": {
+      "name": "思特威",
+      "industry": "半导体",
+      "list_date": "20220520",
+      "market": "科创板"
+    },
+    "688216.SH": {
+      "name": "气派科技",
+      "industry": "半导体",
+      "list_date": "20210623",
+      "market": "科创板"
+    },
+    "688220.SH": {
+      "name": "翱捷科技",
+      "industry": "半导体",
+      "list_date": "20220114",
+      "market": "科创板"
+    },
+    "688230.SH": {
+      "name": "芯导科技",
+      "industry": "半导体",
+      "list_date": "20211201",
+      "market": "科创板"
+    },
+    "688233.SH": {
+      "name": "神工股份",
+      "industry": "半导体",
+      "list_date": "20200221",
+      "market": "科创板"
+    },
+    "688234.SH": {
+      "name": "天岳先进",
+      "industry": "半导体",
+      "list_date": "20220112",
+      "market": "科创板"
+    },
+    "688249.SH": {
+      "name": "晶合集成",
+      "industry": "半导体",
+      "list_date": "20230505",
+      "market": "科创板"
+    },
+    "688252.SH": {
+      "name": "天德钰",
+      "industry": "半导体",
+      "list_date": "20220927",
+      "market": "科创板"
+    },
+    "688256.SH": {
+      "name": "寒武纪",
+      "industry": "半导体",
+      "list_date": "20200720",
+      "market": "科创板"
+    },
+    "688259.SH": {
+      "name": "创耀科技",
+      "industry": "半导体",
+      "list_date": "20220112",
+      "market": "科创板"
+    },
+    "688261.SH": {
+      "name": "东微半导",
+      "industry": "半导体",
+      "list_date": "20220210",
+      "market": "科创板"
+    },
+    "688262.SH": {
+      "name": "国芯科技",
+      "industry": "半导体",
+      "list_date": "20220106",
+      "market": "科创板"
+    },
+    "688279.SH": {
+      "name": "峰岹科技",
+      "industry": "半导体",
+      "list_date": "20220420",
+      "market": "科创板"
+    },
+    "688282.SH": {
+      "name": "理工导航",
+      "industry": "通信设备",
+      "list_date": "20220318",
+      "market": "科创板"
+    },
+    "688286.SH": {
+      "name": "敏芯股份",
+      "industry": "半导体",
+      "list_date": "20200810",
+      "market": "科创板"
+    },
+    "688288.SH": {
+      "name": "鸿泉技术",
+      "industry": "IT设备",
+      "list_date": "20191106",
+      "market": "科创板"
+    },
+    "688292.SH": {
+      "name": "浩瀚深度",
+      "industry": "通信设备",
+      "list_date": "20220818",
+      "market": "科创板"
+    },
+    "688313.SH": {
+      "name": "仕佳光子",
+      "industry": "通信设备",
+      "list_date": "20200812",
+      "market": "科创板"
+    },
+    "688325.SH": {
+      "name": "赛微微电",
+      "industry": "半导体",
+      "list_date": "20220422",
+      "market": "科创板"
+    },
+    "688332.SH": {
+      "name": "中科蓝讯",
+      "industry": "半导体",
+      "list_date": "20220715",
+      "market": "科创板"
+    },
+    "688347.SH": {
+      "name": "华虹宏力",
+      "industry": "半导体",
+      "list_date": "20230807",
+      "market": "科创板"
+    },
+    "688352.SH": {
+      "name": "颀中科技",
+      "industry": "半导体",
+      "list_date": "20230420",
+      "market": "科创板"
+    },
+    "688361.SH": {
+      "name": "中科飞测",
+      "industry": "半导体",
+      "list_date": "20230519",
+      "market": "科创板"
+    },
+    "688362.SH": {
+      "name": "甬矽电子",
+      "industry": "半导体",
+      "list_date": "20221116",
+      "market": "科创板"
+    },
+    "688368.SH": {
+      "name": "晶丰明源",
+      "industry": "半导体",
+      "list_date": "20191014",
+      "market": "科创板"
+    },
+    "688372.SH": {
+      "name": "伟测科技",
+      "industry": "半导体",
+      "list_date": "20221026",
+      "market": "科创板"
+    },
+    "688380.SH": {
+      "name": "中微半导",
+      "industry": "半导体",
+      "list_date": "20220805",
+      "market": "科创板"
+    },
+    "688381.SH": {
+      "name": "帝奥微",
+      "industry": "半导体",
+      "list_date": "20220823",
+      "market": "科创板"
+    },
+    "688385.SH": {
+      "name": "复旦微电",
+      "industry": "半导体",
+      "list_date": "20210804",
+      "market": "科创板"
+    },
+    "688387.SH": {
+      "name": "信科移动",
+      "industry": "通信设备",
+      "list_date": "20220926",
+      "market": "科创板"
+    },
+    "688391.SH": {
+      "name": "钜泉科技",
+      "industry": "半导体",
+      "list_date": "20220913",
+      "market": "科创板"
+    },
+    "688396.SH": {
+      "name": "华润微",
+      "industry": "半导体",
+      "list_date": "20200227",
+      "market": "科创板"
+    },
+    "688401.SH": {
+      "name": "路维光电",
+      "industry": "半导体",
+      "list_date": "20220817",
+      "market": "科创板"
+    },
+    "688403.SH": {
+      "name": "汇成股份",
+      "industry": "半导体",
+      "list_date": "20220818",
+      "market": "科创板"
+    },
+    "688409.SH": {
+      "name": "富创精密",
+      "industry": "半导体",
+      "list_date": "20221010",
+      "market": "科创板"
+    },
+    "688416.SH": {
+      "name": "恒烁股份",
+      "industry": "半导体",
+      "list_date": "20220829",
+      "market": "科创板"
+    },
+    "688418.SH": {
+      "name": "震有科技",
+      "industry": "通信设备",
+      "list_date": "20200722",
+      "market": "科创板"
+    },
+    "688419.SH": {
+      "name": "耐科装备",
+      "industry": "半导体",
+      "list_date": "20221107",
+      "market": "科创板"
+    },
+    "688432.SH": {
+      "name": "有研硅",
+      "industry": "半导体",
+      "list_date": "20221110",
+      "market": "科创板"
+    },
+    "688449.SH": {
+      "name": "联芸科技",
+      "industry": "半导体",
+      "list_date": "20241129",
+      "market": "科创板"
+    },
+    "688458.SH": {
+      "name": "美芯晟",
+      "industry": "半导体",
+      "list_date": "20230522",
+      "market": "科创板"
+    },
+    "688469.SH": {
+      "name": "芯联集成",
+      "industry": "半导体",
+      "list_date": "20230510",
+      "market": "科创板"
+    },
+    "688475.SH": {
+      "name": "萤石网络",
+      "industry": "IT设备",
+      "list_date": "20221228",
+      "market": "科创板"
+    },
+    "688478.SH": {
+      "name": "晶升股份",
+      "industry": "半导体",
+      "list_date": "20230424",
+      "market": "科创板"
+    },
+    "688484.SH": {
+      "name": "南芯科技",
+      "industry": "半导体",
+      "list_date": "20230407",
+      "market": "科创板"
+    },
+    "688486.SH": {
+      "name": "龙迅股份",
+      "industry": "半导体",
+      "list_date": "20230221",
+      "market": "科创板"
+    },
+    "688489.SH": {
+      "name": "三未信安",
+      "industry": "IT设备",
+      "list_date": "20221202",
+      "market": "科创板"
+    },
+    "688498.SH": {
+      "name": "源杰科技",
+      "industry": "半导体",
+      "list_date": "20221221",
+      "market": "科创板"
+    },
+    "688508.SH": {
+      "name": "芯朋微",
+      "industry": "半导体",
+      "list_date": "20200722",
+      "market": "科创板"
+    },
+    "688512.SH": {
+      "name": "慧智微",
+      "industry": "半导体",
+      "list_date": "20230516",
+      "market": "科创板"
+    },
+    "688515.SH": {
+      "name": "裕太微",
+      "industry": "半导体",
+      "list_date": "20230210",
+      "market": "科创板"
+    },
+    "688521.SH": {
+      "name": "芯原股份",
+      "industry": "半导体",
+      "list_date": "20200818",
+      "market": "科创板"
+    },
+    "688522.SH": {
+      "name": "纳睿雷达",
+      "industry": "通信设备",
+      "list_date": "20230301",
+      "market": "科创板"
+    },
+    "688525.SH": {
+      "name": "佰维存储",
+      "industry": "半导体",
+      "list_date": "20221230",
+      "market": "科创板"
+    },
+    "688530.SH": {
+      "name": "欧莱新材",
+      "industry": "半导体",
+      "list_date": "20240509",
+      "market": "科创板"
+    },
+    "688535.SH": {
+      "name": "华海诚科",
+      "industry": "半导体",
+      "list_date": "20230404",
+      "market": "科创板"
+    },
+    "688536.SH": {
+      "name": "思瑞浦",
+      "industry": "半导体",
+      "list_date": "20200921",
+      "market": "科创板"
+    },
+    "688538.SH": {
+      "name": "和辉光电",
+      "industry": "半导体",
+      "list_date": "20210528",
+      "market": "科创板"
+    },
+    "688552.SH": {
+      "name": "航天南湖",
+      "industry": "通信设备",
+      "list_date": "20230518",
+      "market": "科创板"
+    },
+    "688584.SH": {
+      "name": "上海合晶",
+      "industry": "半导体",
+      "list_date": "20240208",
+      "market": "科创板"
+    },
+    "688589.SH": {
+      "name": "力合微",
+      "industry": "半导体",
+      "list_date": "20200722",
+      "market": "科创板"
+    },
+    "688591.SH": {
+      "name": "泰凌微",
+      "industry": "半导体",
+      "list_date": "20230825",
+      "market": "科创板"
+    },
+    "688592.SH": {
+      "name": "司南导航",
+      "industry": "通信设备",
+      "list_date": "20230816",
+      "market": "科创板"
+    },
+    "688593.SH": {
+      "name": "新相微",
+      "industry": "半导体",
+      "list_date": "20230601",
+      "market": "科创板"
+    },
+    "688595.SH": {
+      "name": "芯海科技",
+      "industry": "半导体",
+      "list_date": "20200928",
+      "market": "科创板"
+    },
+    "688601.SH": {
+      "name": "力芯微",
+      "industry": "半导体",
+      "list_date": "20210628",
+      "market": "科创板"
+    },
+    "688605.SH": {
+      "name": "先锋精科",
+      "industry": "半导体",
+      "list_date": "20241212",
+      "market": "科创板"
+    },
+    "688608.SH": {
+      "name": "恒玄科技",
+      "industry": "半导体",
+      "list_date": "20201216",
+      "market": "科创板"
+    },
+    "688618.SH": {
+      "name": "三旺通信",
+      "industry": "通信设备",
+      "list_date": "20201230",
+      "market": "科创板"
+    },
+    "688620.SH": {
+      "name": "安凯微",
+      "industry": "半导体",
+      "list_date": "20230627",
+      "market": "科创板"
+    },
+    "688652.SH": {
+      "name": "京仪装备",
+      "industry": "半导体",
+      "list_date": "20231129",
+      "market": "科创板"
+    },
+    "688653.SH": {
+      "name": "康希通信",
+      "industry": "半导体",
+      "list_date": "20231117",
+      "market": "科创板"
+    },
+    "688668.SH": {
+      "name": "鼎通科技",
+      "industry": "通信设备",
+      "list_date": "20201221",
+      "market": "科创板"
+    },
+    "688689.SH": {
+      "name": "银河微电",
+      "industry": "半导体",
+      "list_date": "20210127",
+      "market": "科创板"
+    },
+    "688691.SH": {
+      "name": "灿芯股份",
+      "industry": "半导体",
+      "list_date": "20240411",
+      "market": "科创板"
+    },
+    "688693.SH": {
+      "name": "锴威特",
+      "industry": "半导体",
+      "list_date": "20230818",
+      "market": "科创板"
+    },
+    "688699.SH": {
+      "name": "明微电子",
+      "industry": "半导体",
+      "list_date": "20201218",
+      "market": "科创板"
+    },
+    "688702.SH": {
+      "name": "盛科通信",
+      "industry": "半导体",
+      "list_date": "20230914",
+      "market": "科创板"
+    },
+    "688709.SH": {
+      "name": "成都华微",
+      "industry": "半导体",
+      "list_date": "20240207",
+      "market": "科创板"
+    },
+    "688711.SH": {
+      "name": "宏微科技",
+      "industry": "半导体",
+      "list_date": "20210901",
+      "market": "科创板"
+    },
+    "688720.SH": {
+      "name": "艾森股份",
+      "industry": "半导体",
+      "list_date": "20231206",
+      "market": "科创板"
+    },
+    "688721.SH": {
+      "name": "龙图光罩",
+      "industry": "半导体",
+      "list_date": "20240806",
+      "market": "科创板"
+    },
+    "688728.SH": {
+      "name": "格科微",
+      "industry": "半导体",
+      "list_date": "20210818",
+      "market": "科创板"
+    },
+    "688729.SH": {
+      "name": "屹唐股份",
+      "industry": "半导体",
+      "list_date": "20250708",
+      "market": "科创板"
+    },
+    "688766.SH": {
+      "name": "普冉股份",
+      "industry": "半导体",
+      "list_date": "20210823",
+      "market": "科创板"
+    },
+    "688775.SH": {
+      "name": "影石创新",
+      "industry": "IT设备",
+      "list_date": "20250611",
+      "market": "科创板"
+    },
+    "688788.SH": {
+      "name": "科思科技",
+      "industry": "通信设备",
+      "list_date": "20201022",
+      "market": "科创板"
+    },
+    "688798.SH": {
+      "name": "艾为电子",
+      "industry": "半导体",
+      "list_date": "20210816",
+      "market": "科创板"
+    },
+    "688981.SH": {
+      "name": "中芯国际",
+      "industry": "半导体",
+      "list_date": "20200716",
+      "market": "科创板"
+    }
+  },
+  "industries_map": {
+    "通信设备": [
+      "000063.SZ",
+      "000070.SZ",
+      "000547.SZ",
+      "000561.SZ",
+      "000586.SZ",
+      "000815.SZ",
+      "000889.SZ",
+      "001267.SZ",
+      "002017.SZ",
+      "002104.SZ",
+      "002151.SZ",
+      "002161.SZ",
+      "002194.SZ",
+      "002281.SZ",
+      "002296.SZ",
+      "002313.SZ",
+      "002369.SZ",
+      "002383.SZ",
+      "002396.SZ",
+      "002413.SZ",
+      "002446.SZ",
+      "002465.SZ",
+      "002491.SZ",
+      "002519.SZ",
+      "002544.SZ",
+      "002583.SZ",
+      "002792.SZ",
+      "002796.SZ",
+      "002869.SZ",
+      "002902.SZ",
+      "002929.SZ",
+      "003040.SZ",
+      "300025.SZ",
+      "300050.SZ",
+      "300101.SZ",
+      "300134.SZ",
+      "300177.SZ",
+      "300183.SZ",
+      "300213.SZ",
+      "300252.SZ",
+      "300308.SZ",
+      "300310.SZ",
+      "300353.SZ",
+      "300394.SZ",
+      "300397.SZ",
+      "300414.SZ",
+      "300502.SZ",
+      "300504.SZ",
+      "300548.SZ",
+      "300560.SZ",
+      "300563.SZ",
+      "300565.SZ",
+      "300570.SZ",
+      "300578.SZ",
+      "300590.SZ",
+      "300597.SZ",
+      "300603.SZ",
+      "300615.SZ",
+      "300620.SZ",
+      "300627.SZ",
+      "300628.SZ",
+      "300638.SZ",
+      "300689.SZ",
+      "300698.SZ",
+      "300710.SZ",
+      "300711.SZ",
+      "300736.SZ",
+      "300762.SZ",
+      "300913.SZ",
+      "301165.SZ",
+      "301191.SZ",
+      "301205.SZ",
+      "301307.SZ",
+      "301419.SZ",
+      "301600.SZ",
+      "301608.SZ",
+      "600105.SH",
+      "600131.SH",
+      "600198.SH",
+      "600345.SH",
+      "600487.SH",
+      "600498.SH",
+      "600522.SH",
+      "600562.SH",
+      "600590.SH",
+      "600775.SH",
+      "600776.SH",
+      "600990.SH",
+      "601138.SH",
+      "601869.SH",
+      "603042.SH",
+      "603083.SH",
+      "603118.SH",
+      "603206.SH",
+      "603220.SH",
+      "603236.SH",
+      "603322.SH",
+      "603341.SH",
+      "603421.SH",
+      "603559.SH",
+      "603602.SH",
+      "603712.SH",
+      "603803.SH",
+      "688002.SH",
+      "688027.SH",
+      "688036.SH",
+      "688080.SH",
+      "688100.SH",
+      "688132.SH",
+      "688143.SH",
+      "688159.SH",
+      "688175.SH",
+      "688182.SH",
+      "688205.SH",
+      "688282.SH",
+      "688292.SH",
+      "688313.SH",
+      "688387.SH",
+      "688418.SH",
+      "688522.SH",
+      "688552.SH",
+      "688592.SH",
+      "688618.SH",
+      "688668.SH",
+      "688788.SH"
+    ],
+    "半导体": [
+      "001270.SZ",
+      "001309.SZ",
+      "002049.SZ",
+      "002077.SZ",
+      "002119.SZ",
+      "002156.SZ",
+      "002185.SZ",
+      "002213.SZ",
+      "002371.SZ",
+      "002409.SZ",
+      "002449.SZ",
+      "003026.SZ",
+      "003043.SZ",
+      "300046.SZ",
+      "300053.SZ",
+      "300077.SZ",
+      "300102.SZ",
+      "300223.SZ",
+      "300236.SZ",
+      "300241.SZ",
+      "300303.SZ",
+      "300323.SZ",
+      "300327.SZ",
+      "300346.SZ",
+      "300373.SZ",
+      "300456.SZ",
+      "300458.SZ",
+      "300604.SZ",
+      "300613.SZ",
+      "300623.SZ",
+      "300632.SZ",
+      "300655.SZ",
+      "300661.SZ",
+      "300666.SZ",
+      "300671.SZ",
+      "300672.SZ",
+      "300708.SZ",
+      "300782.SZ",
+      "301095.SZ",
+      "301269.SZ",
+      "301297.SZ",
+      "301308.SZ",
+      "301348.SZ",
+      "301369.SZ",
+      "301536.SZ",
+      "301581.SZ",
+      "301611.SZ",
+      "301629.SZ",
+      "301678.SZ",
+      "600171.SH",
+      "600206.SH",
+      "600360.SH",
+      "600460.SH",
+      "600520.SH",
+      "600584.SH",
+      "600641.SH",
+      "600667.SH",
+      "600703.SH",
+      "600877.SH",
+      "603005.SH",
+      "603061.SH",
+      "603068.SH",
+      "603078.SH",
+      "603160.SH",
+      "603290.SH",
+      "603375.SH",
+      "603501.SH",
+      "603690.SH",
+      "603893.SH",
+      "603986.SH",
+      "603991.SH",
+      "605111.SH",
+      "605358.SH",
+      "688008.SH",
+      "688012.SH",
+      "688018.SH",
+      "688019.SH",
+      "688035.SH",
+      "688037.SH",
+      "688041.SH",
+      "688045.SH",
+      "688047.SH",
+      "688048.SH",
+      "688049.SH",
+      "688052.SH",
+      "688061.SH",
+      "688072.SH",
+      "688082.SH",
+      "688099.SH",
+      "688107.SH",
+      "688110.SH",
+      "688120.SH",
+      "688123.SH",
+      "688126.SH",
+      "688130.SH",
+      "688135.SH",
+      "688138.SH",
+      "688141.SH",
+      "688146.SH",
+      "688153.SH",
+      "688172.SH",
+      "688173.SH",
+      "688200.SH",
+      "688206.SH",
+      "688209.SH",
+      "688213.SH",
+      "688216.SH",
+      "688220.SH",
+      "688230.SH",
+      "688233.SH",
+      "688234.SH",
+      "688249.SH",
+      "688252.SH",
+      "688256.SH",
+      "688259.SH",
+      "688261.SH",
+      "688262.SH",
+      "688279.SH",
+      "688286.SH",
+      "688325.SH",
+      "688332.SH",
+      "688347.SH",
+      "688352.SH",
+      "688361.SH",
+      "688362.SH",
+      "688368.SH",
+      "688372.SH",
+      "688380.SH",
+      "688381.SH",
+      "688385.SH",
+      "688391.SH",
+      "688396.SH",
+      "688401.SH",
+      "688403.SH",
+      "688409.SH",
+      "688416.SH",
+      "688419.SH",
+      "688432.SH",
+      "688449.SH",
+      "688458.SH",
+      "688469.SH",
+      "688478.SH",
+      "688484.SH",
+      "688486.SH",
+      "688498.SH",
+      "688508.SH",
+      "688512.SH",
+      "688515.SH",
+      "688521.SH",
+      "688525.SH",
+      "688530.SH",
+      "688535.SH",
+      "688536.SH",
+      "688538.SH",
+      "688584.SH",
+      "688589.SH",
+      "688591.SH",
+      "688593.SH",
+      "688595.SH",
+      "688601.SH",
+      "688605.SH",
+      "688608.SH",
+      "688620.SH",
+      "688652.SH",
+      "688653.SH",
+      "688689.SH",
+      "688691.SH",
+      "688693.SH",
+      "688699.SH",
+      "688702.SH",
+      "688709.SH",
+      "688711.SH",
+      "688720.SH",
+      "688721.SH",
+      "688728.SH",
+      "688729.SH",
+      "688766.SH",
+      "688798.SH",
+      "688981.SH"
+    ],
+    "IT设备": [
+      "000066.SZ",
+      "000938.SZ",
+      "000977.SZ",
+      "000997.SZ",
+      "001229.SZ",
+      "001339.SZ",
+      "002152.SZ",
+      "002180.SZ",
+      "002197.SZ",
+      "002236.SZ",
+      "002268.SZ",
+      "002351.SZ",
+      "002376.SZ",
+      "002415.SZ",
+      "002577.SZ",
+      "002835.SZ",
+      "002866.SZ",
+      "002912.SZ",
+      "002955.SZ",
+      "002970.SZ",
+      "003004.SZ",
+      "300042.SZ",
+      "300045.SZ",
+      "300079.SZ",
+      "300130.SZ",
+      "300155.SZ",
+      "300249.SZ",
+      "300270.SZ",
+      "300302.SZ",
+      "300333.SZ",
+      "300368.SZ",
+      "300386.SZ",
+      "300449.SZ",
+      "300455.SZ",
+      "300531.SZ",
+      "300546.SZ",
+      "300552.SZ",
+      "300588.SZ",
+      "300656.SZ",
+      "300659.SZ",
+      "300743.SZ",
+      "300771.SZ",
+      "300793.SZ",
+      "300857.SZ",
+      "300884.SZ",
+      "300941.SZ",
+      "301042.SZ",
+      "301189.SZ",
+      "301318.SZ",
+      "301330.SZ",
+      "301339.SZ",
+      "301391.SZ",
+      "301491.SZ",
+      "301503.SZ",
+      "301578.SZ",
+      "301589.SZ",
+      "600100.SH",
+      "603019.SH",
+      "603106.SH",
+      "603496.SH",
+      "603508.SH",
+      "603516.SH",
+      "603660.SH",
+      "688060.SH",
+      "688208.SH",
+      "688288.SH",
+      "688475.SH",
+      "688489.SH",
+      "688775.SH"
+    ]
+  },
+  "sample": {
+    "000063.SZ": {
+      "name": "中兴通讯",
+      "industry": "通信设备",
+      "list_date": "19971118",
+      "market": "主板"
+    },
+    "000066.SZ": {
+      "name": "中国长城",
+      "industry": "IT设备",
+      "list_date": "19970626",
+      "market": "主板"
+    },
+    "000070.SZ": {
+      "name": "特发信息",
+      "industry": "通信设备",
+      "list_date": "20000511",
+      "market": "主板"
+    },
+    "000547.SZ": {
+      "name": "航天发展",
+      "industry": "通信设备",
+      "list_date": "19931130",
+      "market": "主板"
+    },
+    "000561.SZ": {
+      "name": "烽火电子",
+      "industry": "通信设备",
+      "list_date": "19940509",
+      "market": "主板"
+    }
+  }
+}

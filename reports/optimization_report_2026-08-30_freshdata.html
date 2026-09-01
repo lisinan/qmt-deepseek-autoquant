@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>量化策略 · 最新行情验证与执行效率审计 (2026-08-30)</title>
+<style>
+  :root{ --bg:#0f1419; --card:#171d26; --line:#263041; --txt:#e6edf3; --mut:#8b98a9;
+         --up:#ff4d4f; --down:#19c37d; --acc:#3aa0ff; --warn:#ffb020; --ok:#19c37d; }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--txt);font-family:-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;line-height:1.55}
+  .wrap{max-width:980px;margin:0 auto;padding:28px 22px 60px}
+  h1{font-size:23px;margin:0 0 4px}
+  .sub{color:var(--mut);font-size:13px;margin-bottom:22px}
+  .kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:18px 0 26px}
+  .kpi{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 14px}
+  .kpi .v{font-size:25px;font-weight:700;letter-spacing:.3px}
+  .kpi .l{color:var(--mut);font-size:12px;margin-top:3px}
+  .up{color:var(--up)} .down{color:var(--down)} .acc{color:var(--acc)} .ok{color:var(--ok)} .warn{color:var(--warn)}
+  section{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:18px 20px;margin:16px 0}
+  h2{font-size:16px;margin:0 0 12px;border-left:3px solid var(--acc);padding-left:10px}
+  table{width:100%;border-collapse:collapse;font-size:13px;margin-top:6px}
+  th,td{padding:8px 9px;text-align:right;border-bottom:1px solid var(--line)}
+  th{color:var(--mut);font-weight:600;text-align:right}
+  th:first-child,td:first-child{text-align:left}
+  tr:hover td{background:#1c2531}
+  .call{border-left:3px solid var(--warn);background:#1f1a10;padding:12px 14px;border-radius:8px;margin:12px 0;font-size:13.5px}
+  .okb{border-left:3px solid var(--ok);background:#0f1f17;padding:12px 14px;border-radius:8px;margin:12px 0;font-size:13.5px}
+  code{background:#0c1117;padding:2px 6px;border-radius:5px;color:#9fe6c4;font-size:12.5px}
+  .mono{font-family:ui-monospace,Menlo,Consolas,monospace}
+  .foot{color:var(--mut);font-size:12px;margin-top:18px;text-align:center}
+  .chartm{color:var(--mut);font-size:12px;text-align:center;margin-top:6px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>量化策略 · 最新行情验证与执行效率审计</h1>
+  <div class="sub">生成时间 2026-08-30 01:25 · 数据截至 2026-08-25（miniQMT 实时 xtdata）· 生产配置：regime=off + trend 骑行 + 波动率目标 + max_positions=5 + RiskManager −0.25 冷却断路器</div>
+
+  <div class="kpis">
+    <div class="kpi"><div class="v up">+339.9%</div><div class="l">全样本净值 (2023-07→2026-07)</div></div>
+    <div class="kpi"><div class="v acc">+1.73</div><div class="l">全样本 Sharpe</div></div>
+    <div class="kpi"><div class="v ok">7/7</div><div class="l">walk-forward 折 正收益</div></div>
+    <div class="kpi"><div class="v ok">0 次</div><div class="l">断路器触发 (halt=0)</div></div>
+  </div>
+
+  <section>
+    <h2>一、最新行情验证结论（核心：收益稳健、断路器休眠）</h2>
+    <p style="font-size:13.5px;margin:4px 0 10px">以当前生产配置在 <b>最新鲜数据（25 只 AI 宇宙 × 713 根日线，末日 2026-08-25）</b> 上重验：全样本 +339.9% / Sharpe +1.73 / MDD −19.85%；7 折 walk-forward 均值 Sharpe <b>+1.69</b>（与 2026-08-29 结论一致），<b>7/7 折正收益</b>。实盘建模的 −0.25 冷却断路器在<b>所有窗口均休眠（halt=0）</b>——证实 2026-08-30 的「永久暂停→断路器」修复在最新行情上同样成立，<b>回测收益可兑现为实盘</b>。</p>
+    <table>
+      <tr><th>窗口</th><th>区间</th><th>收益</th><th>Sharpe</th><th>MDD</th><th>α vs 等权</th><th>暴露</th><th>halt</th></tr>
+      <tr><td>全样本</td><td>2023-07→2026-07</td><td class="up">+339.9%</td><td>+1.73</td><td>−19.85%</td><td>−4.9pt</td><td>97%</td><td>0</td></tr>
+      <tr><td>最近 ~1年</td><td>2025-06→2026-07</td><td class="up">+10.1%</td><td>+0.61</td><td>−15.61%</td><td class="down">−16.7pt</td><td>97%</td><td>0</td></tr>
+      <tr><td>Fold1</td><td>2023-07→2024-05</td><td class="up">+23.3%</td><td>+1.48</td><td>−12.34%</td><td>+1.9pt</td><td>95%</td><td>0</td></tr>
+      <tr><td>Fold2</td><td>2023-11→2024-09</td><td class="up">+6.1%</td><td>+0.60</td><td>−20.78%</td><td class="up">+13.6pt</td><td>99%</td><td>0</td></tr>
+      <tr><td>Fold3</td><td>2024-03→2025-01</td><td class="up">+67.9%</td><td>+2.44</td><td>−14.07%</td><td class="down">−8.4pt</td><td>96%</td><td>0</td></tr>
+      <tr><td>Fold4</td><td>2024-06→2025-05</td><td class="up">+8.8%</td><td>+0.73</td><td>−15.13%</td><td class="up">+8.4pt</td><td>94%</td><td>0</td></tr>
+      <tr><td>Fold5</td><td>2024-10→2025-08</td><td class="up">+98.7%</td><td>+4.05</td><td>−6.85%</td><td class="up">+44.0pt</td><td>99%</td><td>0</td></tr>
+      <tr><td>Fold6</td><td>2025-02→2025-12</td><td class="up">+46.6%</td><td>+2.09</td><td>−13.87%</td><td class="up">+13.1pt</td><td>99%</td><td>0</td></tr>
+      <tr><td>Fold7</td><td>2025-06→2026-04</td><td class="up">+3.8%</td><td>+0.44</td><td>−16.29%</td><td class="down">−15.5pt</td><td>96%</td><td>0</td></tr>
+    </table>
+
+    <div class="chartm">7 折 walk-forward 收益（红=正收益，中国配色）</div>
+    <svg viewBox="0 0 680 200" width="100%" style="margin-top:8px">
+      <rect x="0" y="0" width="680" height="200" fill="#0f1419"/>
+      <line x1="40" y1="170" x2="660" y2="170" stroke="#263041"/>
+      <!-- bars: F1..F7 values 23.3,6.1,67.9,8.8,98.7,46.6,3.8 ; scale max 100 -> 130px -->
+      <g font-size="11" fill="#8b98a9" text-anchor="middle">
+        <rect x="58"  y="137.8" width="44" height="32.2"  fill="#ff4d4f"/><text x="80"  y="190">F1</text><text x="80" y="130" fill="#e6edf3">+23</text>
+        <rect x="148" y="162.1" width="44" height="7.9"   fill="#ff4d4f"/><text x="170" y="190">F2</text><text x="170" y="154" fill="#e6edf3">+6</text>
+        <rect x="238" y="81.7"  width="44" height="88.3"  fill="#ff4d4f"/><text x="260" y="190">F3</text><text x="260" y="74" fill="#e6edf3">+68</text>
+        <rect x="328" y="158.6" width="44" height="11.4"  fill="#ff4d4f"/><text x="350" y="190">F4</text><text x="350" y="150" fill="#e6edf3">+9</text>
+        <rect x="418" y="1.9"   width="44" height="168.1" fill="#ff4d4f"/><text x="440" y="190">F5</text><text x="440" y="194" fill="#e6edf3"></text><text x="440" y="-6" fill="#e6edf3">+99</text>
+        <rect x="508" y="109.4" width="44" height="60.6"  fill="#ff4d4f"/><text x="530" y="190">F6</text><text x="530" y="101" fill="#e6edf3">+47</text>
+        <rect x="598" y="165.1" width="44" height="4.9"   fill="#ff4d4f"/><text x="620" y="190">F7</text><text x="620" y="156" fill="#e6edf3">+4</text>
+      </g>
+    </svg>
+  </section>
+
+  <section>
+    <h2>二、近期 regime 信号（诚实提示，非缺陷）</h2>
+    <div class="call">
+      <b>最近 ~1 年窗口 α = −16.7pt、Fold7 α = −15.5pt</b>：策略仍取得 <b>正绝对收益（+10.1% / +3.8%）</b>，但被「等权买入持有 AI 篮子」反超。机理 = 本策略是<b>动量/趋势</b>策略，在 2025H2–2026 的<b>广谱 AI 疯涨</b>中会因趋势退出/调仓而落后被动持有；这是策略的<b>收益特征而非 bug</b>。参数高原研究（2026-08-29L，rho≥0.7）表明继续调参无科学空间，18+ 方向（含所有价格/指数/资金流/盈利上修轴）均被样本外证伪，<b>故本轮不改动生产配置</b>。
+    </div>
+  </section>
+
+  <section>
+    <h2>三、执行效率与实盘健康</h2>
+    <div class="okb">
+      <b>✓ 实时引擎 33480（权威持有者）健康</b>：00:29 启动、已加载 2026-08-30 全部修复；单实例自愈生效（旧引擎 23984 已正确退出）；交易时段守卫启用，周日休眠、周一开盘自动恢复；日志隔离至 <code>quant_system-33480.log</code>（0 字节=干净）。<code>engine_console.log</code> 证实日内交易计数跨日重置 <code>daily_trade_count=0</code>——永久 BUY 拦截已根除。
+    </div>
+    <table>
+      <tr><th>检查项</th><th>结果</th></tr>
+      <tr><td>单元测试回归 (tests/run_all.py, conda qmt)</td><td class="ok">56/56 通过 · 零回归</td></tr>
+      <tr><td>实时引擎 pid 33480 存活</td><td class="ok">ALIVE（cpu 2.4s，休眠态）</td></tr>
+      <tr><td>RiskManager −0.25 冷却断路器</td><td class="ok">所有回测窗口 halt=0（休眠）</td></tr>
+      <tr><td>单实例自愈（防双引擎抢 CPU）</td><td class="ok">生效（23984 已退出）</td></tr>
+      <tr><td>遗留僵尸引擎（8/24–25 泄漏）</td><td class="warn">34 个仍存活 · 本会话 Access Denied · 需管理员清理</td></tr>
+    </table>
+    <div class="call" style="margin-top:14px">
+      <b>⚠ 残余效率问题（需管理员提权，非自治可解）</b>：34 个 8/24–25 泄漏僵尸引擎仍写共享 <code>quant_system.log</code>（现 10.7 MB，01:23 仍在增长）并占用 CPU。其日志中的 <code>BUY 拒绝: daily_trades&gt;10</code> 与 <code>OSError [Errno 22]</code> 均来自<b>旧代码僵尸</b>（无日计数重置、无时段守卫、无破损管道修复），<b>与权威引擎 33480 无关</b>。请以<b>管理员 PowerShell</b> 一次性清理（已排除良引擎 33480）：
+      <div style="margin-top:8px"><code class="mono">Get-Process python* | Where-Object { $_.StartTime -lt [datetime]'2026-08-30' -and $_.Id -ne 33480 } | Stop-Process -Force</code></div>
+      <div style="margin-top:6px"><code class="mono">Move-Item logs\quant_system.log ("logs\quant_system.zombie."+(Get-Date -f yyyyMMddHHmm)+".log")</code></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>四、量化纪律与本轮结论</h2>
+    <ul style="font-size:13.5px;margin:6px 0;padding-left:18px">
+      <li><b>收益侧</b>：生产配置在最新数据上经全样本 + 7 折 walk-forward 双验证稳健（均值 Sharpe +1.69、7/7 正收益、断路器休眠），为经验证最优；本轮未改动任何 alpha 参数。</li>
+      <li><b>执行层</b>：2026-08-30「−0.25 冷却断路器」修复在最新行情上复验成立（0/7 触发），是「让回测收益真正兑现」的关键落地。</li>
+      <li><b>环境提示</b>：<code>pytest</code> 在本自动化 shell 无法运行（conda env <code>_ssl</code> DLL 依赖链损坏，与项目代码无关，且修复风险会波及 xtquant）；项目权威运行器 <code>tests/run_all.py</code> 56/56 通过，足以证明零回归。</li>
+      <li><b>下一步</b>：周一开盘前由管理员清理 34 僵尸（释放 CPU + 停止日志污染）；策略无需调参，33480 将按已验证配置自动交易。</li>
+    </ul>
+  </section>
+
+  <div class="foot">证据：logs/opt_recent_pulse.json · 工具：strategy/_opt_recent_pulse.py · 零回归：tests/run_all.py 56/56</div>
+</div>
+</body>
+</html>

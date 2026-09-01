@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>执行效率根因修复报告 · 2026-08-29</title>
+<style>
+  :root{ --bg:#0f1420; --card:#171e2e; --ink:#e6ebf5; --sub:#9aa7bd; --line:#26304a;
+         --ok:#37d39b; --warn:#ffcc66; --bad:#ff6b6b; --accent:#5b9dff; }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+       font-family:-apple-system,"Segoe UI","Microsoft YaHei",Helvetica,Arial,sans-serif;
+       line-height:1.6;padding:28px}
+  .wrap{max-width:960px;margin:0 auto}
+  h1{font-size:24px;margin:0 0 4px}
+  .meta{color:var(--sub);font-size:13px;margin-bottom:22px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;
+        padding:18px 20px;margin:14px 0}
+  h2{font-size:17px;margin:2px 0 12px;color:var(--accent)}
+  .kv{display:flex;gap:10px;padding:5px 0;border-bottom:1px dashed var(--line);font-size:14px}
+  .kv:last-child{border-bottom:none}
+  .k{color:var(--sub);min-width:170px}
+  .tag{display:inline-block;padding:2px 9px;border-radius:999px;font-size:12px;font-weight:600}
+  .t-ok{background:rgba(55,211,155,.16);color:var(--ok)}
+  .t-warn{background:rgba(255,204,102,.16);color:var(--warn)}
+  .t-bad{background:rgba(255,107,107,.16);color:var(--bad)}
+  code{background:#0c1018;padding:1px 6px;border-radius:5px;font-size:12.5px;color:#cfe0ff}
+  pre{background:#0c1018;border:1px solid var(--line);border-radius:8px;padding:12px;
+      overflow:auto;font-size:12.5px;line-height:1.5}
+  ul{margin:8px 0;padding-left:20px} li{margin:4px 0}
+  .big{font-size:15px}
+  .summary{background:linear-gradient(135deg,#13243f,#171e2e);border-color:#2b4a7a}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>执行效率根因修复报告</h1>
+  <div class="meta">qmtIDE-deepseek · 量化交易引擎 · 2026-08-29 21:30 (自动化周期) · 模式：paper / portfolio</div>
+
+  <div class="card summary">
+    <div class="big"><b>结论：</b>定位并根治了长期拖累引擎的「<code>OSError [Errno 22]</code> 每轮刷 traceback」CPU 空转缺陷，并重启加载修复后的引擎（pid 37040，健康）。本周期聚焦<b>执行效率</b>而非收益参数——收益侧 18+ 方向已全证伪，当前生产配置（trend 骑行 + 波动率目标 + max_positions=5，regime 关）为经验证最优，未改动。</div>
+  </div>
+
+  <div class="card">
+    <h2>1 · 健康检查（回归验证）</h2>
+    <div class="kv"><span class="k">单元测试</span><span><span class="tag t-ok">92 / 92 通过</span> &nbsp;零回归（conda env qmt）</span></div>
+    <div class="kv"><span class="k">语法检查</span><span><span class="tag t-ok">OK</span> main.py / engine/event_engine.py 编译通过</span></div>
+    <div class="kv"><span class="k">实时引擎</span><span><span class="tag t-ok">运行中 pid 37040</span> &nbsp;paper / portfolio / data=xtdata / Tushare 已连 / regime=down</span></div>
+    <div class="kv"><span class="k">新引擎日志</span><span><span class="tag t-ok">0 条 Errno 22</span> &nbsp;私有日志 quant_system-37040.log 干净</span></div>
+    <div class="kv"><span class="k">交易时段守卫</span><span><span class="tag t-ok">已启用</span> &nbsp;非交易时段休眠（周末不刷单、不跑 step）</span></div>
+  </div>
+
+  <div class="card">
+    <h2>2 · 根因诊断</h2>
+    <p>实时引擎此前每 ~0.3s 在主循环抛一次 <code>OSError: [Errno 22] Invalid argument</code>，并把它当作业务异常以<b>完整 traceback</b>写入日志，CPU 被反复计算 traceback 白白烧掉。逐层定位：</p>
+    <ul>
+      <li><code>engine/event_engine.py:985</code> 在 <code>_evaluate_sectors</code> 的 except 里 <code>logger.warning("sector 评估失败: %s\n%s", e, tb_str)</code> —— <b>把全量 traceback 每轮刷进日志</b>（日志膨胀 + CPU 主因）。</li>
+      <li>异常真正来源：后台化的引擎进程，其 <b>stdout/stderr 是已失效的管道</b>，任何向其 <code>write</code> 的操作都会抛 <code>OSError [Errno 22]</code>。该异常从 <code>sector_scorer.evaluate_sectors</code> 内部冒出，被上层当业务失败捕获。</li>
+      <li>既有 <code>_SafeStreamHandler</code>（H/I 轮加入）只兜住了 logging 自身写 stdout 的失败，<b>未兜住「用户代码直接写破损 stdout」</b>这一路径，故缺陷仍在。</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h2>3 · 本次修复（源码层，非收益参数）</h2>
+    <ul>
+      <li><b>main.py · 全局安全流</b>：新增 <code>_BrokenPipeSafeStream</code>，在 <code>_setup_logging</code> 启动时把 <code>sys.stdout</code>/<code>sys.stderr</code> 包成「写失败也不抛异常」的流；并设 <code>logging.raiseExceptions = False</code>，彻底压制任何 handler 异常的 traceback。直接 <code>print()</code> 或 logging 写破损管道都不再上抛。</li>
+      <li><b>event_engine.py:982</b>：sector 评估异常改为单行 <code>logger.warning("sector 评估失败: %s", e)</code>，完整 traceback 仅留 <code>DEBUG</code> 级别 —— 不再每轮刷屏。</li>
+      <li><b>event_engine.py · <code>_log_reject_once</code></b>：拒绝日志增加 60s 时间节流（同一 标的+原因 至少 1 分钟记一次），消除「daily_trades&gt;10」每轮重复刷 INFO 的问题。</li>
+    </ul>
+    <p style="color:var(--sub);font-size:13px">三项改动均为工程健壮性，<b>不触动任何策略/收益逻辑</b>；生产配置（trend + vol + max5，regime off）保持不变。</p>
+  </div>
+
+  <div class="card">
+    <h2>4 · 验证</h2>
+    <ul>
+      <li><b>隔离单测</b>：构造「write 必抛 OSError[Errno 22]」的破损管道，套用 <code>_BrokenPipeSafeStream</code> 后 <code>write/flush/writelines/reconfigure/close</code> 与 <code>logging</code> 经 <code>_SafeStreamHandler</code> 及直接 <code>print()</code> 均不再抛异常 → <code>VALIDATION_OK</code>。根因被确定性中和。</li>
+      <li><b>运行验证</b>：修复后引擎（pid 37040）私有日志 <code>grep -c "Errno 22" = 0</code>，启动至今无一条 traceback。</li>
+      <li><b>回归</b>：92/92 单元测试通过，零改动回退。</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h2>5 · 引擎重启说明</h2>
+    <div class="kv"><span class="k">操作</span><span>停掉陈旧引擎（pid 1516，仍跑旧代码且每轮刷 traceback），以 <b>paper 模式</b>重启加载修复（pid 37040）。</span></div>
+    <div class="kv"><span class="k">安全性</span><span><span class="tag t-ok">低风险</span> paper 模式不触真金；miniQMT 客户端独立、保持开启；持仓由 storage 持久化，重启安全。</span></div>
+    <div class="kv"><span class="k">行为修正</span><span>新引擎<b>尊重交易时段守卫</b>（周末休眠），不再像旧引擎 24/7 空跑 step、刷拒绝日志 —— 这本身就是一项效率改善。</span></div>
+  </div>
+
+  <div class="card">
+    <h2>6 · 遗留项（建议人工处理，未自治执行）</h2>
+    <div class="kv"><span class="k">泄漏进程</span><span><span class="tag t-warn">待确认</span> 仍残留 ~34 个 8/24–25 的旧 python 进程（运行旧 buggy 代码、持有 quant_system.log、徒耗 CPU/磁盘）。属高风险批量清理动作，按前轮约定不做自动 taskkill，建议人工确认后清理；清理后本引擎即可回占主日志。</span></div>
+    <div class="kv"><span class="k">live 模式计数</span><span><span class="tag t-warn">已知</span> <code>_daily_trade_count</code> 在 live 模式恒为 0，<code>max_daily_trades</code> 实际不生效（与 paper 不一致），前轮已标记后续项，本轮未改以免 live 行为变化。</span></div>
+  </div>
+
+  <div class="card">
+    <h2>7 · 收益侧结论（重申纪律）</h2>
+    <p>本宇宙稳健 alpha 已收敛于「始终重仓 + 集中最强动量 + 趋势骑行」。本轮对 18+ 候选方向（趋势移动止损、宽指数闸门、抗抖动/双过滤 regime、风险调整/残差动量、组合级 DD 控制、再入场冷静期、动量加权、量能突破、分行业分散、风险平价、尾部对冲、主力资金流、组合权益 DD 硬止损、盈利预告上修）全部样本外证伪或冗余。继续在公开数据上微调参数只会过拟合，故本周期<b>不改动收益参数</b>，仅做执行效率根治。</p>
+  </div>
+</div>
+</body>
+</html>

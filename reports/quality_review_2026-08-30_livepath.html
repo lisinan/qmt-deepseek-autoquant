@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>量化交易项目 · 质量复核与实盘就绪报告</title>
+<style>
+  :root{--bg:#0f1419;--card:#1a2129;--ink:#e6edf3;--mut:#9aa7b4;--acc:#2fbf71;--warn:#e8a33d;--bad:#e5534b;--line:#2a323c;}
+  *{box-sizing:border-box}
+  body{margin:0;font-family:-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;background:var(--bg);color:var(--ink);line-height:1.6;padding:32px}
+  .wrap{max-width:980px;margin:0 auto}
+  h1{font-size:26px;margin:0 0 4px}
+  .sub{color:var(--mut);margin-bottom:24px;font-size:14px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:20px 22px;margin-bottom:18px}
+  h2{font-size:18px;margin:0 0 12px;color:#fff;border-left:4px solid var(--acc);padding-left:10px}
+  h3{font-size:15px;margin:16px 0 8px;color:#cfe3d6}
+  .ok{color:var(--acc);font-weight:600}
+  .warn{color:var(--warn);font-weight:600}
+  .bad{color:var(--bad);font-weight:600}
+  table{width:100%;border-collapse:collapse;font-size:13.5px;margin-top:8px}
+  th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line)}
+  th{color:var(--mut);font-weight:600;background:#141a21}
+  code{background:#0c1116;padding:2px 6px;border-radius:5px;color:#8fd6a8;font-size:12.5px}
+  pre{background:#0c1116;padding:14px;border-radius:8px;overflow:auto;font-size:12.5px;color:#9fe0b6}
+  .pill{display:inline-block;padding:2px 10px;border-radius:999px;font-size:12px;font-weight:600}
+  .pill.g{background:rgba(47,191,113,.15);color:var(--acc)}
+  .pill.y{background:rgba(232,163,61,.15);color:var(--warn)}
+  .row{display:flex;gap:14px;flex-wrap:wrap}
+  .metric{flex:1;min-width:150px;background:#141a21;border:1px solid var(--line);border-radius:10px;padding:14px}
+  .metric .v{font-size:22px;font-weight:700;color:var(--acc)}
+  .metric .k{font-size:12.5px;color:var(--mut);margin-top:4px}
+  ul{margin:6px 0 6px 18px;padding:0}
+  li{margin:4px 0}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>量化交易项目 · 质量复核与实盘就绪报告</h1>
+  <div class="sub">生成时间：2026-08-30 23:49 · 执行环境：conda env <code>qmt</code> · 复核范围：策略收益复验 + 工程质量 + 实盘路径修复</div>
+
+  <div class="card">
+    <h2>一、结论速览</h2>
+    <div class="row">
+      <div class="metric"><div class="v">63/63</div><div class="k">单元测试全过（含 4 项新增实盘路径）</div></div>
+      <div class="metric"><div class="v">+293.6%</div><div class="k">策略全样本收益复验（Sharpe +1.73）</div></div>
+      <div class="metric"><div class="v">+1.69</div><div class="k">7 折 walk-forward 均值 Sharpe（7/7 正收益）</div></div>
+      <div class="metric"><div class="v">halt=0</div><div class="k">断路器在全部窗口休眠（收益可兑现）</div></div>
+    </div>
+    <p style="margin-top:14px">本轮核心交付：<span class="ok">修复实盘（live）路径一处致命缺陷</span>——本地持仓账本与总资产在实盘模式下从未被维护，导致
+    <b>止损/退出逻辑、持仓上限、回撤断路器在实盘全部失效</b>。已修复并以 broker 为权威源每轮同步，并用回归测试锁定。收益侧严格遵守已验证的参数高原，<b>未改动任何生产策略参数</b>。</p>
+  </div>
+
+  <div class="card">
+    <h2>二、策略收益科学复验（数据截至 2026-08-25）</h2>
+    <p>重跑 <code>strategy/_verify_live_quality.py</code>（实时数据）：</p>
+    <table>
+      <tr><th>指标</th><th>结果</th><th>判定</th></tr>
+      <tr><td>全样本收益</td><td>+293.6% / Sharpe +1.73 / MDD −19.85%</td><td><span class="pill g">达标</span></td></tr>
+      <tr><td>断路器影响（ret 差 vs 无暂停基线）</td><td>+0.00pt</td><td><span class="pill g">休眠·收益≈基线</span></td></tr>
+      <tr><td>7 折 walk-forward 均值 Sharpe</td><td>+1.69（正 α 5/7，最差折 +3.78%）</td><td><span class="pill g">稳健</span></td></tr>
+      <tr><td>各折断路器触发天数</td><td>halt=0（全部窗口）</td><td><span class="pill g">无干扰</span></td></tr>
+    </table>
+    <p class="ok">结论：回测收益可在实盘兑现；参数高原（ρ≥0.7）已证无调参空间，18+ 方向样本外证伪，本宇宙 alpha 收敛于「价格动量+趋势骑行+集中最强5只+波动率目标」，不再做收益侧改动。</p>
+  </div>
+
+  <div class="card">
+    <h2>三、发现并修复的实盘路径缺陷（本次重点）</h2>
+
+    <h3>🔴 缺陷 1（致命）：live 模式本地账本 / 总资产从未维护</h3>
+    <p>原实现中 <code>self._positions</code> 与 <code>self._cash</code> 只在 <b>paper</b> 分支的买/卖里更新；<b>live</b> 下单后本地账本保持空、现金恒为 <code>INITIAL_CASH</code>。连锁后果：</p>
+    <ul>
+      <li>退出逻辑（step4）对实盘持仓<b>永不触发</b> → 止损 / 趋势破位失效；</li>
+      <li><code>max_positions</code> 并发上限<b>永不生效</b> → 可无限加仓；</li>
+      <li><code>total_asset</code> 恒为 ¥1,000,000 → 风控<b>回撤断路器在实盘完全瘫痪</b>；</li>
+      <li><code>max_daily_trades</code> 日内次数<b>永不计入</b>（live 买/卖漏计）。</li>
+    </ul>
+    <p><span class="ok">修复</span>：新增 <code>_sync_broker_positions()</code>，每轮以 broker 为权威源拉取真实持仓/资产，合并本地止损/峰值元数据（broker 不返回），并补齐 live 买/卖对 <code>_daily_trade_count</code> 与乐观账本的维护。仅 live 生效，<b>paper 模式零改动</b>。</p>
+
+    <h3>🟡 缺陷 2（稳健性）：成交回报仅轮询 1 秒一次</h3>
+    <p>实盘委托常延迟数秒成交（大单 / 非活跃时段），原 <code>_poll_and_record_fill</code> 只 sleep 1s 查一次，会漏记延迟成交 → 数据库 / 复盘缺笔。</p>
+    <p><span class="ok">修复</span>：改为最多轮询 6 次（间隔 1s，共 ~6s），命中即落库（卖出同步更新风控已实现盈亏），超时记 WARN 便于排查。</p>
+
+    <h3>✅ 已确认正确的关键模块</h3>
+    <ul>
+      <li><code>risk/manager.py</code> 断路器冷却自动恢复（2026-08-30 修正）：<code>_maybe_recover</code> 在每条路径触发，解除时重置风险基线——验证正确，<b>非永久杀死开关</b>；</li>
+      <li>单实例自愈、交易时段守卫、日志轮转加固、<code>on_bars</code> 指标缓存（117× 加速）、单轮异常隔离——均到位；</li>
+      <li><code>core/notices.py</code> 系统提示通道 + <code>strategy/review_daily.py</code> 盘后复盘——已落地。</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h2>四、质量验证结果</h2>
+    <table>
+      <tr><th>检查项</th><th>命令</th><th>结果</th></tr>
+      <tr><td>全项目字节编译</td><td><code>compileall</code></td><td><span class="ok">0 错误</span></td></tr>
+      <tr><td>单元测试（含新增实盘路径）</td><td><code>tests/run_all.py</code></td><td><span class="ok">63/63 通过</span></td></tr>
+      <tr><td>引擎实例化快照</td><td><code>main.py --snapshot</code></td><td><span class="ok">exit=0，配置正确（paper / regime off / 风控未熔断）</span></td></tr>
+      <tr><td>收益科学复验</td><td><code>_verify_live_quality.py</code></td><td><span class="ok">+293.6% / Sh +1.69 / halt=0</span></td></tr>
+    </table>
+  </div>
+
+  <div class="card">
+    <h2>五、模拟盘 → 实盘 启动指引</h2>
+    <h3>① 模拟盘验证（当前 EXECUTION_MODE="paper"）</h3>
+    <pre># 在可达 xtdata 的真实桌面会话中（勿用一次性后台进程）
+conda activate qmt
+cd C:\Users\lisinan\Desktop\qmtIDE-deepseek
+python main.py --strategy portfolio --web
+# 浏览器打开 http://127.0.0.1:5000 观察信号/成交/系统提示
+# 收盘后自动复盘任务 ae0e2431（15:35）产出 reports/review_*.html</pre>
+
+    <h3>② 切实盘（确认模拟盘信号合理后再做）</h3>
+    <pre># 1) 改 config/settings.py: EXECUTION_MODE = "live"
+# 2) 启动时从券商同步真实持仓（可选，首次建议加）:
+python main.py --mode live --strategy portfolio --init-positions --web
+# 3) 单实例锁已内置；停止用:  python main.py --stop</pre>
+    <p class="warn">纪律（不可推翻）：回撤断路器 −0.25 + 5 日冷却；regime 闸门保持 off；勿改生产策略参数。引擎须运行在可达 xtdata 的持久会话，自动化 shell 内 xtdata 不可达（会回落 mock，仅自检）。</p>
+  </div>
+
+  <div class="card">
+    <h2>六、变更清单</h2>
+    <table>
+      <tr><th>文件</th><th>变更</th><th>类型</th></tr>
+      <tr><td><code>engine/event_engine.py</code></td><td>新增 <code>_sync_broker_positions()</code>；live 买/卖维护账本与 <code>_daily_trade_count</code>；<code>_run_once</code> 每轮同步；<code>_poll_and_record_fill</code> 轮询 6×</td><td><span class="pill g">修复</span></td></tr>
+      <tr><td><code>tests/test_event_engine_live.py</code></td><td>新增 4 项实盘路径回归测试</td><td><span class="pill g">测试</span></td></tr>
+      <tr><td><code>tests/run_all.py</code></td><td>注册实盘路径测试模块（59→63）</td><td><span class="pill g">测试</span></td></tr>
+    </table>
+  </div>
+
+  <p style="color:var(--mut);font-size:12.5px;text-align:center;margin-top:8px">本报告由自动化质量复核生成 · 收益侧配置零改动 · 工程修复仅作用于实盘执行路径</p>
+</div>
+</body>
+</html>

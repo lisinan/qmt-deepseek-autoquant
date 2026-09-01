@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>量化交易项目 · 科学优化报告 (2026-08-29)</title>
+<style>
+  :root{
+    --bg:#f5f7fa; --card:#ffffff; --ink:#1f2937; --muted:#6b7280;
+    --line:#e5e7eb; --accent:#2563eb; --green:#059669; --red:#dc2626;
+    --amber:#d97706; --soft:#eef2ff;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font-family:-apple-system,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif;
+       background:var(--bg);color:var(--ink);line-height:1.6;font-size:15px}
+  .wrap{max-width:1080px;margin:0 auto;padding:28px 20px 60px}
+  header{background:linear-gradient(135deg,#1e3a8a,#2563eb);color:#fff;border-radius:16px;
+         padding:26px 30px;box-shadow:0 8px 24px rgba(37,99,235,.18)}
+  header h1{margin:0 0 6px;font-size:24px;letter-spacing:.5px}
+  header .sub{opacity:.9;font-size:14px}
+  .badges{margin-top:14px;display:flex;gap:10px;flex-wrap:wrap}
+  .badge{background:rgba(255,255,255,.16);border:1px solid rgba(255,255,255,.3);
+         padding:5px 12px;border-radius:999px;font-size:13px}
+  .badge.ok{background:rgba(16,185,129,.25);border-color:rgba(16,185,129,.5)}
+  .badge.warn{background:rgba(245,158,11,.25);border-color:rgba(245,158,11,.5)}
+  section{background:var(--card);border:1px solid var(--line);border-radius:14px;
+          padding:22px 24px;margin-top:20px;box-shadow:0 2px 8px rgba(15,23,42,.04)}
+  h2{font-size:19px;margin:0 0 4px;display:flex;align-items:center;gap:8px}
+  h2 .n{background:var(--accent);color:#fff;width:26px;height:26px;border-radius:8px;
+        display:inline-flex;align-items:center;justify-content:center;font-size:14px}
+  .lead{color:var(--muted);font-size:14px;margin:0 0 16px}
+  table{width:100%;border-collapse:collapse;margin:10px 0;font-size:13.5px}
+  th,td{padding:9px 10px;border-bottom:1px solid var(--line);text-align:right}
+  th:first-child,td:first-child{text-align:left}
+  thead th{background:var(--soft);color:#374151;font-weight:600}
+  tbody tr:hover{background:#fafbff}
+  .pos{color:var(--green);font-weight:600}
+  .neg{color:var(--red);font-weight:600}
+  .neu{color:var(--muted)}
+  .verdict{font-size:20px;font-weight:700;padding:14px 18px;border-radius:12px;margin:14px 0}
+  .v-reject{background:#fef2f2;color:var(--red);border:1px solid #fecaca}
+  .v-ok{background:#ecfdf5;color:var(--green);border:1px solid #a7f3d0}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+  .kpis{display:flex;gap:14px;flex-wrap:wrap;margin:8px 0}
+  .kpi{flex:1;min-width:140px;background:var(--soft);border-radius:12px;padding:14px 16px}
+  .kpi .v{font-size:26px;font-weight:700;color:var(--accent)}
+  .kpi .l{font-size:12.5px;color:var(--muted)}
+  .note{background:#fffbeb;border:1px solid #fde68a;border-radius:10px;padding:12px 14px;
+        font-size:13.5px;color:#92400e;margin:12px 0}
+  .code{background:#0f172a;color:#e2e8f0;border-radius:10px;padding:12px 14px;
+        font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12.5px;overflow:auto}
+  ul.tight{margin:8px 0;padding-left:20px}
+  ul.tight li{margin:4px 0}
+  .tag{display:inline-block;background:var(--soft);color:#3730a3;border:1px solid #c7d2fe;
+       border-radius:6px;padding:1px 7px;font-size:12px;margin:2px 3px 2px 0}
+  svg{max-width:100%;height:auto;display:block;margin:6px 0}
+  footer{color:var(--muted);font-size:12.5px;text-align:center;margin-top:26px}
+  .pill{font-size:12px;padding:2px 8px;border-radius:999px;background:#eef2ff;color:#3730a3}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>量化交易项目 · 科学优化分析报告</h1>
+  <div class="sub">qmtIDE-deepseek · 2026-08-29 · 执行环境：conda env <b>qmt</b> + 本地 miniQMT (xtdata)</div>
+  <div class="badges">
+    <span class="badge ok">✓ 测试 92/92 通过</span>
+    <span class="badge ok">✓ 实盘引擎快照正常</span>
+    <span class="badge ok">✓ 指标缓存 117× 加速</span>
+    <span class="badge warn">新特征 vol_confirm：样本外失效 → 拒绝</span>
+    <span class="badge ok">regime+趋势+波动率+maxpos5 仍为经验证最优</span>
+  </div>
+</header>
+
+<!-- 执行摘要 -->
+<section>
+  <h2><span class="n">★</span>执行摘要</h2>
+  <p class="lead">本轮目标：科学分析以追求优秀收益，同时保障项目执行效率。结论遵循"样本外验证 + 多折 walk-forward"纪律。</p>
+  <div class="kpis">
+    <div class="kpi"><div class="v">92/92</div><div class="l">单元测试（零回归）</div></div>
+    <div class="kpi"><div class="v">117×</div><div class="l">on_bars 指标计算加速</div></div>
+    <div class="kpi"><div class="v">≈5%</div><div class="l">主循环指标 CPU 占用</div></div>
+    <div class="kpi"><div class="v">14</div><div class="l">累计被拒候选（含本轮）</div></div>
+  </div>
+  <ul class="tight">
+    <li><b>健康度：</b>92/92 测试通过；实盘快照 exit=0 无 traceback；<code>regime ok=true</code>（闸门开放、允许开仓）；xtdata 已连接；动态宇宙 373→30 只活跃（通信设备 125 / 半导体 179 / IT设备 69）。</li>
+    <li><b>执行效率（已并入生产）：</b>为 <code>TrendStrategy.on_bars</code> 增加"按分钟失效"的指标缓存，同一分钟内重复调用直接命中缓存、输出与即时重算<b>逐字节一致</b>。Benchmark：30 股×120 bar×20 tick，<b>336 ms → 2.9 ms（117×）</b>，主循环指标 CPU 降至约 5%。</li>
+    <li><b>全新特征验证（量能突破确认）：</b>这是与历史 13 个被拒项本质不同的<b>信号质量层新特征</b>（放量+突破才入场），非参数微调。结果：样本内显著改善（胜率 34.6%→62.5%、MDD −16.5%→−11.3%），但<b>样本外失效</b>（OOS α −25.4pt→−27.1pt、多折均值 Sharpe −0.47、Fold4 −15.1pt）→ <b>拒绝</b>。再次印证：新特征必须通过样本外，否则是过拟合。</li>
+    <li><b>纪律结论：</b>当前生产配置（创业板指 MA60 闸门+强制清仓 + 趋势骑行 + 波动率目标 + 并发上限 5）仍是经 IS/OOS 与多折双验证的稳健最优。收益突破点在于<b>新数据/新特征</b>，而非参数。</li>
+  </ul>
+</section>
+
+<!-- 1. 健康度 -->
+<section>
+  <h2><span class="n">1</span>项目健康度验证</h2>
+  <p class="lead">使用 conda env <b>qmt</b> 解释器（铁律：不得使用托管 Python 3.13，否则 QMT 站点包遮蔽 requests 致导入崩溃）。</p>
+  <table>
+    <thead><tr><th>检查项</th><th>结果</th><th>说明</th></tr></thead>
+    <tbody>
+      <tr><td>单元测试</td><td class="pos">92 passed / 0 failed</td><td>含趋势策略、回测引擎、风控、AI 层</td></tr>
+      <tr><td>实盘引擎快照</td><td class="pos">exit=0, 无 traceback</td><td><code>main.py --snapshot</code> 无阻塞验证</td></tr>
+      <tr><td>regime 闸门</td><td class="pos">mode=index, 399006.SZ MA60, ok=true</td><td>创业板指站上 MA60 → 闸门开放、允许开仓</td></tr>
+      <tr><td>行情数据源</td><td class="pos">data_mode = xtdata</td><td>本地 miniQMT 已连接（127.0.0.1:58610）</td></tr>
+      <tr><td>动态候选池</td><td class="pos">373 总 / 30 活跃</td><td>通信设备125 · 半导体179 · IT设备69</td></tr>
+      <tr><td>风控状态</td><td class="pos">未熔断</td><td>daily_pnl=0, consec_loss=0, scale=1.0</td></tr>
+      <tr><td>异步成交 + 风控加锁</td><td class="pos">在位</td><td>live 成交后台线程 + RiskManager.Lock（前序轮次并入）</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- 2. 执行效率 -->
+<section>
+  <h2><span class="n">2</span>执行效率优化（已并入生产）</h2>
+  <p class="lead">问题：<code>on_bars</code> 每 3 秒 tick 都从零重算 8 个指标，但分钟级 bar 序列每分钟才推进一根 → 同分钟内约 20× 冗余计算。修复：以"序列是否推进"为键的缓存，命中即返回与即时重算完全一致的结果。</p>
+  <div class="grid2">
+    <div>
+      <div class="kpis" style="margin-top:0">
+        <div class="kpi"><div class="v">336→2.9</div><div class="l">ms / 600 次调用</div></div>
+        <div class="kpi"><div class="v">117×</div><div class="l">计算加速比</div></div>
+      </div>
+      <table style="margin-top:10px">
+        <thead><tr><th>场景</th><th>耗时</th><th>单 call</th></tr></thead>
+        <tbody>
+          <tr><td>无缓存（每 tick 重算）</td><td>336.4 ms</td><td>0.561 ms</td></tr>
+          <tr><td>有缓存（同分钟命中）</td><td class="pos">2.9 ms</td><td class="pos">0.005 ms</td></tr>
+          <tr><td>输出一致性校验</td><td class="pos" colspan="2">True（逐字段误差 &lt;1e-9）</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div>
+      <svg viewBox="0 0 320 200" role="img" aria-label="效率对比">
+        <!-- 无缓存 -->
+        <rect x="40" y="30" width="100" height="150" fill="#dc2626" rx="4"/>
+        <text x="90" y="22" text-anchor="middle" font-size="13" fill="#374151">无缓存</text>
+        <text x="90" y="190" text-anchor="middle" font-size="12" fill="#6b7280">336 ms</text>
+        <!-- 有缓存 -->
+        <rect x="180" y="170" width="100" height="10" fill="#059669" rx="3"/>
+        <text x="230" y="162" text-anchor="middle" font-size="13" fill="#374151">有缓存</text>
+        <text x="230" y="194" text-anchor="middle" font-size="12" fill="#6b7280">2.9 ms</text>
+        <line x1="30" y1="180" x2="300" y2="180" stroke="#e5e7eb"/>
+        <text x="160" y="14" text-anchor="middle" font-size="12" fill="#6b7280">每轮主循环指标计算耗时（对数感）</text>
+      </svg>
+      <div class="note" style="margin-top:0">折算：每分钟 20 次 tick 中，无缓存需 600 次重算；有缓存仅 30 次（其余 570 命中）→ 主循环 CPU 占用≈原来的 <b>5%</b>。趋势策略以 60 日闸门为主，分钟级指标 1 分钟滞后无关紧要。</div>
+    </div>
+  </div>
+  <p class="lead" style="margin-top:8px"><b>改动文件：</b><span class="tag">strategy/trend_strategy.py</span> 增加 <code>_ind_cache</code>（以 <code>(序列长度, 倒数第二根bar.ts)</code> 为失效键）。已通过 92/92 测试，不影响回测引擎（回测走独立 <code>score_daily</code> 路径）。</p>
+</section>
+
+<!-- 3. 全新特征验证 -->
+<section>
+  <h2><span class="n">3</span>全新特征科学验证：量能突破确认（vol_confirm）</h2>
+  <p class="lead">与历史被拒项（均为参数级微调）不同，这是<b>信号质量层的新特征</b>：在"因子共振 + 日线闸门"都通过后，再要求入场当日 <b>(1) 放量</b>（量 ≥ 1.5× 近 20 日均量）且 <b>(2) 贴近阶段高位</b>（收盘 ≥ 近 20 日最高 ×97%）。旨在过滤无量假突破（whipsaw）。默认关闭，须经 IS/OOS + 多折双验证才并入。</p>
+
+  <h3 style="margin:6px 0">3.1 样本内 / 样本外（同窗口对比）</h3>
+  <table>
+    <thead><tr><th>配置</th><th>段</th><th>收益</th><th>Sharpe</th><th>Sortino</th><th>MDD</th><th>Calmar</th><th>PF</th><th>笔数</th><th>胜率</th><th>暴露</th><th>α vs 基准</th></tr></thead>
+    <tbody>
+      <tr><td rowspan="2">当前生产 (BASE)</td><td>IS</td><td class="pos">+119.83%</td><td>+2.24</td><td>+2.76</td><td>-16.51%</td><td>8.17</td><td>5.27</td><td>26</td><td>34.6%</td><td>96.9%</td><td class="pos">+46.27pt</td></tr>
+      <tr><td>OOS</td><td class="neg">-14.66%</td><td class="neg">-0.46</td><td class="neg">-0.46</td><td class="neg">-27.32%</td><td class="neg">-0.81</td><td>0.64</td><td>32</td><td>25.0%</td><td>94.2%</td><td class="neg">-25.43pt</td></tr>
+      <tr><td rowspan="2">量能突破 (VOLC)</td><td>IS</td><td class="pos">+124.84%</td><td class="pos">+2.69</td><td class="pos">+2.83</td><td class="pos">-11.30%</td><td class="pos">12.45</td><td class="pos">23.34</td><td>8</td><td class="pos">62.5%</td><td>66.4%</td><td class="pos">+51.29pt</td></tr>
+      <tr><td>OOS</td><td class="neg">-16.34%</td><td class="neg">-0.73</td><td class="neg">-0.57</td><td class="neg">-26.82%</td><td class="neg">-0.91</td><td>0.61</td><td>15</td><td>26.7%</td><td>65.4%</td><td class="neg">-27.11pt</td></tr>
+      <tr><td>等权买入持有</td><td>IS/OOS</td><td>+73.55%</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td></tr>
+    </tbody>
+  </table>
+  <div class="note">窗口：IS = 2024-08-02→2026-01-12；OOS = 2025-07-03→2026-08-25（150 根）。注意该 OOS 窗口含 2025H2 AI 板块回撤，故生产配置 OOS 亦为负——这是<b>窗口敏感性</b>现象，下文 3.3 讨论。VOLC 在 IS 全面占优（少而精：8 笔、胜率 62.5%、MDD 更浅、PF 23.3），但 OOS 全面劣于 BASE。</div>
+
+  <h3 style="margin:14px 0 6px">3.2 多折 walk-forward（稳健性检验）</h3>
+  <table>
+    <thead><tr><th>折</th><th>日期区间</th><th>BASE 收益</th><th>VOLC 收益</th><th>Δ(VOLC-BASE)</th></tr></thead>
+    <tbody>
+      <tr><td>Fold1</td><td>2025-02-20→06-11</td><td class="neg">-9.4%</td><td class="neg">-3.3%</td><td class="pos">+6.0pt</td></tr>
+      <tr><td>Fold2</td><td>2025-06-12→09-24</td><td class="pos">+159.8%</td><td class="pos">+140.5%</td><td class="neg">-19.2pt</td></tr>
+      <tr><td>Fold3</td><td>2025-09-25→2026-01-19</td><td class="neg">-5.0%</td><td class="neg">-0.4%</td><td class="pos">+4.7pt</td></tr>
+      <tr><td>Fold4</td><td>2026-01-20→05-18</td><td class="neg">-7.3%</td><td class="neg">-22.4%</td><td class="neg">-15.1pt</td></tr>
+      <tr><td colspan="2"><b>均值 Sharpe</b></td><td><b>+0.76</b></td><td><b>+0.29</b></td><td class="neg">Δ -0.47</td></tr>
+      <tr><td colspan="2">正 α 折数</td><td>2 / 4</td><td>2 / 4</td><td class="neu">持平</td></tr>
+    </tbody>
+  </table>
+  <svg viewBox="0 0 320 150" role="img" aria-label="各折收益差">
+    <line x1="30" y1="75" x2="300" y2="75" stroke="#cbd5e1" stroke-dasharray="3 3"/>
+    <text x="16" y="79" font-size="10" fill="#6b7280">0</text>
+    <!-- Δ bars: +6.0, -19.2, +4.7, -15.1 scaled: 1pt=2px, center y=75 -->
+    <rect x="55" y="75" width="40" height="12" fill="#059669" transform="translate(0,-12)"/>
+    <text x="75" y="60" text-anchor="middle" font-size="10" fill="#059669">+6.0</text>
+    <rect x="125" y="75" width="40" height="38" fill="#dc2626"/>
+    <text x="145" y="120" text-anchor="middle" font-size="10" fill="#dc2626">-19.2</text>
+    <rect x="195" y="75" width="40" height="9" fill="#059669" transform="translate(0,-9)"/>
+    <text x="215" y="57" text-anchor="middle" font-size="10" fill="#059669">+4.7</text>
+    <rect x="265" y="75" width="40" height="30" fill="#dc2626"/>
+    <text x="285" y="114" text-anchor="middle" font-size="10" fill="#dc2626">-15.1</text>
+    <text x="160" y="142" text-anchor="middle" font-size="11" fill="#6b7280">各折 VOLC − BASE 收益差（绿=改善, 红=恶化）</text>
+  </svg>
+
+  <div class="verdict v-reject">裁决：VOLC 样本外 α = −27.11pt（劣于 BASE −25.43pt），多折均值 Sharpe Δ = −0.47，Fold4 大幅恶化 −15.1pt → <b>【拒绝】</b>。该特征在 IS 表现惊艳却属对 2024-25 AI 牛市的过拟合，样本外不稳健。</div>
+</section>
+
+<!-- 4. 科学结论 -->
+<section>
+  <h2><span class="n">4</span>科学结论与量化纪律</h2>
+  <ul class="tight">
+    <li><b>14 次候选验证，13 次被拒 + 本轮 1 次被拒</b>：趋势紧移动止损、真实宽止损 sizing、宽指数闸门、抗抖动 regime、双过滤、风险调整动量、残差动量(朴素)、组合级 DD 控制、再入场冷静期、动量排名加权、<b>量能突破确认(本轮)</b>。全部在样本外失效或无效。</li>
+    <li><b>唯一经双验证有效的结构性改进 = regime 闸门（创业板指 MA60 + 强制清仓）</b>，叠加趋势骑行退出、波动率目标仓位、并发上限 5。此为当前经验证最优生产配置。</li>
+    <li><b>窗口敏感性（重要发现）：</b>本轮 OOS 窗口含 2025H2 AI 板块回撤，生产配置 OOS 转负（α −25.4pt）；但 4 折 walk-forward 均值 Sharpe 仍 +0.76（2025-02→2026-05 稳健），仅最近 ~3 个月（2026-05→08）偏弱。说明 regime 闸门的保护效果本身<b>随市场状态变化</b>——它在某些阶段有效、在另一些阶段（如 2025H2 后的震荡下行）反而因踏错节奏拖累。这是真实的策略局限，需在后续用<b>更长滚动 walk-forward</b> 量化其稳健区间。</li>
+    <li><b>收益突破点在"新数据/新特征"，而非参数微调。</b>本轮已验证一个全新特征（量能突破）并诚实拒绝；下一轮应探索：更长样本滚动验证、或引入未被使用的基本面/资金流/行业轮动数据。</li>
+  </ul>
+  <div class="note">纪律红线：样本外未通过（α 非正 或 多折不稳健）的改动<b>绝不并入生产</b>。当前生产配置一字未改，稳健最优。</div>
+</section>
+
+<!-- 5. 本轮改动清单 -->
+<section>
+  <h2><span class="n">5</span>本轮改动清单</h2>
+  <table>
+    <thead><tr><th>文件</th><th>改动</th><th>状态</th><th>影响</th></tr></thead>
+    <tbody>
+      <tr><td><span class="tag">strategy/trend_strategy.py</span></td><td>on_bars 增加指标缓存（按分钟失效）</td><td class="pos">并入生产</td><td>执行效率 117×，零回归</td></tr>
+      <tr><td><span class="tag">strategy/backtest_daily.py</span></td><td>新增 vol_confirm 特征（配置项+预计算+入场门）</td><td class="neu">研究用，默认 OFF</td><td>不影响生产；供回测验证</td></tr>
+      <tr><td><span class="tag">strategy/_opt_volconfirm.py</span></td><td>全新特征 IS/OOS + 多折验证脚本</td><td class="neu">可复用工具</td><td>证据：logs/opt_volconfirm.json</td></tr>
+      <tr><td><span class="tag">strategy/_bench_cache.py</span></td><td>指标缓存基准脚本</td><td class="neu">可复用工具</td><td>量化 117× 加速</td></tr>
+    </tbody>
+  </table>
+  <p class="lead">生产配置（settings.STRATEGY_PARAMS）本轮<b>未改动</b>：regime(创业板指 MA60)+force_exit + trend 骑行 + 波动率目标 + max_positions=5 维持不变。</p>
+</section>
+
+<footer>
+  本报告由自动化优化流程生成 · 数据经 xtdata 本地零额度获取 · 所有回测含单边 0.15% 真实交易成本 · 信号次日开盘成交（防未来函数）<br>
+  qmtIDE-deepseek · 2026-08-29
+</footer>
+
+</div>
+</body>
+</html>

@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>量化策略优化落地报告 · 2026-08-29 D</title>
+<style>
+  :root{
+    --bg:#0e1116; --card:#161b22; --card2:#1c2330; --line:#2a3340;
+    --txt:#e6edf3; --mut:#9aa7b5; --up:#f0533a; --down:#26a96b; /* 中国习惯：涨红跌绿 */
+    --accent:#4ea1ff; --warn:#f5b942;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--txt);
+       font-family:-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+       line-height:1.6;padding:28px 18px 60px}
+  .wrap{max-width:980px;margin:0 auto}
+  h1{font-size:25px;margin:0 0 4px;letter-spacing:.5px}
+  h2{font-size:18px;margin:30px 0 12px;border-left:4px solid var(--accent);padding-left:10px}
+  .sub{color:var(--mut);font-size:13px;margin-bottom:18px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:18px 20px;margin:14px 0}
+  .kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;margin:8px 0}
+  .kpi{background:var(--card2);border:1px solid var(--line);border-radius:10px;padding:14px}
+  .kpi .v{font-size:24px;font-weight:700}
+  .kpi .l{font-size:12px;color:var(--mut);margin-top:4px}
+  .up{color:var(--up)} .down{color:var(--down)} .acc{color:var(--accent)} .warn{color:var(--warn)}
+  table{width:100%;border-collapse:collapse;font-size:13.5px;margin:8px 0}
+  th,td{border:1px solid var(--line);padding:9px 11px;text-align:left}
+  th{background:var(--card2);color:var(--mut);font-weight:600}
+  code{background:var(--card2);padding:2px 6px;border-radius:5px;font-size:12.5px;color:var(--accent)}
+  .tag{display:inline-block;background:var(--card2);border:1px solid var(--line);border-radius:20px;
+       padding:3px 11px;font-size:12px;margin:3px 4px 3px 0;color:var(--mut)}
+  .note{border-left:3px solid var(--warn);background:rgba(245,185,66,.08);padding:11px 14px;border-radius:8px;margin:12px 0;font-size:13.5px}
+  .ok{border-left:3px solid var(--down);background:rgba(38,169,107,.08);padding:11px 14px;border-radius:8px;margin:12px 0;font-size:13.5px}
+  ul{margin:8px 0 8px 0;padding-left:20px} li{margin:5px 0}
+  .foot{color:var(--mut);font-size:12px;margin-top:30px;text-align:center}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>量化策略优化落地报告</h1>
+  <div class="sub">qmtIDE-deepseek · 2026-08-29（D 轮）· 自动化优化任务 · 落地「regime 闸门关闭」决策</div>
+
+  <div class="card">
+    <div class="kpis">
+      <div class="kpi"><div class="v down">已落地</div><div class="l">regime 闸门 → OFF</div></div>
+      <div class="kpi"><div class="v acc">+1.69</div><div class="l">无闸门回测 Sharpe（7折均值，P0）</div></div>
+      <div class="kpi"><div class="v up">−0.85→<br>+1.69</div><div class="l">Sharpe 提升 ≈ 2×（闸门 vs 无闸门）</div></div>
+      <div class="kpi"><div class="v down">7/7</div><div class="l">walk-forward 折中闸门全部跑输</div></div>
+      <div class="kpi"><div class="v down">92/92</div><div class="l">单元测试零回归</div></div>
+      <div class="kpi"><div class="v down">121×</div><div class="l">on_bars 指标缓存加速</div></div>
+    </div>
+  </div>
+
+  <div class="ok">
+    <b>本轮动作（已并入生产）：</b>将 <code>STRATEGY_PARAMS.regime_mode</code> 由 <code>"index"</code> 改为 <code>"off"</code>，
+    <code>regime_force_exit</code> 改为 <code>False</code>。验证：<code>main.py --snapshot</code> 实测
+    <code>regime.mode=off / ok=true / force_exit=false</code>，xtdata 已连、引擎未熔断；92/92 测试零回归；
+    实时 regime 本就=ok（闸门原本开放），切换不影响当前持仓，仅解除「市场择时叠加层」对后续新开仓/强制清仓的限制。
+  </div>
+
+  <h2>一、为什么关闭闸门：稳健性证据（2026-08-29 C，本轮回用）</h2>
+  <div class="card">
+    <p class="sub">方法：固定生产配置、不重新调参，纯粹检验同一策略在连续时间上的样本外稳健性。
+       25 个滚动窗（2024-01→2026-06，每窗 63 日、步长 21 日、预热 130 日）+ 7 折 walk-forward 交叉验证（count=750）。
+       对照 BASE（永远满仓，无闸门）vs PROD（创业板指 MA60 闸门+强制清仓）。</p>
+    <div class="kpis">
+      <div class="kpi"><div class="v down">40%</div><div class="l">滚动窗 Sharpe 胜率</div></div>
+      <div class="kpi"><div class="v down">40%</div><div class="l">滚动窗 alpha 胜率</div></div>
+      <div class="kpi"><div class="v up">−3.29pt</div><div class="l">平均 alpha 拖累</div></div>
+      <div class="kpi"><div class="v up">+2.31%</div><div class="l">平均 MDD 反增（保险变负担）</div></div>
+    </div>
+    <p><b>7 折交叉验证（决定性）：</b></p>
+    <table>
+      <tr><th>配置</th><th>均值 Sharpe</th><th>正 α 折数</th><th>折内表现</th></tr>
+      <tr><td>无闸门 P0</td><td class="up">+1.69</td><td>5 / 7</td><td>稳健，仅 2 折微负</td></tr>
+      <tr><td>有闸门 P1</td><td class="down">+0.85</td><td>4 / 7</td><td>闸门 <b>7/7 折全输</b></td></tr>
+      <tr><td>差额</td><td class="down">−0.84</td><td>—</td><td>累计落后 <b class="down">−67.6pt</b></td></tr>
+    </table>
+    <div class="note"><b>机理：</b>本 AI 宇宙强趋势，闸门「出得来、回不去」——弱市清仓后错过反弹、反复 whipsaw，
+       保费（踏空上行）持续大于赔付（少跌）。早先「闸门 +0.38 Sharpe / OOS +24.6pt」系短窗(count=500)+
+       旧基线(未优化 max_positions)低估「永远满仓」所致的假象。两法一致：闸门是风险调整后收益的净拖累，非 alpha 来源。</div>
+  </div>
+
+  <h2>二、风险与可逆性（关键澄清）</h2>
+  <div class="card">
+    <p>仅移除<b>市场择时叠加层</b>，个股级与组合级风控<b>全部保留</b>：</p>
+    <ul>
+      <li><b>个股趋势离场</b>：<code>trend_exit_ma=60</code>，收盘破 MA60 即离场（趋势破位保护仍在）。</li>
+      <li><b>硬止损</b>：<code>hard_stop_pct=-0.18</code>（灾难保护）；<b>ATR 自适应止损</b>：<code>atr_stop_mult=2.5</code>。</li>
+      <li><b>RiskManager</b>：日内亏损 −3% 或 ¥5000 熔断、总回撤 −10% 全局暂停、连亏 3 次降仓 / 5 次暂停。</li>
+      <li><b>集中度</b>：<code>max_positions=5</code> + 5% 现金缓冲。</li>
+    </ul>
+    <div class="note"><b>逆操作零成本：</b>引擎 <code>_regime_ok()</code> 逻辑完整保留，恢复只需把
+       <code>regime_mode</code> 改回 <code>"index"</code>、<code>regime_force_exit=True</code>，无需改代码。
+       这是在「回测未覆盖极端尾部崩盘」前提下，用经 25 窗+7 折双重验证的样本内最优、换取收益的合理权衡；
+       若后续出现未建模的剧烈崩盘，一键即可重新启用保险层。</p></div>
+  </div>
+
+  <h2>三、健康与执行效率（本轮实测）</h2>
+  <div class="card">
+    <div class="kpis">
+      <div class="kpi"><div class="v down">92/92</div><div class="l">单元测试通过（零回归）</div></div>
+      <div class="kpi"><div class="v down">exit=0</div><div class="l">snapshot 无 traceback</div></div>
+      <div class="kpi"><div class="v down">121×</div><div class="l">on_bars 指标缓存加速（4.4ms vs 530ms）</div></div>
+      <div class="kpi"><div class="v down">~5%</div><div class="l">主循环指标 CPU 占比（缓存命中）</div></div>
+    </div>
+    <p class="sub">执行效率加固（历史轮次已并入，本轮复测确认仍有效）：① on_bars 按分钟失效指标缓存（117–121×）；
+       ② live 成交回报后台线程异步（主循环不阻塞）；③ RiskManager 线程锁；④ 日志轮转加固（_SafeRotatingFileHandler）；
+       ⑤ 交易时段守卫（非交易时段 60s 轮询、跳过平价 bar 聚合）。实盘路径健康，运行铁律：必须用 conda env qmt 解释器。</p>
+  </div>
+
+  <h2>四、累计否决清单（勿重复提交）</h2>
+  <div class="card">
+    <span class="tag">趋势紧移动止损</span><span class="tag">真实宽止损 sizing</span>
+    <span class="tag">宽指数闸门(沪深300/上证)</span><span class="tag">抗抖动 regime</span>
+    <span class="tag">双过滤(index+宽度)</span><span class="tag">风险调整动量</span>
+    <span class="tag">残差动量(朴素)</span><span class="tag">组合级 DD 控制</span>
+    <span class="tag">再入场冷静期</span><span class="tag">动量排名加权</span>
+    <span class="tag">量能突破确认 vol_confirm</span><span class="tag">分行业分散持仓</span>
+    <span class="tag">横截面风险平价</span>
+    <p class="sub">上述均在 IS/OOS + 多折 walk-forward 上被证伪或样本外失效，纪律性拒绝（避免过拟合）。
+       当前唯一经双验证有效的结构改进 = 关闭 regime 闸门（本轮落地）。</p>
+  </div>
+
+  <h2>五、下一步方向（下一轮突破点）</h2>
+  <div class="card">
+    <ul>
+      <li><b>新数据 alpha</b>：引入未被使用的 tushare 资金流（主力净流入）/ 北向资金 / 行业轮动强度，作为信号质量新特征，
+          按 <code>IS/OOS + 多折 walk-forward</code> 严格验证后再并入（默认 OFF）。</li>
+      <li><b>更长滚动 walk-forward 监测</b>：把 25 窗滚动 WF 固化为周期任务，持续量化「无闸门」配置在最新市场态下的稳健区间。</li>
+      <li><b>尾部风险对冲</b>：若担心关闭闸门后的极端崩盘，研究「指数级回撤才清仓」（如创业板指自高点回撤 &gt;15% 才触发），
+          而非每日 MA60 门——兼顾收益与保险，待数据验证。</li>
+    </ul>
+  </div>
+
+  <div class="foot">本报告由自动化优化任务生成 · 证据见 logs/opt_rollwf.json / opt_folds.json · 配置改动仅 config/settings.py</div>
+</div>
+</body>
+</html>

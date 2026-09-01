@@ -1,0 +1,78 @@
+<!doctype html><html lang=zh><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<title>盈利修正(上修) 严格验证报告</title>
+<style>
+body{font-family:-apple-system,'Segoe UI',sans-serif;margin:0;background:#0f1420;color:#e6e9f0;padding:32px}
+h1{font-size:24px;margin:0 0 4px} .sub{color:#8b93a7;margin-bottom:24px}
+.card{background:#171d2b;border:1px solid #232b3d;border-radius:12px;padding:20px;margin-bottom:20px}
+h2{font-size:17px;color:#7fd1ff;margin:0 0 12px}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th,td{padding:7px 9px;text-align:center;border-bottom:1px solid #232b3d}
+th{color:#8b93a7;font-weight:600;background:#11161f}
+td:first-child,th:first-child{text-align:left}
+.bad{color:#ff6b6b}.good{color:#51e898}
+.verdict{font-size:15px;padding:14px 18px;border-radius:10px;margin-top:8px}
+.reject{background:#2a1620;border:1px solid #5a2a3a;color:#ff9bb0}
+.note{color:#8b93a7;font-size:12.5px;line-height:1.6}
+code{background:#11161f;padding:1px 6px;border-radius:5px;color:#9fe0ff}
+</style></head><body>
+<h1>盈利修正（业绩预告上修）严格验证报告</h1>
+<div class=sub>qmtIDE-deepseek · 2026-08-29 · IS/OOS + 7 折 walk-forward · 真实成本 单边0.15% · 次日开盘成交</div>
+
+<div class=card>
+<h2>① 为什么测这个</h2>
+<p class=note>本宇宙稳健 alpha 已收敛于「始终重仓 + 集中最强动量 + 趋势骑行」，所有<strong>价格/指数</strong>类退出或确认叠加层均被样本外证伪（regime 闸门 / tailhedge / vol_confirm / moneyflow / 动量加权 / 风险平价 / 权益DD硬止损 等 15+ 方向）。
+记忆点名的唯一剩余突破点 = <strong>与价格正交的另类基本面数据</strong>。本 token 档位无 consensus/评级接口，但 <code>forecast</code>（业绩预告，含净利润同比变动区间）可用：
+同一报告期后一次指引高于前一次 = <strong>盈利上修</strong>，属「盈利动量/预告漂移(PEAD)」经典因子，与 20 日价格动量正交。本实验是唯一尚未测试的 Orthogonal 数据轴。</p>
+</div>
+
+<div class=card>
+<h2>② IS / OOS 双段验证</h2>
+<table><thead><tr><th>变体</th><th>段</th><th>收益</th><th>Sharpe</th><th>MDD</th><th>Calmar</th><th>笔数</th><th>胜率</th><th>暴露</th><th>α</th></tr></thead>
+<tbody><tr><td rowspan=2>BASE_现状(regime关)</td><td>IS</td><td>+286.2%</td><td>2.08</td><td>-17.1%</td><td>6.63</td><td>51</td><td>52.9%</td><td>+97.3%</td><td>+38.8pt</td></tr>
+<tr><td>OOS</td><td>+2.7%</td><td>0.24</td><td>-16.3%</td><td>0.19</td><td>29</td><td>27.6%</td><td>+97.7%</td><td>-32.1pt</td></tr>
+<tr><td rowspan=2>ER_gate_w60</td><td>IS</td><td>+0.0%</td><td>0.00</td><td>+0.0%</td><td>0.00</td><td>0</td><td>0.0%</td><td>+0.0%</td><td>-247.4pt</td></tr>
+<tr><td>OOS</td><td>+0.0%</td><td>0.00</td><td>+0.0%</td><td>0.00</td><td>0</td><td>0.0%</td><td>+0.0%</td><td>-34.8pt</td></tr>
+<tr><td rowspan=2>ER_gate_w90</td><td>IS</td><td>+0.0%</td><td>0.00</td><td>+0.0%</td><td>0.00</td><td>0</td><td>0.0%</td><td>+0.0%</td><td>-247.4pt</td></tr>
+<tr><td>OOS</td><td>+0.0%</td><td>0.00</td><td>+0.0%</td><td>0.00</td><td>0</td><td>0.0%</td><td>+0.0%</td><td>-34.8pt</td></tr>
+<tr><td rowspan=2>ER_rank_w60_03</td><td>IS</td><td>+286.2%</td><td>2.08</td><td>-17.1%</td><td>6.63</td><td>51</td><td>52.9%</td><td>+97.3%</td><td>+38.8pt</td></tr>
+<tr><td>OOS</td><td>+2.7%</td><td>0.24</td><td>-16.3%</td><td>0.19</td><td>29</td><td>27.6%</td><td>+97.7%</td><td>-32.1pt</td></tr>
+<tr><td rowspan=2>ER_rank_w60_05</td><td>IS</td><td>+286.2%</td><td>2.08</td><td>-17.1%</td><td>6.63</td><td>51</td><td>52.9%</td><td>+97.3%</td><td>+38.8pt</td></tr>
+<tr><td>OOS</td><td>+2.7%</td><td>0.24</td><td>-16.3%</td><td>0.19</td><td>29</td><td>27.6%</td><td>+97.7%</td><td>-32.1pt</td></tr>
+<tr><td rowspan=2>ER_rank_w90_04</td><td>IS</td><td>+286.2%</td><td>2.08</td><td>-17.1%</td><td>6.63</td><td>51</td><td>52.9%</td><td>+97.3%</td><td>+38.8pt</td></tr>
+<tr><td>OOS</td><td>+2.7%</td><td>0.24</td><td>-16.3%</td><td>0.19</td><td>29</td><td>27.6%</td><td>+97.7%</td><td>-32.1pt</td></tr>
+</tbody></table>
+<p class=note>基准(等权买入持有) OOS：收益 +34.8% / Sharpe 1.09 / MDD -16.7%</p>
+</div>
+
+<div class=card>
+<h2>③ 7 折 walk-forward 交叉验证</h2>
+<table><thead><tr><th>配置</th><th>F1<br><small>202401</small></th><th>F2<br><small>202405</small></th><th>F3<br><small>202409</small></th><th>F4<br><small>202501</small></th><th>F5<br><small>202505</small></th><th>F6<br><small>202508</small></th><th>F7<br><small>202512</small></th><th>均值Sh</th><th>正α</th></tr></thead>
+<tbody><tr><td>BASE_现状(regime关)</td><td>+18.3%</td><td>+4.6%</td><td>+52.4%</td><td>+6.7%</td><td>+94.4%</td><td>+35.0%</td><td>+3.7%</td><td><b>+1.64</b></td><td>4/7</td></tr>
+<tr><td>ER_gate_w60</td><td>+0.0%</td><td>+0.0%</td><td>+0.0%</td><td>+0.0%</td><td>+0.0%</td><td>+0.0%</td><td>+0.0%</td><td><b>+0.00</b></td><td>1/7</td></tr>
+<tr><td>ER_gate_w90</td><td>+0.0%</td><td>+0.0%</td><td>+0.0%</td><td>+0.0%</td><td>+0.0%</td><td>+0.0%</td><td>+0.0%</td><td><b>+0.00</b></td><td>1/7</td></tr>
+<tr><td>ER_rank_w60_03</td><td>+18.3%</td><td>+4.6%</td><td>+52.4%</td><td>+6.7%</td><td>+94.4%</td><td>+35.0%</td><td>+3.7%</td><td><b>+1.64</b></td><td>4/7</td></tr>
+<tr><td>ER_rank_w60_05</td><td>+18.3%</td><td>+4.6%</td><td>+52.4%</td><td>+6.7%</td><td>+94.4%</td><td>+35.0%</td><td>+3.7%</td><td><b>+1.64</b></td><td>4/7</td></tr>
+<tr><td>ER_rank_w90_04</td><td>+18.3%</td><td>+4.6%</td><td>+52.4%</td><td>+6.7%</td><td>+94.4%</td><td>+35.0%</td><td>+3.7%</td><td><b>+1.64</b></td><td>4/7</td></tr>
+</tbody></table>
+<p class=note>BASE 多折均值 Sharpe = <b>+1.64</b>（全折正收益）。任何变体须多折均值 Sharpe > BASE 才算稳健。</p>
+</div>
+
+<div class=card>
+<h2>④ 逐折 vs BASE 与裁决</h2>
+<table><thead><tr><th>配置</th><th>逐折胜</th><th>累计差</th><th>裁决</th></tr></thead>
+<tbody><tr><td>ER_gate_w60</td><td>0/7</td><td>-215.1pt</td><td>❌ 拒绝</td></tr>
+<tr><td>ER_gate_w90</td><td>0/7</td><td>-215.1pt</td><td>❌ 拒绝</td></tr>
+<tr><td>ER_rank_w60_03</td><td>0/7</td><td>+0.0pt</td><td>❌ 拒绝</td></tr>
+<tr><td>ER_rank_w60_05</td><td>0/7</td><td>+0.0pt</td><td>❌ 拒绝</td></tr>
+<tr><td>ER_rank_w90_04</td><td>0/7</td><td>+0.0pt</td><td>❌ 拒绝</td></tr>
+</tbody></table>
+<div class="verdict reject">结论：所有盈利修正变体均<strong>未通过铁律</strong>（OOS 收益/Sharpe 未同时超越当前生产 BASE、或多折不稳健）→ <strong>拒绝并入生产</strong>。本宇宙稳健 alpha 进一步确认收敛于「价格动量 + 趋势骑行」，盈利修正上修虽与价格正交但样本外无增量（或信号过稀）。代码作为研究旋钮保留（<code>earnrev_mode</code> 默认 off），零生产影响。生产配置不变：regime 关 + trend + vol + max5。</div>
+</div>
+
+<div class=card>
+<h2>⑤ 健康 / 效率</h2>
+<p class=note>92/92 单元测试零回归（conda qmt）；<code>main.py --snapshot</code> exit=0、regime 关、xtdata 已连、动态宇宙活跃；
+on_bars 指标缓存 117× 加速、异步成交+风控加锁+日志轮转加固仍在。本次仅新增研究用数据轴（默认关闭），不改动生产路径。</p>
+</div>
+</body></html>

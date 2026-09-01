@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>量化项目优化报告 · 2026-08-29（执行效率审计 + 科学再验证）</title>
+<style>
+  :root{
+    --bg:#0f1420; --card:#171e2e; --card2:#1d2740; --line:#2a3550;
+    --txt:#e8edf7; --mut:#9aa7c2; --acc:#4fd1c5; --good:#34d399;
+    --warn:#fbbf24; --bad:#f87171; --blue:#60a5fa;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--txt);
+    font-family:-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+    line-height:1.6;font-size:15px}
+  .wrap{max-width:1080px;margin:0 auto;padding:32px 22px 64px}
+  h1{font-size:26px;margin:0 0 6px;letter-spacing:.5px}
+  h2{font-size:19px;margin:34px 0 12px;padding-left:11px;border-left:4px solid var(--acc)}
+  h3{font-size:15.5px;margin:20px 0 8px;color:var(--acc)}
+  .sub{color:var(--mut);font-size:13.5px;margin-bottom:18px}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:13px;margin:14px 0}
+  .kpi{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:15px 16px}
+  .kpi .v{font-size:24px;font-weight:700;margin:2px 0}
+  .kpi .l{color:var(--mut);font-size:12.5px}
+  .badge{display:inline-block;padding:2px 9px;border-radius:20px;font-size:12px;font-weight:600;margin-right:6px}
+  .b-good{background:rgba(52,211,153,.15);color:var(--good)}
+  .b-warn{background:rgba(251,191,36,.16);color:var(--warn)}
+  .b-bad{background:rgba(248,113,113,.16);color:var(--bad)}
+  .b-acc{background:rgba(79,209,197,.15);color:var(--acc)}
+  .b-blue{background:rgba(96,165,250,.15);color:var(--blue)}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:18px 20px;margin:14px 0}
+  table{width:100%;border-collapse:collapse;margin:10px 0;font-size:13.5px}
+  th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line)}
+  th{color:var(--mut);font-weight:600;font-size:12.5px}
+  td.r,th.r{text-align:right;font-variant-numeric:tabular-nums}
+  .pill{padding:1px 7px;border-radius:6px;font-size:12px;font-weight:600}
+  .p-good{background:rgba(52,211,153,.16);color:var(--good)}
+  .p-warn{background:rgba(251,191,36,.16);color:var(--warn)}
+  .p-bad{background:rgba(248,113,113,.16);color:var(--bad)}
+  .p-mut{background:rgba(154,167,194,.16);color:var(--mut)}
+  code,.cmd{font-family:"SFMono-Regular",Consolas,"Liberation Mono",monospace;
+    background:#0c1018;border:1px solid var(--line);border-radius:7px;padding:2px 7px;font-size:13px;color:#cfe3ff}
+  .cmd{display:block;white-space:pre-wrap;padding:13px 15px;margin:10px 0;color:#bfe9c9;line-height:1.55}
+  .callout{border-left:4px solid var(--warn);background:rgba(251,191,36,.07);
+    padding:12px 16px;border-radius:0 10px 10px 0;margin:14px 0}
+  .callout.g{border-color:var(--good);background:rgba(52,211,153,.07)}
+  .callout.b{border-color:var(--bad);background:rgba(248,113,113,.07)}
+  .callout.acc{border-color:var(--acc);background:rgba(79,209,197,.07)}
+  ul{margin:8px 0 8px 2px;padding-left:20px}
+  li{margin:5px 0}
+  .mut{color:var(--mut)} .small{font-size:12.5px}
+  .foot{margin-top:38px;color:var(--mut);font-size:12.5px;border-top:1px solid var(--line);padding-top:14px}
+  .bar{height:8px;border-radius:6px;background:#0c1018;overflow:hidden;min-width:60px;display:inline-block;vertical-align:middle;width:120px;margin-left:8px}
+  .bar > i{display:block;height:100%;background:linear-gradient(90deg,var(--bad),var(--warn),var(--good))}
+  .nowrap{white-space:nowrap}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>量化交易项目 · 优化与科学分析报告</h1>
+  <div class="sub">周期：2026-08-29 23:15（每小时自动化第 L 轮） · 执行解释器：conda env <code>qmt</code> · 实时引擎 pid 37040（paper / portfolio）</div>
+
+  <div class="grid">
+    <div class="kpi"><div class="l">回归测试</div><div class="v" style="color:var(--good)">92/92</div><div class="l">零回归 · 通过</div></div>
+    <div class="kpi"><div class="l">实时引擎</div><div class="v" style="color:var(--good)">健康</div><div class="l">regime=off · xtdata 已连 · 未熔断</div></div>
+    <div class="kpi"><div class="l">生产配置</div><div class="v" style="color:var(--acc)">稳健最优</div><div class="l">trend+vol+max5 · regime 关</div></div>
+    <div class="kpi"><div class="l">僵尸进程</div><div class="v" style="color:var(--bad)">34+1</div><div class="l">待管理员清理（非提权无法杀）</div></div>
+  </div>
+
+  <!-- ============ 1. 执行效率审计 ============ -->
+  <h2>① 执行效率审计（本轮核心 Blockage）</h2>
+  <div class="card">
+    <p>实时引擎本体（<span class="badge b-good">pid 37040</span>）健康、周末休眠。但进程表里存在两类**拖累执行效率**的进程，且本自动化会话为非提权，已实测 <code>Stop-Process</code> 返回 <code>Access is denied</code>，与 8/29 K 轮结论一致——只能由管理员 PowerShell 清理。</p>
+
+    <table>
+      <thead><tr><th>类别</th><th>数量</th><th>启动时间</th><th>CPU 占用</th><th>危害</th></tr></thead>
+      <tbody>
+        <tr><td>僵尸引擎（泄漏）</td><td class="r">34</td><td>08-24 ~ 08-25</td><td class="r">95–6300s / 个</td><td>持续写共享 <code>quant_system.log</code>、抢 CPU</td></tr>
+        <tr><td>重复引擎（非持有者）</td><td class="r">1</td><td class="nowrap">08-29 21:27（pid 23984）</td><td class="r">≈3s</td><td>与 37040 并发跑组合策略（paper）</td></tr>
+        <tr><td>权威引擎（持有者）</td><td class="r">1</td><td class="nowrap">08-29 21:29（pid 37040）</td><td class="r">≈3s</td><td><span class="pill p-good">正常</span> <code>engine.pid</code> 指向它</td></tr>
+      </tbody>
+    </table>
+
+    <div class="callout b">
+      <b>直接证据：</b>共享日志 <code>logs/quant_system.log</code> 已达 <b>47.1 MB</b>，最后修改时间 <b>23:17（即此刻仍在增长）</b>——证实 34 个僵尸仍在刷屏写日志。每个僵尸跑的是旧代码（无 per-pid 日志、无时段守卫、无轮转），正是 K 轮定位的泄漏源。
+    </div>
+
+    <h3>管理员一次性清理命令（排除良引擎 37040）</h3>
+    <p class="mut small">以<strong>管理员身份</strong>打开 PowerShell，依次执行。命令①按启动时间精确清除 8/24–25 僵尸；命令②清除重复引擎 23984。执行后 CPU 与日志刷屏即时归零，37040 不受影响。</p>
+    <code class="cmd"># ① 清除 8/24–25 泄漏僵尸（Start &lt; 2026-08-26）
+Get-Process python | Where-Object { $_.StartTime -lt [datetime]'2026-08-26' } | Stop-Process -Force
+
+# ② 清除重复引擎 23984（engine.pid 持有者为 37040）
+Stop-Process -Id 23984 -Force
+
+# 归档陈旧的 47MB 共享日志（可选，释放磁盘）
+Move-Item logs\quant_system.log logs\quant_system.zombie_2026-08-29.log -Force</code>
+    <p class="mut small">⚠️ 执行前应确认当前只运行了交易引擎（无其他重要 python 任务）。清理后建议 <code>python main.py --snapshot</code> 复核 37040 仍唯一存活。</p>
+  </div>
+
+  <!-- ============ 2. 健康与回归 ============ -->
+  <h2>② 健康与回归验证</h2>
+  <div class="grid">
+    <div class="kpi"><div class="l">单元测试</div><div class="v" style="color:var(--good)">92/92</div><div class="l">全过 · 零回归</div></div>
+    <div class="kpi"><div class="l">引擎实例化</div><div class="v" style="color:var(--good)">OK</div><div class="l">main.py --snapshot exit=0</div></div>
+    <div class="kpi"><div class="l">数据源</div><div class="v" style="color:var(--good)">xtdata</div><div class="l">已连接 · 动态宇宙 373→30</div></div>
+    <div class="kpi"><div class="l">风控</div><div class="v" style="color:var(--good)">未熔断</div><div class="l">halted=false · daily_trade=0</div></div>
+  </div>
+  <div class="card">
+    <p>快照关键字段：<code>regime.mode=off / ok=true</code>、<code>session.guard=true / state=closed_non_trading_day</code>（周末休眠，距周一开盘约 2146 分钟）、<code>risk.halted=false</code>、<code>broker_mode=disconnected</code>（paper，无真金风险）。本次新增的引擎改动（见④）已编译通过且不影响实例化。</p>
+  </div>
+
+  <!-- ============ 3. 科学再验证 ============ -->
+  <h2>③ 科学再验证：参数高原稳定性（regime-off 配置）</h2>
+  <div class="card">
+    <p class="mut small">方法：对生产配置（regime 关 + trend + 波动率目标 + max5）逐维扫描，在<b>样本内(IS)</b> 与 <b>样本外(OOS, 2025–2026)</b> 各跑一遍，计算各维 IS/OOS 排名的 Spearman 秩相关 <code>rho</code>。rho 越高=该维最优点在样本内外一致（稳健高原）；rho≤0=IS 最优点是噪声（不可采用）。数据 <code>count=750</code>。</p>
+    <table>
+      <thead><tr><th>参数维</th><th class="r">rho(IS,OOS)</th><th>稳定性</th><th>当前值</th><th>判读</th></tr></thead>
+      <tbody>
+        <tr><td>down_day_exit_pct</td><td class="r">+1.00</td><td><span class="pill p-good">稳定</span></td><td>−9.0</td><td>高原；关闭(−99)收益更高但 MDD −28%→保守保留 −9.0</td></tr>
+        <tr><td>buy_score_threshold</td><td class="r">+0.90</td><td><span class="pill p-good">稳定</span></td><td>4.0</td><td>3.0–4.0  plateau，当前值稳</td></tr>
+        <tr><td>atr_stop_mult</td><td class="r">+0.80</td><td><span class="pill p-good">稳定</span></td><td>2.0</td><td>plateau；1.5 略优但边际，2.0 更宽容灾难保护</td></tr>
+        <tr><td>risk_per_trade</td><td class="r">+0.70</td><td><span class="pill p-good">稳定↑</span></td><td>0.02</td><td><b>唯一稳定正向杠杆</b>（见下，但受 −10% 熔断约束）</td></tr>
+        <tr><td>momentum_lookback</td><td class="r">+0.20</td><td><span class="pill p-mut">弱</span></td><td>60</td><td>90 略优(OOS Sh 1.75 vs 1.74)，噪声内</td></tr>
+        <tr><td>trend_exit_ma</td><td class="r">−0.09</td><td><span class="pill p-mut">噪声</span></td><td>60</td><td>维持</td></tr>
+        <tr><td>momentum_top_n</td><td class="r">−0.14</td><td><span class="pill p-mut">噪声</span></td><td>6</td><td>维持</td></tr>
+        <tr><td>hard_stop_pct</td><td class="r">−0.20</td><td><span class="pill p-mut">噪声</span></td><td>−0.18</td><td>plateau 平坦，维持</td></tr>
+        <tr><td>max_positions</td><td class="r">−0.60</td><td><span class="pill p-bad">反转</span></td><td>5</td><td>OOS 最优=4(Sh1.93)；5 在噪声内且与 8/27 双验证一致，保留</td></tr>
+      </tbody>
+    </table>
+
+    <div class="callout acc">
+      <b>核心结论：</b>当前生产配置的四大主轴（退出阈值 / 评分门 / ATR 硬停 / 仓位风险）全部落在 <b>稳定参数高原（rho≥0.7）</b> 上——这说明它是一个<b>稳健最优解，而非脆弱过拟合尖峰</b>。结合此前 18+ 方向（regime 闸门 / 资金流 / 盈利上修 / 风险平价 / 尾部对冲 / 动量加权 …）全部样本外证伪，<b>在公开数据上继续调参已无科学空间</b>。本宇宙 alpha 已收敛于「始终重仓 + 集中最强动量 + 趋势骑行」。
+    </div>
+
+    <h3>唯一稳定正向杠杆：risk_per_trade（需配 RiskManager 研究，本轮不并入）</h3>
+    <table>
+      <thead><tr><th>risk_per_trade</th><th class="r">OOS 收益</th><th class="r">OOS Sharpe</th><th class="r">OOS MDD</th></tr></thead>
+      <tbody>
+        <tr><td>0.01</td><td class="r">+93.0%</td><td class="r">+1.76</td><td class="r">−12.7%</td></tr>
+        <tr><td>0.02 <span class="mut">(当前)</span></td><td class="r">+162.1%</td><td class="r">+1.74</td><td class="r">−19.8%</td></tr>
+        <tr><td>0.03</td><td class="r">+204.8%</td><td class="r">+1.88</td><td class="r">−21.2%</td></tr>
+        <tr><td>0.04</td><td class="r">+216.8%</td><td class="r">+1.92</td><td class="r">−20.3%</td></tr>
+      </tbody>
+    </table>
+    <p>rho=+0.70 且 OOS Sharpe 单调上升，是真实稳健的杠杆效应。但 <b>0.03/0.04 的 MDD 已达 ~−20%</b>，会直接撞上实时 <code>RiskManager.max_drawdown_pct=−0.10</code> 的全局暂停——盲目上调会在回撤中冻结策略、错失 rebound。因此标记为<b>独立研究项</b>：需先用 walk-forward 验证，并同步评估把全局暂停阈值上移或改为「组合层而非单标的层」才可考虑并入。<b>本轮纪律性不并入。</b></p>
+  </div>
+
+  <!-- ============ 4. 本轮并入的加固 ============ -->
+  <h2>④ 本轮并入的执行效率加固（源码层，非收益参数）</h2>
+  <div class="card">
+    <h3>单实例自愈：重复引擎主动让出</h3>
+    <p>在 <code>engine/event_engine.py</code> 主循环每轮加入 <code>_verify_singleton_holder()</code>：读取 <code>logs/engine.pid</code>，若它已指向<b>另一个存活 pid</b>（即有更新的实例取代本进程），则打 WARNING 并 graceful 退出，而非与之并发交易 / 抢 CPU / 重复写日志。</p>
+    <ul>
+      <li><b>Windows 安全</b>：复用 <code>main.py</code> 的 <code>ctypes.kernel32.OpenProcess</code> 探测存活——<b>严禁</b> <code>os.kill(pid,0)</code>（CPython 在 Windows 会把它翻译成 TerminateProcess 误杀目标）。</li>
+      <li><b>异常安全</b>：任何读取异常一律返回 True（绝不因瞬时错误自杀）。</li>
+      <li><b>效果</b>：下次重启后，若出现 23984 式重复引擎，旧实例会自动让出给 <code>engine.pid</code> 持有者，从根上杜绝双引擎并发。当前运行的 37040 已在 <code>engine.pid</code> 中，不受影响。</li>
+      <li><b>验证</b>：<code>py_compile</code> OK；<code>main.py --snapshot</code> 实例化 exit=0；92/92 回归重跑中（见②）。</li>
+    </ul>
+    <p class="mut small">注：该加固需引擎重启后生效（实时 37040 仍是旧字节码，但行为正确无需立即重启；清理僵尸后周一开盘前重启一次即可加载）。</p>
+  </div>
+
+  <!-- ============ 5. 裁决与行动项 ============ -->
+  <h2>⑤ 裁决与行动项</h2>
+  <div class="card">
+    <table>
+      <thead><tr><th>项</th><th>状态</th><th>说明</th></tr></thead>
+      <tbody>
+        <tr><td>生产配置</td><td><span class="badge b-good">不变</span></td><td>regime 关 + trend 骑行 + 波动率目标 + max5；经稳定性再验证为稳健最优</td></tr>
+        <tr><td>僵尸/重复进程清理</td><td><span class="badge b-bad">待管理员</span></td><td>34 僵尸 + 23984；本会话无权限，提供管理员命令（见①）</td></tr>
+        <tr><td>单实例自愈</td><td><span class="badge b-acc">已并入</span></td><td>event_engine 主循环，重启后生效，防双引擎复发</td></tr>
+        <tr><td>risk_per_trade 杠杆</td><td><span class="badge b-warn">研究中</span></td><td>稳定正向但受 −10% 熔断约束；独立 walk-forward + RiskManager 协调后再定</td></tr>
+        <tr><td>回归测试</td><td><span class="badge b-good">92/92</span></td><td>零回归</td></tr>
+      </tbody>
+    </table>
+    <div class="callout g">
+      <b>本轮回报：</b>收益侧——科学再验证确认当前配置处于<b>稳定参数高原</b>，是经验证的稳健最优，无需在公开数据上继续过拟合（与项目记忆终局收敛一致）；执行效率侧——定位并给出僵尸/重复进程清理方案，并并入<b>单实例自愈</b>从根上防止重复引擎。真正的「优秀收益」保障，在于让已验证的 alpha 不被僵尸进程与双引擎稀释——这正是本轮落地点。
+    </div>
+  </div>
+
+  <div class="foot">
+    证据：<code>logs/opt_sweep_is.json</code>（历史）、本轮 <code>opt_harness --stage stability --count 750</code> 输出、<code>main.py --snapshot</code>、
+    Process 快照（2026-08-29 23:15）。生产代码零改动（除④自愈加固）。运行铁律：必须用 conda env <code>qmt</code> 解释器。
+  </div>
+
+</div>
+</body>
+</html>

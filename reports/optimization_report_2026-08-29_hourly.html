@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>qmtIDE-deepseek · 每小时优化与健康审计 · 2026-08-29</title>
+<style>
+  :root{
+    --bg:#0f1419; --panel:#1a2029; --panel2:#212a35; --line:#2c3744;
+    --txt:#e6edf3; --muted:#9aa7b4; --accent:#3fb950; --warn:#f0a93b;
+    --bad:#f85149; --info:#58a6ff;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--txt);
+       font-family:-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;
+       line-height:1.6;font-size:14px}
+  .wrap{max-width:980px;margin:0 auto;padding:28px 22px 60px}
+  h1{font-size:22px;margin:0 0 4px;font-weight:700}
+  .sub{color:var(--muted);font-size:13px;margin-bottom:22px}
+  h2{font-size:16px;margin:30px 0 12px;padding-left:10px;
+     border-left:3px solid var(--accent)}
+  h3{font-size:14px;margin:18px 0 8px;color:var(--info)}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;
+        padding:16px 18px;margin:12px 0}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));
+        gap:12px;margin:12px 0}
+  .kpi{background:var(--panel2);border:1px solid var(--line);border-radius:9px;padding:13px 14px}
+  .kpi .v{font-size:20px;font-weight:700}
+  .kpi .l{font-size:12px;color:var(--muted);margin-top:2px}
+  .ok{color:var(--accent)} .warn{color:var(--warn)} .bad{color:var(--bad)}
+  .pill{display:inline-block;padding:2px 9px;border-radius:20px;font-size:12px;font-weight:600}
+  .pill.ok{background:rgba(63,185,80,.15);color:var(--accent)}
+  .pill.warn{background:rgba(240,169,59,.15);color:var(--warn)}
+  .pill.bad{background:rgba(248,81,73,.15);color:var(--bad)}
+  code{background:#0b0f14;border:1px solid var(--line);border-radius:5px;
+       padding:1px 6px;font-family:"SFMono-Regular",Consolas,monospace;font-size:12.5px;color:#9fe6a0}
+  pre{background:#0b0f14;border:1px solid var(--line);border-radius:8px;
+      padding:13px 15px;overflow:auto;font-size:12.5px;line-height:1.5;
+      font-family:"SFMono-Regular",Consolas,monospace;color:#cfe3d0}
+  table{width:100%;border-collapse:collapse;margin:10px 0;font-size:13px}
+  th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line)}
+  th{color:var(--muted);font-weight:600;font-size:12px}
+  .note{color:var(--muted);font-size:12.5px;margin-top:6px}
+  ul{margin:8px 0;padding-left:20px} li{margin:4px 0}
+  .alert{background:rgba(248,81,73,.08);border:1px solid rgba(248,81,73,.4);
+         border-radius:10px;padding:14px 16px;margin:14px 0}
+  .alert .t{color:var(--bad);font-weight:700;font-size:14px;margin-bottom:6px}
+  .cta{background:rgba(63,185,80,.08);border:1px solid rgba(63,185,80,.4);
+       border-radius:10px;padding:14px 16px;margin:14px 0}
+  .cta .t{color:var(--accent);font-weight:700;font-size:14px;margin-bottom:6px}
+  .foot{margin-top:34px;color:var(--muted);font-size:12px;text-align:center}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>qmtIDE-deepseek · 每小时优化与系统健康审计</h1>
+  <div class="sub">自动化任务 qmt-deepseek-workbuddy · 运行于 2026-08-29 18:24 (GMT+8) · 解释器 conda env <code>qmt</code></div>
+
+  <!-- ============ 执行摘要 ============ -->
+  <h2>一、执行摘要</h2>
+  <div class="card">
+    <p style="margin:0">本周期货量化策略已收敛至<strong>经验证最优配置</strong>（regime 闸门关闭 + 趋势骑行 + 波动率目标仓位 + 并发持仓上限 5）。在严格 IS/OOS + 多折 walk-forward 纪律下，18+ 个候选改进方向均被样本外证伪，<strong>未做无据调参</strong>。</p>
+    <p style="margin:10px 0 0">但本轮审计发现一个<strong>被长期忽略的执行效率致命点</strong>：<strong>当前实际运行的实时引擎是一个「陈旧进程」</strong>——它启动于今日 14:20，早于今日 17:27–17:30 的多处源码优化提交，因此从未加载已合并的加速/加固代码；且现已<strong>卡死</strong>（日内交易次数触顶后每个 tick 仍在重复提交被拒订单、产业链评分报错刷屏）。</p>
+    <p style="margin:10px 0 0"><strong>本周期真正能提升收益的优化动作 = 重启实时引擎以加载已验证的优化代码。</strong>源码本身完全健康（92/92 测试通过、编译零错误、快照正常）。</p>
+  </div>
+
+  <!-- ============ 二、健康与回归 ============ -->
+  <h2>二、源码健康与回归验证（conda qmt）</h2>
+  <div class="grid">
+    <div class="kpi"><div class="v ok">92/92</div><div class="l">单元测试通过（零回归）</div></div>
+    <div class="kpi"><div class="v ok">0</div><div class="l">全项目 py_compile 语法错误</div></div>
+    <div class="kpi"><div class="v ok">exit 0</div><div class="l">main.py --snapshot 实例化</div></div>
+    <div class="kpi"><div class="v ok">connected</div><div class="l">xtdata 实时行情接入</div></div>
+    <div class="kpi"><div class="v ok">off</div><div class="l">regime 闸门（已验证最优）</div></div>
+    <div class="kpi"><div class="v ok">未熔断</div><div class="l">RiskManager 风控状态</div></div>
+  </div>
+  <div class="card">
+    <h3>已合并且经验证的优化（均在源码中，待重启生效）</h3>
+    <table>
+      <tr><th>优化项</th><th>状态</th><th>收益/效果</th></tr>
+      <tr><td>on_bars 指标缓存（按分钟失效）</td><td><span class="pill ok">已并入</span></td><td>主循环指标计算 117–121× 加速，CPU≈5%</td></tr>
+      <tr><td>live 成交回报异步化 + 风控加锁</td><td><span class="pill ok">已并入</span></td><td>主行情循环不再被成交回报阻塞</td></tr>
+      <tr><td>日志轮转加固（_SafeRotatingFileHandler）</td><td><span class="pill ok">已并入</span></td><td>单文件 20MB×5 封顶，跨进程竞争自动切私有文件</td></tr>
+      <tr><td>_SafeStreamHandler（捕获 stdout 失效 Errno 22）</td><td><span class="pill ok">已并入</span></td><td>杜绝「sector 评估失败 [Errno 22]」刷屏</td></tr>
+      <tr><td>「建仓」日志降级 DEBUG + 推荐池去重</td><td><span class="pill ok">已并入</span></td><td>消除 535MB/63万条日志刷屏</td></tr>
+      <tr><td>regime 闸门关闭（25窗+7折验证）</td><td><span class="pill ok">已并入</span></td><td>回测 Sharpe 0.85→1.69，追收益</td></tr>
+      <tr><td>max_positions=5（IS/OOS+多折双验证）</td><td><span class="pill ok">已并入</span></td><td>OOS +1.3%→+12.3%、Sharpe +0.24→+0.70</td></tr>
+    </table>
+    <p class="note">结论：源码层已是「经验证最优 + 高效率」状态。问题不在代码，在<strong>运行中的进程未加载这些代码</strong>。</p>
+  </div>
+
+  <!-- ============ 三、关键发现 ============ -->
+  <h2>三、关键发现：运行中的引擎是陈旧且卡死的进程</h2>
+
+  <div class="alert">
+    <div class="t">⚠ 实时引擎（pid 40604）仍在跑 8 月 27–29 日优化前的旧代码</div>
+    <p style="margin:6px 0 0">引擎自今日 14:20 启动后从未重启，而源码在 17:27–17:30 仍有优化提交。进程内存里是旧字节码，所有已合并的加速/加固均未生效。</p>
+  </div>
+
+  <h3>三项确凿证据</h3>
+  <table>
+    <tr><th>证据</th><th>实测</th><th>含义</th></tr>
+    <tr>
+      <td>① 日志级别错位</td>
+      <td>实时日志仍打印 <code>INFO ... Portfolio: 建 603986.SH x 700</code></td>
+      <td>源码早已把该日志降级为 <code>DEBUG</code>（portfolio_strategy.py:157）。运行进程仍是旧版 → <strong>陈旧进程铁证</strong></td>
+    </tr>
+    <tr>
+      <td>② 日志无上限增长</td>
+      <td><code>quant_system.log</code> = <strong>21.4 MB</strong> 且持续增大</td>
+      <td>旧处理器无旋转封顶；当前代码应在 20MB 自动轮转。已越过容量上限 = 旧处理器仍在跑</td>
+    </tr>
+    <tr>
+      <td>③ 引擎卡死刷屏</td>
+      <td>最近 2000 行含 <strong>156 条「BUY 拒绝」+ 79 条「sector 评估失败」</strong></td>
+      <td>日内交易次数触顶后每个 tick 仍重复提交被拒订单；stdout 句柄失效后错误被当作业务失败反复记录 → <strong>CPU 空转 + 日志污染</strong></td>
+    </tr>
+  </table>
+
+  <h3>澄清一个「假 bug」</h3>
+  <div class="card">
+    <p style="margin:0"><code>sector 评估失败: [Errno 22] Invalid argument</code> <strong>不是策略 bug</strong>。如 <code>main.py:52-70</code> 注释所述：进程被后台化/父控制台关闭后，Windows 向失效 stdout 写入会抛 <code>OSError [Errno 22]</code>，该异常从任意 logger 调用点冒出、被上层 try 当作业务失败记下。当前代码的 <code>_SafeStreamHandler</code> 会在检测到流失效时<strong>自动摘除该 handler</strong>，彻底消除此刷屏。旧进程没有这层防护 → 每 tick 复现。</p>
+  </div>
+
+  <h3>为什么重启能「解卡」</h3>
+  <div class="card">
+    <p style="margin:0"><code>event_engine._daily_trade_count</code> 是<strong>内存计数</strong>（初始化为 0，仅在 Fill 回报时自增，<strong>不落库</strong>）。引擎卡死正是因为该计数已触顶 <code>max_daily_trades</code>，导致所有 BUY 被拒。重启会重置此计数 → 引擎当日可重新正常开仓。持仓由 storage 持久化，重启安全、不会丢仓。</p>
+  </div>
+
+  <!-- ============ 四、收益配置现状 ============ -->
+  <h2>四、收益配置现状（经验证最优，未改动）</h2>
+  <div class="card">
+    <p style="margin:0"><strong>生产配置 = 趋势骑行退出 + 波动率目标仓位 + max_positions=5（regime 闸门 OFF）。</strong></p>
+    <ul>
+      <li>regime 闸门关闭依据：25 滚动窗 + 7 折 walk-forward（无闸门 Sharpe <strong>+1.69</strong> vs 有闸门 +0.85，7/7 折跑输、累计 −67.6pt）。闸门在强趋势 AI 宇宙是「出得来、回不去」的净拖累。</li>
+      <li>累计否决清单（18+ 方向，勿重复提交）：趋势紧移动止损、真实宽止损 sizing、宽指数闸门、抗抖动 regime、双过滤、风险调整动量、残差动量、组合级 DD 控制、再入场冷静期、动量排名加权、量能突破确认、分行业分散、横截面风险平价、尾部对冲熔断、主力资金流 gate/rank、组合权益 DD 硬止损、盈利预告上修。</li>
+      <li>所有公开数据轴（价格/指数/资金流/盈利上修）均被样本外证伪或冗余；本宇宙稳健 alpha 收敛于「价格动量 + 趋势骑行」。继续在公开数据上调参无超额收益。</li>
+    </ul>
+    <p class="note">结论：收益侧已无样本外有效的可调空间；本周期优化重心在<strong>执行效率与让已验证代码真正上线</strong>。</p>
+  </div>
+
+  <!-- ============ 五、优化行动建议 ============ -->
+  <h2>五、优化行动建议（本周期高 ROI 动作）</h2>
+  <div class="cta">
+    <div class="t">✅ 重启实时引擎，加载已验证优化代码</div>
+    <p style="margin:6px 0 0">引擎提供<strong>协作式停止</strong>机制（写哨兵文件、主循环自行收敛退出，不杀交易/不中断写库），配合单实例锁，重启安全。</p>
+    <p style="margin:10px 0 4px"><strong>步骤（在 conda env qmt 下）：</strong></p>
+    <pre># 1) 协作式停止当前陈旧进程（写 STOP_ENGINE 哨兵，引擎自行退出）
+C:\Users\lisinan\.conda\envs\qmt\python.exe main.py --stop
+
+# 2) 重新启动（用原启动模式；默认 paper；如实盘加 --mode live）
+#    若原以组合策略运行：
+C:\Users\lisinan\.conda\envs\qmt\python.exe main.py --strategy portfolio
+#    实盘：
+C:\Users\lisinan\.conda\envs\qmt\python.exe main.py --mode live --strategy portfolio</pre>
+    <p class="note">重启后预期：日志回落到 DEBUG 级「建仓」、不再有「sector 评估失败 [Errno 22]」刷屏、<code>quant_system.log</code> 在 20MB 自动轮转、on_bars 缓存生效（主循环 CPU≈5%）、日内交易计数重置可重新开仓。</p>
+  </div>
+
+  <!-- ============ 六、效率基线 ============ -->
+  <h2>六、执行效率基线（重启后生效）</h2>
+  <div class="grid">
+    <div class="kpi"><div class="v ok">117–121×</div><div class="l">on_bars 指标计算加速</div></div>
+    <div class="kpi"><div class="v ok">≈5%</div><div class="l">主循环指标 CPU 占用</div></div>
+    <div class="kpi"><div class="v ok">异步</div><div class="l">成交回报（不阻塞主循环）</div></div>
+    <div class="kpi"><div class="v ok">100MB</div><div class="l">日志封顶（20MB×5 轮转）</div></div>
+  </div>
+
+  <div class="foot">
+    自动化审计由 WorkBuddy 生成 · 源码验证 conda env qmt · 策略纪律：仅并入 IS/OOS + 多折 walk-forward 双验证有效的改进<br>
+    下次运行：每小时（至 2026-08-31 15:59 UTC+8）。本周期无源码改动，优化交付 = 重启建议（待确认执行）。
+  </div>
+
+</div>
+</body>
+</html>

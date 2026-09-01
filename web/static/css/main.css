@@ -1,0 +1,115 @@
+* { box-sizing: border-box; }
+body { margin: 0; font-family: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  background: #0f1419; color: #e0e6ed; font-size: 13px; }
+header { background: #1a1f29; padding: 12px 20px; border-bottom: 1px solid #2a3441;
+  display: flex; justify-content: space-between; align-items: center; }
+header h1 { font-size: 18px; margin: 0; font-weight: 600; }
+.badge { display: inline-block; background: #2a3441; padding: 2px 8px; border-radius: 4px;
+  margin-left: 8px; font-size: 11px; color: #8898a6; font-family: monospace; }
+.badge.live { background: #1d4f3a; color: #5fd99e; }
+.badge.mock { background: #4f3a1d; color: #d99e5f; }
+.badge.bullish { background: #1d4f3a; color: #5fd99e; }
+.badge.bearish { background: #4f1d2e; color: #d95f5f; }
+.badge.neutral { background: #2a3441; color: #8898a6; }
+.actions button { background: #2a3441; color: #e0e6ed; border: none; padding: 6px 12px;
+  margin-left: 8px; border-radius: 4px; cursor: pointer; font-size: 12px; }
+.actions button:hover { background: #3a4451; }
+.actions button.danger { background: #4a1f29; }
+.actions button.danger:hover { background: #5a2f39; }
+.actions button.mini { padding: 2px 8px; font-size: 11px; margin-left: 8px; }
+.conn-status { margin-left: 12px; font-size: 12px; }
+.conn-status.online { color: #5fd99e; }
+.conn-status.offline { color: #d94545; }
+
+main { display: grid;
+  grid-template-columns: 1.2fr 1.2fr 1fr;
+  grid-template-rows: auto 1fr;
+  gap: 12px;
+  padding: 12px;
+  height: calc(100vh - 60px);
+  overflow: hidden; }
+
+/* 顶部面板：横跨整行 */
+.panel.wide {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 16px;
+  overflow-y: auto;
+}
+.panel.wide h2 { font-size: 12px; margin: 0 0 6px; color: #8898a6;
+  text-transform: uppercase; letter-spacing: 1px; grid-column: 1/-1;
+  display: flex; align-items: center; }
+.panel { background: #1a1f29; border-radius: 6px; padding: 12px;
+  overflow: hidden; display: flex; flex-direction: column;
+  min-height: 0; }
+.panel h2 { font-size: 13px; margin: 8px 0 6px; color: #8898a6;
+  text-transform: uppercase; letter-spacing: 1px; }
+.panel h2:first-child { margin-top: 0; }
+.muted { color: #5a6876; font-weight: normal; font-size: 11px; }
+
+/* 热力图 */
+.heatmap {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  grid-column: 1 / -1;
+}
+.heat-cell {
+  background: #151a23;
+  border-radius: 6px;
+  padding: 10px 12px;
+  border-left: 3px solid #2a3441;
+  position: relative;
+}
+.heat-cell .label { font-size: 11px; color: #8898a6; margin-bottom: 4px; }
+.heat-cell .heat { font-size: 22px; font-weight: 600; font-family: monospace; }
+.heat-cell .meta { font-size: 10px; color: #5a6876; margin-top: 4px; }
+.heat-cell .best { font-size: 11px; color: #5fd99e; margin-top: 4px; }
+
+/* 动态候选池 */
+.universe-info {
+  display: flex; gap: 16px; padding: 8px 0;
+  font-size: 12px; flex-wrap: wrap;
+  grid-column: 1 / -1;
+}
+.universe-info .item { background: #151a23; padding: 6px 10px;
+  border-radius: 4px; }
+
+/* LLM 分析 */
+.llm-box { background: #151a23; padding: 10px;
+  border-radius: 6px; grid-column: 1 / -1; }
+.llm-meta { display: flex; gap: 10px; margin-bottom: 8px; }
+.llm-analysis { font-size: 12px; color: #c8d4e0; margin-bottom: 8px;
+  line-height: 1.5; }
+#llm-rank-list { font-size: 11px; }
+#llm-rank-list .adj { background: #2a3441; padding: 4px 8px;
+  margin: 2px 0; border-radius: 3px; }
+#llm-rank-list .adj.up { color: #5fd99e; }
+#llm-rank-list .adj.down { color: #d95f5f; }
+
+.scroll { flex: 1; overflow-y: auto; border: 1px solid #2a3441;
+  border-radius: 4px; margin-bottom: 8px; min-height: 100px; }
+
+table { width: 100%; border-collapse: collapse; font-size: 11px; }
+thead { position: sticky; top: 0; background: #151a23; }
+th, td { padding: 4px 6px; text-align: left; border-bottom: 1px solid #2a3441; }
+th { font-weight: 600; color: #8898a6; text-transform: uppercase; font-size: 10px; }
+tbody tr:hover { background: #20262f; }
+td.num { text-align: right; font-family: monospace; }
+.up { color: #ef5350; }
+.down { color: #26a69a; }
+.flat { color: #8898a6; }
+
+.kpis { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 8px 0; }
+.kpi { background: #151a23; padding: 8px; border-radius: 4px; text-align: center; }
+.kpi label { display: block; font-size: 10px; color: #8898a6;
+  text-transform: uppercase; margin-bottom: 2px; }
+.kpi span { font-size: 16px; font-weight: 600; font-family: monospace; }
+
+.risk-box { background: #151a23; padding: 8px; border-radius: 4px; }
+.risk-box > div { display: flex; justify-content: space-between; padding: 3px 0; }
+.risk-box label { color: #8898a6; font-size: 11px; }
+.risk-box span { font-family: monospace; font-size: 12px; }
+.risk-box .halted { color: #ef5350; }
+.risk-box .ok { color: #5fd99e; }

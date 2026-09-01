@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>量化策略科学优化报告 · 2026-08-29（B）</title>
+<style>
+  :root{
+    --bg:#0f1620; --card:#172230; --ink:#e8eef6; --muted:#9fb0c3;
+    --line:#26384c; --accent:#2ec4b6; --good:#3ddc84; --bad:#ff6b6b;
+    --warn:#ffb454; --blue:#5aa9ff;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font-family:"Segoe UI","PingFang SC","Microsoft YaHei",system-ui,sans-serif;
+    line-height:1.6;font-size:15px}
+  .wrap{max-width:1080px;margin:0 auto;padding:32px 22px 64px}
+  h1{font-size:26px;margin:0 0 6px}
+  h2{font-size:20px;margin:38px 0 12px;padding-left:12px;border-left:4px solid var(--accent)}
+  h3{font-size:16px;margin:22px 0 8px;color:var(--accent)}
+  .sub{color:var(--muted);font-size:13px;margin-bottom:20px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;
+    padding:18px 20px;margin:14px 0}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px}
+  .kpi{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px}
+  .kpi .v{font-size:24px;font-weight:700}
+  .kpi .l{font-size:12px;color:var(--muted);margin-top:4px}
+  table{width:100%;border-collapse:collapse;font-size:13.5px;margin:10px 0}
+  th,td{padding:8px 10px;border-bottom:1px solid var(--line);text-align:right}
+  th:first-child,td:first-child{text-align:left}
+  thead th{color:var(--muted);font-weight:600;background:#13202e}
+  .good{color:var(--good)} .bad{color:var(--bad)} .warn{color:var(--warn)}
+  .tag{display:inline-block;padding:2px 9px;border-radius:20px;font-size:12px;font-weight:600}
+  .tag.rej{background:rgba(255,107,107,.15);color:var(--bad)}
+  .tag.ok{background:rgba(61,220,132,.15);color:var(--good)}
+  .tag.research{background:rgba(90,169,255,.15);color:var(--blue)}
+  .pill{display:inline-block;padding:3px 10px;border-radius:6px;background:#13202e;
+    border:1px solid var(--line);font-size:12px;color:var(--muted);margin:2px 4px 2px 0}
+  svg{width:100%;height:auto;display:block}
+  .note{font-size:13px;color:var(--muted)}
+  ul{margin:8px 0 8px 18px} li{margin:4px 0}
+  code{background:#13202e;padding:1px 6px;border-radius:5px;font-size:13px;color:var(--accent)}
+  .foot{margin-top:40px;color:var(--muted);font-size:12px;border-top:1px solid var(--line);padding-top:14px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>量化策略科学优化报告</h1>
+  <div class="sub">qmtIDE-deepseek · 自动化轮次 2026-08-29（B） · 目标：科学分析、稳健收益、保障执行效率</div>
+
+  <!-- 执行摘要 -->
+  <div class="card">
+    <h3 style="margin-top:4px">执行摘要</h3>
+    <p>本轮在已验证的「regime 闸门 + 趋势骑行 + 波动率目标仓位 + max_positions=5」稳健最优配置之上，
+       继续以<b>严格 IS/OOS 切分 + 多折 walk-forward</b> 纪律，尝试两个<b>此前从未验证过</b>的全新结构性方向：
+       <b>分行业分散持仓</b> 与 <b>横截面风险平价资本倾斜</b>。结论：</p>
+    <ul>
+      <li><b>分行业分散持仓</b>：<span class="tag rej">拒绝</span> 上限=2 时 OOS 收益 −14.7%→−31.4%、多折 Sharpe +0.76→+0.64；上限=3 退化为与基线一致（动量前 5 极少同环节超 3 只）。策略的 <b>alpha 来源正是“集中持有当前最强势环节”</b>，人为分散反而丢弃强势股。</li>
+      <li><b>横截面风险平价</b>：<span class="tag rej">拒绝</span> 样本内确实降波动（MDD −16.5%→−13.8%、Calmar 8.17→9.56），但样本外<b>在牛市折牺牲收益</b>（Fold2 +159.8%→+131.1%），多折 Sharpe +0.76→+0.73。现有 vol_sizing 已捕获大部分降波动收益，无需叠加。</li>
+      <li><b>工程与执行效率</b>：新增两个旋钮均为默认关闭的“研究用”开关，<b>生产配置零改动</b>；92/92 单元测试零回归；回测引擎与实时引擎均健康。</li>
+    </ul>
+    <p class="note">纪律重申：凡样本外（OOS）未通过、或多折 walk-forward 不稳健的改动，一律不并入生产。当前生产配置经 12+ 方向交叉验证，仍为经验证最优。</p>
+  </div>
+
+  <!-- 健康 & 执行效率 -->
+  <h2>① 健康与执行效率闸门（每轮必检）</h2>
+  <div class="grid">
+    <div class="kpi"><div class="v good">92/92</div><div class="l">单元测试 · 零回归</div></div>
+    <div class="kpi"><div class="v good">已连接</div><div class="l">xtdata 实时行情</div></div>
+    <div class="kpi"><div class="v">0.4s</div><div class="l">25 只×500 日线载入</div></div>
+    <div class="kpi"><div class="v">117×</div><div class="l">on_bars 指标缓存加速</div></div>
+  </div>
+  <div class="card">
+    <h3 style="margin-top:4px">执行效率已落地的加固项</h3>
+    <ul>
+      <li>实时成交回报异步化（后台线程），主行情循环不再被阻塞；</li>
+      <li>RiskManager 加锁，防止后台成交线程与主循环并发竞态；</li>
+      <li>日志轮转 <code>_SafeRotatingFileHandler</code>：文件被占用时跳过轮转、不抛 <code>PermissionError</code>，消除 CPU 浪费；</li>
+      <li><code>TrendStrategy.on_bars</code> 按分钟失效的指标缓存，同分钟重复调用命中缓存、输出与即时重算逐字节一致；</li>
+      <li>运行铁律：必须用 conda env <code>qmt</code> 解释器（其它 Python 会因 QMT 站点包遮蔽 <code>requests</code> 崩溃）。</li>
+    </ul>
+  </div>
+
+  <!-- 实验一 -->
+  <h2>② 实验一：分行业分散持仓（max_per_sector）</h2>
+  <div class="card">
+    <h3 style="margin-top:4px">动机与方法</h3>
+    <p>AI 产业链各环节内部高度同向（如“光模块三杰”齐涨齐跌）。动量排名前 6 常挤在同一环节 → “伪分散”。
+       设想在 <code>max_positions=5</code> 总上限内，进一步限制每环节最多持几只，强制组合跨环节铺开、降低环节内隐性集中风险。</p>
+    <p class="note">验证：在已验证生产配置上叠加 <code>max_per_sector ∈ {2, 3}</code>，IS/OOS 双段 + 4 折 walk-forward（每折 75 日≈3.6 月），对照等权买入持有基准。</p>
+  </div>
+
+  <div class="card">
+    <h3 style="margin-top:4px">IS / OOS 双段结果</h3>
+    <table>
+      <thead><tr><th>配置</th><th>段</th><th>收益</th><th>Sharpe</th><th>MDD</th><th>Calmar</th><th>胜率</th><th>alpha</th></tr></thead>
+      <tbody>
+        <tr><td>基线 (mp=0)</td><td>IS</td><td class="good">+119.8%</td><td class="good">+2.24</td><td>-16.5%</td><td>8.17</td><td>34.6%</td><td class="good">+46.3pt</td></tr>
+        <tr><td></td><td>OOS</td><td class="bad">-14.7%</td><td class="bad">-0.46</td><td>-27.3%</td><td>-0.81</td><td>25.0%</td><td class="bad">-25.4pt</td></tr>
+        <tr><td>mp=2</td><td>IS</td><td>+110.7%</td><td>+2.16</td><td>-16.5%</td><td>7.53</td><td>30.8%</td><td>+37.1pt</td></tr>
+        <tr><td></td><td>OOS</td><td class="bad">-31.4%</td><td class="bad">-1.37</td><td class="bad">-33.8%</td><td>-1.32</td><td>20.6%</td><td class="bad">-42.1pt</td></tr>
+        <tr><td>mp=3</td><td>IS</td><td class="good">+119.8%</td><td class="good">+2.24</td><td>-16.5%</td><td>8.17</td><td>34.6%</td><td class="good">+46.3pt</td></tr>
+        <tr><td></td><td>OOS</td><td class="bad">-14.6%</td><td class="bad">-0.46</td><td>-27.3%</td><td>-0.80</td><td>25.0%</td><td class="bad">-25.3pt</td></tr>
+      </tbody>
+    </table>
+    <p class="note">mp=3 与基线 IS/OOS 完全相等 → 动量前 5 极少有 >3 只同环节，该上限基本不触发（接近 no-op）。</p>
+  </div>
+
+  <div class="card">
+    <h3 style="margin-top:4px">多折 walk-forward 收益（vs 基线）</h3>
+    <div id="chart_sector"></div>
+    <p class="note">蓝=基线；橙=mp=2；绿=mp=3。mp=2 在 Fold4（26-01~26-05）显著恶化（−15.8% vs −7.3%），拖累多折均值 Sharpe +0.76→+0.64。</p>
+  </div>
+
+  <div class="card">
+    <h3 style="margin-top:4px">裁决与经济学解释</h3>
+    <p><span class="tag rej">拒绝</span> 把组合“强制分散”到弱势环节，等于用第 3 名以外的弱动量股替换正在主升的强势环节龙头，
+       在 AI 板块集中行情里直接砍掉 alpha。这反过来<b>印证了当前配置的合理性</b>——它的优势恰恰在于“只持最强势环节的前 5 名”。
+       此方向已被证伪，加入否决清单。</p>
+  </div>
+
+  <!-- 实验二 -->
+  <h2>③ 实验二：横截面风险平价资本倾斜（risk_parity）</h2>
+  <div class="card">
+    <h3 style="margin-top:4px">动机与方法</h3>
+    <p>与“按动量集中资本”（momentum_weight，已拒）方向相反：按个股 ATR% 倒数把新增资本倾斜给<b>低波动</b>名字
+       （权重=(1/atr)/Σ(1/atr)），在总风险预算不变下降低组合波动、提升 Sharpe/Calmar。
+       与现有 vol_sizing（每笔风险预算平价）正交——是在其之上的“进一步横截面倾斜”。</p>
+  </div>
+
+  <div class="card">
+    <h3 style="margin-top:4px">IS / OOS 双段结果</h3>
+    <table>
+      <thead><tr><th>配置</th><th>段</th><th>收益</th><th>Sharpe</th><th>MDD</th><th>Calmar</th><th>胜率</th><th>alpha</th></tr></thead>
+      <tbody>
+        <tr><td>基线 (rp=0)</td><td>IS</td><td class="good">+119.8%</td><td class="good">+2.24</td><td>-16.5%</td><td>8.17</td><td>34.6%</td><td class="good">+46.3pt</td></tr>
+        <tr><td></td><td>OOS</td><td class="bad">-14.7%</td><td class="bad">-0.46</td><td>-27.3%</td><td>-0.81</td><td>25.0%</td><td class="bad">-25.4pt</td></tr>
+        <tr><td>rp=True</td><td>IS</td><td>+117.1%</td><td class="good">+2.34</td><td class="good">-13.8%</td><td class="good">9.56</td><td class="good">38.5%</td><td>+43.5pt</td></tr>
+        <tr><td></td><td>OOS</td><td class="bad">-14.3%</td><td class="bad">-0.56</td><td>-25.5%</td><td>-0.84</td><td>27.3%</td><td class="bad">-25.1pt</td></tr>
+      </tbody>
+    </table>
+    <p class="note">样本内风险指标全面改善（MDD↓、Calmar↑、胜率↑），但样本外 Sharpe 反而 −0.46→−0.56，alpha 仍深负 −25.1pt。</p>
+  </div>
+
+  <div class="card">
+    <h3 style="margin-top:4px">多折 walk-forward 收益（vs 基线）</h3>
+    <div id="chart_rp"></div>
+    <p class="note">蓝=基线；绿=risk_parity。风险平价在 Fold2 大牛市折 +131.1% vs 基线 +159.8%——把资本从高波动（也是高动量）龙头挪向低波动股，
+       直接少赚了牛市最肥的一段，多折均值 Sharpe +0.76→+0.73。</p>
+  </div>
+
+  <div class="card">
+    <h3 style="margin-top:4px">裁决与经济学解释</h3>
+    <p><span class="tag rej">拒绝</span> 降波动在样本内成立，但代价是<b>在趋势策略真正赚钱的牛市折里跑输</b>。
+       说明现有 <code>vol_sizing</code> 已把“每笔风险平价”做到位，再加一层资本倾斜只是把火力从领头羊移开，
+       净效果为负。<b>本方向证伪</b>，加入否决清单。</p>
+  </div>
+
+  <!-- 累计状态 -->
+  <h2>④ 累计验证状态与否决清单</h2>
+  <div class="card">
+    <h3 style="margin-top:4px">当前生产配置（稳健最优 · 未改动）</h3>
+    <p>
+      <span class="pill">regime 创业板指 MA60 + 强制清仓</span>
+      <span class="pill">趋势骑行退出 (exit_mode=trend)</span>
+      <span class="pill">波动率目标仓位</span>
+      <span class="pill">max_positions=5</span>
+      <span class="pill">动量排名前 6 / 持前 5</span>
+    </p>
+    <p class="note">验证基础：IS/OOS 切分 + 4 折 walk-forward（2025-02 → 2026-05，均值 Sharpe +0.76，正 alpha 折 2/4），OOS alpha 转正（mp5 较 mp8 +1.6pt）。</p>
+  </div>
+
+  <div class="card">
+    <h3 style="margin-top:4px">研究用旋钮（默认关闭，证据不支持启用）</h3>
+    <p>
+      <span class="pill">dd_ctrl</span><span class="pill">reentry_cooldown</span>
+      <span class="pill">mom_metric(sharpe/residual)</span><span class="pill">trend_trailing</span>
+      <span class="pill">trend_vol_sizing</span><span class="pill">regime_mode="dual"</span>
+      <span class="pill">momentum_weight</span><span class="pill">vol_confirm</span>
+      <span class="pill">max_per_sector（本轮新增）</span><span class="pill">risk_parity（本轮新增）</span>
+    </p>
+  </div>
+
+  <div class="card">
+    <h3 style="margin-top:4px">累计否决清单（勿重复提交）</h3>
+    <p>
+      <span class="pill">趋势紧移动止损</span><span class="pill">真实宽止损 sizing</span>
+      <span class="pill">宽指数闸门(沪深300/上证)</span><span class="pill">抗抖动 regime(确认2日/缓冲2%)</span>
+      <span class="pill">双过滤(index+宽度)</span><span class="pill">风险调整动量</span>
+      <span class="pill">残差动量(朴素)</span><span class="pill">组合级 DD 控制</span>
+      <span class="pill">再入场冷静期</span><span class="pill">动量排名加权</span>
+      <span class="pill">量能突破确认 vol_confirm</span>
+      <span class="pill">分行业分散持仓 max_per_sector（本轮）</span>
+      <span class="pill">横截面风险平价 risk_parity（本轮）</span>
+    </p>
+  </div>
+
+  <h2>⑤ 结论与下一突破口</h2>
+  <div class="card">
+    <p>经过 12+ 个方向的系统验证，本项目已确认：<b>参数/结构性微调在样本外普遍失效，真正稳健的改进只有 regime 市场状态过滤与集中度控制（max_positions=5）</b>。
+       本轮两个全新方向再次以严格证据被拒，进一步坐实当前配置为经验证最优。</p>
+    <p><b>下一轮收益突破口不在“调参”，而在“新数据 / 新特征”</b>——历史记录已标记的方向：</p>
+    <ul>
+      <li><b>资金流数据</b>：北向资金 / 主力净流入，作为动量的正交确认或 Tier-1 过滤；</li>
+      <li><b>基本面质量层</b>：把已有的 Tushare PE/ROE/营收增速接入回测引擎闸门（config 已预留 <code>TUSHARE_FUNDAMENTAL_FILTER</code>）；</li>
+      <li><b>更长滚动 walk-forward</b>：量化 regime 闸门在不同市场状态下的稳健区间（近期 2026-05~08 偏弱窗口的归因）。</li>
+    </ul>
+    <p class="note">以上均需引入回测框架尚未使用的数据源，属于“新特征”而非“参数微调”，与本轮被拒项性质不同，是下一步最值得投入的方向。</p>
+  </div>
+
+  <div class="foot">
+    生成：qmtIDE-deepseek 自动化优化轮次 · 2026-08-29（B） ·
+    验证环境 conda env qmt · 数据 xtdata 本地日线（含单边 0.15% 交易成本，信号次日开盘成交，防未来函数）·
+    证据：logs/opt_sector.json、logs/opt_riskparity.json；验证脚本：strategy/_opt_sector.py、strategy/_opt_riskparity.py
+  </div>
+</div>
+
+<script>
+function barChart(elId, labels, series, title){
+  const W=1000,H=360,padL=48,padB=58,padT=20,padR=16;
+  const plotW=W-padL-padR, plotH=H-padT-padB;
+  const maxV=160, minV=-35; // 百分比范围
+  const y=v=>padT+plotH*(1-(v-minV)/(maxV-minV));
+  const x0=padL, x1=W-padR;
+  const n=labels.length, gW=plotW/n;
+  const sbW=gW*0.78, sbGap=sbW*0.12;
+  const m=series.length, bw=(sbW-sbGap*(m-1))/m;
+  let s='<svg viewBox="0 0 '+W+' '+H+'" preserveAspectRatio="xMidYMid meet">';
+  s+='<rect x="0" y="0" width="'+W+'" height="'+H+'" fill="#0f1620"/>';
+  // gridlines
+  [160,80,0,-35].forEach(v=>{
+    const yy=y(v);
+    s+='<line x1="'+padL+'" y1="'+yy+'" x2="'+(W-padR)+'" y2="'+yy+'" stroke="#26384c" stroke-width="1"/>';
+    s+='<text x="'+(padL-8)+'" y="'+(yy+4)+'" fill="#9fb0c3" font-size="12" text-anchor="end">'+v+'%</text>';
+  });
+  // baseline 0 line emphasis
+  s+='<line x1="'+padL+'" y1="'+y(0)+'" x2="'+(W-padR)+'" y2="'+y(0)+'" stroke="#3a4d63" stroke-width="1.5"/>';
+  series.forEach((ser,si)=>{
+    for(let i=0;i<n;i++){
+      const v=ser.values[i];
+      const gx=x0+gW*i+(gW-sbW)/2;
+      const bx=gx+si*(bw+sbGap);
+      const by=y(v), top=y(0);
+      const yy=Math.min(by,top), hh=Math.abs(by-top);
+      s+='<rect x="'+bx.toFixed(1)+'" y="'+yy.toFixed(1)+'" width="'+bw.toFixed(1)+'" height="'+Math.max(2,hh).toFixed(1)+'" rx="2" fill="'+ser.color+'"/>';
+      s+='<text x="'+(bx+bw/2).toFixed(1)+'" y="'+(by<top?by-5:by+13).toFixed(1)+'" fill="#e8eef6" font-size="10.5" text-anchor="middle">'+v.toFixed(1)+'</text>';
+    }
+  });
+  // x labels (two lines)
+  labels.forEach((lb,i)=>{
+    const cx=x0+gW*i+gW/2;
+    const parts=lb.split('\n');
+    parts.forEach((p,k)=>{
+      s+='<text x="'+cx+'" y="'+(H-padB+18+k*14)+'" fill="#9fb0c3" font-size="11" text-anchor="middle">'+p+'</text>';
+    });
+  });
+  // legend
+  let lx=padL, ly=12;
+  series.forEach(ser=>{
+    s+='<rect x="'+lx+'" y="'+(ly-9)+'" width="11" height="11" rx="2" fill="'+ser.color+'"/>';
+    s+='<text x="'+(lx+16)+'" y="'+(ly+1)+'" fill="#e8eef6" font-size="12">'+ser.name+'</text>';
+    lx+=16+ser.name.length*13+22;
+  });
+  s+='</svg>';
+  document.getElementById(elId).innerHTML=s;
+}
+barChart('chart_sector',
+  ['Fold1\n25-02~25-06','Fold2\n25-06~25-09','Fold3\n25-09~26-01','Fold4\n26-01~26-05'],
+  [
+    {name:'基线 mp=0', color:'#5aa9ff', values:[-9.4,159.8,-5.0,-7.3]},
+    {name:'mp=2', color:'#ffb454', values:[-9.4,153.7,-1.0,-15.8]},
+    {name:'mp=3', color:'#3ddc84', values:[-9.4,159.8,-5.0,-7.5]},
+  ]);
+barChart('chart_rp',
+  ['Fold1\n25-02~25-06','Fold2\n25-06~25-09','Fold3\n25-09~26-01','Fold4\n26-01~26-05'],
+  [
+    {name:'基线 rp=0', color:'#5aa9ff', values:[-9.4,159.8,-5.0,-7.3]},
+    {name:'risk_parity', color:'#3ddc84', values:[-7.7,131.1,-5.0,-1.4]},
+  ]);
+</script>
+</body>
+</html>

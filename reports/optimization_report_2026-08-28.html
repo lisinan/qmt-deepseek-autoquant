@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>量化策略科学优化报告 · 2026-08-28</title>
+<style>
+  :root{
+    --bg:#0f1419; --card:#1a2230; --card2:#212c3d; --line:#2c3a4f;
+    --txt:#e6edf3; --muted:#9fb0c3; --accent:#2dd4bf; --accent2:#38bdf8;
+    --up:#ef4444;   /* 涨=红 (A股惯例) */
+    --down:#22c55e; /* 跌=绿 */
+    --warn:#f59e0b; --bad:#fb7185;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--txt);
+    font-family:-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+    line-height:1.6;font-size:15px}
+  .wrap{max-width:1080px;margin:0 auto;padding:28px 20px 60px}
+  h1{font-size:26px;margin:0 0 4px;letter-spacing:.5px}
+  h2{font-size:19px;margin:32px 0 12px;padding-left:10px;border-left:4px solid var(--accent)}
+  .sub{color:var(--muted);font-size:13px;margin-bottom:18px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;
+    padding:18px 20px;margin:14px 0;box-shadow:0 2px 10px rgba(0,0,0,.25)}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px}
+  .kv{background:var(--card2);border:1px solid var(--line);border-radius:9px;padding:12px 14px}
+  .kv .k{color:var(--muted);font-size:12px}
+  .kv .v{font-size:19px;font-weight:700;margin-top:3px}
+  .ok{color:var(--accent)} .bad{color:var(--bad)} .warn{color:var(--warn)}
+  table{width:100%;border-collapse:collapse;margin:8px 0;font-size:13.5px}
+  th,td{padding:9px 10px;border-bottom:1px solid var(--line);text-align:right}
+  th:first-child,td:first-child{text-align:left}
+  thead th{color:var(--accent2);font-weight:600;border-bottom:2px solid var(--line)}
+  .up{color:var(--up);font-weight:600} .dn{color:var(--down);font-weight:600}
+  .bar{height:14px;border-radius:7px;background:linear-gradient(90deg,var(--accent),var(--accent2));
+    display:inline-block;vertical-align:middle}
+  .bar2{height:14px;border-radius:7px;background:linear-gradient(90deg,#7c8aa0,#9fb0c3);
+    display:inline-block;vertical-align:middle}
+  .pill{display:inline-block;padding:2px 9px;border-radius:20px;font-size:12px;font-weight:600}
+  .pill.r{background:rgba(251,113,133,.15);color:var(--bad);border:1px solid rgba(251,113,133,.4)}
+  .pill.g{background:rgba(45,212,191,.15);color:var(--accent);border:1px solid rgba(45,212,191,.4)}
+  .verdict{font-size:20px;font-weight:800}
+  ul{margin:8px 0;padding-left:20px} li{margin:4px 0}
+  .note{color:var(--muted);font-size:12.5px;font-style:italic}
+  .foot{color:var(--muted);font-size:12px;margin-top:30px;text-align:center}
+  code{background:var(--card2);padding:1px 6px;border-radius:5px;font-size:12.5px;color:var(--accent2)}
+  .rej{color:var(--bad)} .keep{color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>量化策略科学优化报告</h1>
+<div class="sub">qmtIDE-deepseek · 2026-08-28 23:xx · 自动化优化轮次 · 严守 IS/OOS + 多折 walk-forward 防过拟合纪律</div>
+
+<!-- ============ 概览 ============ -->
+<div class="card">
+  <div class="grid">
+    <div class="kv"><div class="k">实盘引擎状态</div><div class="v ok">健康 ✓</div></div>
+    <div class="kv"><div class="k">行情通道</div><div class="v ok">xtdata 已连</div></div>
+    <div class="kv"><div class="k">regime 闸门</div><div class="v ok">ok=true</div></div>
+    <div class="kv"><div class="k">单元测试</div><div class="v ok">56/56</div></div>
+    <div class="kv"><div class="k">本轮新实验</div><div class="v warn">动量加权→拒</div></div>
+    <div class="kv"><div class="k">执行效率</div><div class="v ok">日志加固</div></div>
+  </div>
+</div>
+
+<!-- ============ 1. 执行效率与健康 ============ -->
+<h2>1 · 执行效率与工程健康（保障项目执行效率）</h2>
+<div class="card">
+  <p><b>发现并定位一个会阻断实盘引擎启动的环境陷阱：</b>自动化 shell 默认 <code>python</code> 解析到 WorkBuddy 托管的 Python 3.13，缺少 <code>requests</code>，触发 <code>ModuleNotFoundError: urllib3.packages.six.moves</code>，导致 <code>main.py</code> 在 import 阶段崩溃、引擎完全起不来。</p>
+  <p><b>结论：</b>本项目必须在 <b>conda env <code>qmt</code></b>（Python 3.9，含 xtquant）下运行——路径 <code>C:\Users\lisinan\.conda\envs\qmt\python.exe</code>。<code>settings.py</code> 把 QMT 站点包追加到 <code>sys.path</code> 尾部，conda 的 <code>requests</code> 优先命中，故该环境下 <code>main.py --snapshot</code> 正常（已实测验证）。</p>
+  <p><b>日志轮转加固（已并入 <code>main.py</code>）：</b>新增 <code>_SafeRotatingFileHandler</code>——当日志文件被已运行的 live/paper 引擎占用时，<code>doRollover</code> 的 <code>os.rename</code> 原会抛 <code>PermissionError[WinError 32]</code> 并从<strong>每条</strong>日志的 emit 冒出，实盘每 tick 打日志时反复抛 traceback、浪费 CPU、污染日志。现捕获后跳过轮转（流自动重开到同一文件、日志不丢）。</p>
+  <table>
+    <thead><tr><th>验证项</th><th>加固前</th><th>加固后</th></tr></thead>
+    <tbody>
+      <tr><td>快照启动 traceback</td><td class="dn">PermissionError 每日志</td><td class="up">0 条</td></tr>
+      <tr><td>退出码</td><td class="dn">崩溃(import)</td><td class="up">exit=0</td></tr>
+      <tr><td>regime 状态</td><td>—</td><td class="up">ok=true（创业板指&gt;MA60，闸门开放）</td></tr>
+      <tr><td>风控熔断</td><td>—</td><td class="up">halted=false</td></tr>
+      <tr><td>动态宇宙</td><td>—</td><td class="up">活跃 30 只 / 3 行业（通信设备·半导体·IT设备）</td></tr>
+    </tbody>
+  </table>
+  <p class="note">异步成交回报 + 风控加锁仍生效；本轮回测时 regime=开启，资本可正常部署；若转弱则 filter 自动拦截新开仓并强制清仓。</p>
+</div>
+
+<!-- ============ 2. 新实验：动量排名加权 ============ -->
+<h2>2 · 新候选实验：动量排名加权仓位（momentum_weight）</h2>
+<div class="card">
+  <p>动机：横截面动量具有持续性（Jegadeesh-Titman），在前 5 名持仓内按动量大小做 rank-weight（强者更大、弱者更小，均值=1），把资本集中于动量最确定的名字，理论可提升风险调整后收益。该旋钮已在引擎实现，但此前<strong>无验证结论</strong>——本轮回测其是否真能改善样本外。</p>
+  <p>基准 = 当前已验证生产配置（regime 创业板指 MA60 + force_exit + trend 骑行 + 波动率目标 + max_positions=5）；候选 = 基准 + <code>momentum_weight=True</code>。</p>
+
+  <h3 style="color:var(--accent2);font-size:15px">2.1 样本内 / 样本外（窗口无重叠）</h3>
+  <table>
+    <thead><tr><th>配置</th><th>段</th><th>收益</th><th>Sharpe</th><th>MDD</th><th>alpha</th></tr></thead>
+    <tbody>
+      <tr><td>生产(无加权)</td><td>IS</td><td class="up">+131.9%</td><td>+2.35</td><td>-15.5%</td><td>+58.3pt</td></tr>
+      <tr><td>动量加权</td><td>IS</td><td class="up">+156.9%</td><td>+2.47</td><td>-15.2%</td><td>+83.3pt</td></tr>
+      <tr><td>生产(无加权)</td><td>OOS</td><td class="up">+12.3%</td><td class="up">+0.70</td><td>-14.1%</td><td class="up">+1.6pt</td></tr>
+      <tr><td>动量加权</td><td class="dn">OOS</td><td class="dn">+4.6%</td><td class="dn">+0.38</td><td class="dn">-15.6%</td><td class="dn">−6.1pt</td></tr>
+    </tbody>
+  </table>
+  <div style="margin:10px 0">
+    <div>OOS 收益差：<span class="dn">−7.7pt</span> &nbsp; OOS Sharpe 差：<span class="dn">−0.33</span> &nbsp; OOS alpha 差：<span class="dn">−7.7pt</span></div>
+  </div>
+  <p class="note">典型过拟合指纹：IS 大幅改善（+25pt alpha），OOS 全面转差。加权放大了高 β 名字，样本外均值回归。</p>
+
+  <h3 style="color:var(--accent2);font-size:15px">2.2 多折 walk-forward（4 窗 × 75 日，最严稳健性检验）</h3>
+  <table>
+    <thead><tr><th>窗口</th><th>生产</th><th>动量加权</th><th>Δ</th><th>说明</th></tr></thead>
+    <tbody>
+      <tr><td>F1</td><td>+1.9%</td><td>+4.4%</td><td class="up">+2.5pt</td><td>震荡</td></tr>
+      <tr><td>F2</td><td>+150.7%</td><td>+170.6%</td><td class="up">+20.0pt</td><td>牛市（贡献全部正差）</td></tr>
+      <tr><td>F3</td><td>−13.9%</td><td>−13.8%</td><td>+0.1pt</td><td>下行</td></tr>
+      <tr><td>F4</td><td>−0.7%</td><td>−2.6%</td><td class="dn">−1.9pt</td><td>震荡</td></tr>
+    </tbody>
+  </table>
+  <div style="margin:10px 0">
+    <div>逐折胜：<b>3/4</b> &nbsp; 累计差：<span class="up">+20.7pt</span> &nbsp; 候选正 alpha 折：2/4</div>
+    <div>均值 Sharpe：生产 <b>+0.84</b> vs 动量加权 <b>+0.90</b>（仅 +0.06，且正差完全来自单一牛市折）</div>
+  </div>
+  <p class="note">矛盾信号判读：walk-forward 均值 Sharpe 略高，但赢面<strong>完全集中在 F2 牛市折</strong>；中性/下行折持平或转差，且最干净的样本外近期窗口（OOS）明确退化。高 β 集中只在单边牛市占优，非稳健。</p>
+
+  <div style="margin-top:14px;padding:14px;border-radius:10px;background:rgba(251,113,133,.08);border:1px solid rgba(251,113,133,.35)">
+    <div class="verdict bad">裁决：拒绝（证据不足）</div>
+    <p style="margin:8px 0 0">纪律门槛 = OOS alpha 为正 <b>且</b> 多折稳健。OOS alpha <span class="dn">−7.7pt</span> 未达标；虽 walk-forward 均值 Sharpe 微优，但赢面集中于单一牛市折、近期样本外明确转差，不满足稳健性。与已否决的 9 个方向结论一致：<b>多数结构性微调样本外失效</b>。</p>
+  </div>
+</div>
+
+<!-- ============ 3. 累计否决清单 ============ -->
+<h2>3 · 累计否决清单（勿重复提交）</h2>
+<div class="card">
+  <ul>
+    <li class="rej">趋势紧移动止损（trend_trailing 15/12）</li>
+    <li class="rej">按真实宽止损做仓位 sizing（trend_vol_sizing）</li>
+    <li class="rej">宽市场指数闸门（沪深300 / 上证）—— OOS 转负</li>
+    <li class="rej">抗抖动 regime（确认2日 / 缓冲2%）—— 单窗略优但多折未稳健（过拟合单一窗口）</li>
+    <li class="rej">双过滤（指数+宽度）—— OOS 收益不足</li>
+    <li class="rej">风险调整动量（mom=sharpe）—— OOS α−4.6pt</li>
+    <li class="rej">残差动量（朴素 raw−指数常数）—— 排序与 raw 等价，无效对照</li>
+    <li class="rej">组合级 DD 控制（dd_ctrl）—— OOS α−4.5pt，踏空反弹</li>
+    <li class="rej">再入场冷静期（5/10/20d）—— OOS α 全面 −10~15pt，伤生产性换手</li>
+    <li class="rej"><b>动量排名加权（momentum_weight）— 本轮新增：OOS α−7.7pt，高 β 集中均值回归</b></li>
+  </ul>
+</div>
+
+<!-- ============ 4. 经验证最优生产配置 ============ -->
+<h2>4 · 当前生产配置（经验证最优，未变）</h2>
+<div class="card">
+  <div class="grid">
+    <div class="kv"><div class="k">regime 过滤</div><div class="v keep">创业板指 MA60 + 强制清仓</div></div>
+    <div class="kv"><div class="k">退出范式</div><div class="v keep">trend 趋势骑行</div></div>
+    <div class="kv"><div class="k">仓位</div><div class="v keep">波动率目标 + max_positions=5</div></div>
+    <div class="kv"><div class="k">OOS 收益</div><div class="v up">+12.3%</div></div>
+    <div class="kv"><div class="k">OOS Sharpe</div><div class="v up">+0.70</div></div>
+    <div class="kv"><div class="k">OOS alpha</div><div class="v up">+1.6pt</div></div>
+    <div class="kv"><div class="k">OOS MDD</div><div class="v">−14.1%</div></div>
+    <div class="kv"><div class="k">多折均值 Sharpe</div><div class="v up">+0.84（最高）</div></div>
+  </div>
+  <p style="margin-top:12px">该配置经 IS/OOS 切分 + 多折 walk-forward 双验证稳健，跨 12+ 方向仅 <b>regime 过滤</b> 与 <b>max_positions=5</b> 两项真实有效。动态宇宙（30 只 AI 产业链股、3 行业）已在实盘提供天然分散，无需额外行业约束旋钮。</p>
+</div>
+
+<!-- ============ 5. 下一步 ============ -->
+<h2>5 · 下一步建议</h2>
+<div class="card">
+  <ul>
+    <li>维持当前生产配置；regime 闸门随创业板指实时开合，下行市自动资本保全。</li>
+    <li>自动化统一用 <code>C:\Users\lisinan\.conda\envs\qmt\python.exe</code> 运行，避免 Python 3.13 解释器陷阱。</li>
+    <li>下一轮收益突破点在于<strong>新特征/新数据</strong>（如动态宇宙行业轮动、成交量异常、资金流），而非在已验证配置上继续参数微调——后者实证均样本外失效。</li>
+    <li>持续监控：日志轮转已在 live 进程释放锁后恢复正常（避免 1GB 单文件）；如长期超大，可考虑定时归档。</li>
+  </ul>
+</div>
+
+<div class="foot">本报告由自动化优化任务生成 · 研究/教学用途，不构成投资建议 · 防过拟合纪律：OOS 改善 + 多折稳健 方并入生产</div>
+
+</div>
+</body>
+</html>
