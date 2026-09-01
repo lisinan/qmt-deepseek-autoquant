@@ -13,9 +13,10 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import sqlite3
 import threading
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import List, Optional
 
@@ -109,6 +110,17 @@ _SCHEMA = [
     "CREATE INDEX IF NOT EXISTS idx_fills_code_ts ON fills(code, ts)",
     "CREATE INDEX IF NOT EXISTS idx_ai_code_ts ON ai_analyses(code, ts)",
     "CREATE INDEX IF NOT EXISTS idx_sector_code_ts ON sector_recommendations(code, ts)",
+    # 【P1 修欲 2026-09-02】纯 ts 范围索引。
+    # 盘后复盘（review_daily）全部查询都是 ``WHERE ts >= ? AND ts < ?``，而上面那些
+    # 复合索引首列是 code，对纯 ts 范围查询用不上 → 全表扇。实测 signals 表 319 万
+    # 行时单次扇表 1.35s，且随天数线性恶化。
+    "CREATE INDEX IF NOT EXISTS idx_signals_ts ON signals(ts)",
+    "CREATE INDEX IF NOT EXISTS idx_orders_ts ON orders(ts)",
+    "CREATE INDEX IF NOT EXISTS idx_fills_ts ON fills(ts)",
+    "CREATE INDEX IF NOT EXISTS idx_ai_ts ON ai_analyses(ts)",
+    "CREATE INDEX IF NOT EXISTS idx_risk_ts ON risk_snapshots(ts)",
+    "CREATE INDEX IF NOT EXISTS idx_equity_ts ON equity_snapshots(ts)",
+    "CREATE INDEX IF NOT EXISTS idx_sector_ts ON sector_recommendations(ts)",
     """CREATE TABLE IF NOT EXISTS engine_state (
         id INTEGER PRIMARY KEY CHECK (id = 1),
         ts TEXT,
@@ -126,9 +138,22 @@ _SCHEMA = [
 ]
 
 
+def default_db_path() -> Path:
+    """默认数据库路径。``QMT_DB`` 环境变量优先。
+
+    为什么需要覆盖：单测 / 一次性脚本若直接写生产 ``storage/qmt.db``，
+    会把测试桩（如「理由=test」的买入 / 假熔断）注入真实交易记录，
+    直接污染盘后复盘的盈亏与风控统计。设 QMT_DB 到 tmp 即可彻底隔离。
+    """
+    override = (os.environ.get("QMT_DB") or "").strip()
+    if override:
+        return Path(override)
+    return BASE_DIR / "storage" / "qmt.db"
+
+
 class Storage:
     def __init__(self, db_path: Optional[Path] = None):
-        self.db_path = Path(db_path) if db_path else BASE_DIR / "storage" / "qmt.db"
+        self.db_path = Path(db_path) if db_path else default_db_path()
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
         self._conn: Optional[sqlite3.Connection] = None
@@ -395,6 +420,71 @@ class Storage:
             except Exception as e:
                 logger.warning("查询 sector_recommendations 失败: %s", e)
                 return []
+
+    # ---------- 维护（保留窗口 / 空间回收）----------
+
+    # 可安全清理的「高频观测类」表。**不包含** orders / fills：那是交易流水，
+    # 删了就无法重建持仓与盈亏，属于账务证据。
+    PRUNABLE_TABLES = ("signals", "risk_snapshots", "sector_recommendations")
+
+    def table_stats(self) -> List[dict]:
+        """各表行数 + 时间跨度（维护前后对比用）。"""
+        out = []
+        with self._lock:
+            c = self._conn_get()
+            for t in ("signals", "orders", "fills", "ai_analyses",
+                      "risk_snapshots", "equity_snapshots",
+                      "sector_recommendations"):
+                try:
+                    n = c.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
+                    r = c.execute(
+                        f"SELECT MIN(substr(ts,1,10)), MAX(substr(ts,1,10)) FROM {t}"
+                    ).fetchone()
+                    out.append({"table": t, "rows": n,
+                                "first": r[0], "last": r[1]})
+                except Exception as e:
+                    out.append({"table": t, "rows": -1, "error": str(e)})
+        return out
+
+    def prune(self, keep_days: int) -> dict:
+        """删除 ``PRUNABLE_TABLES`` 中超过保留窗口的行。返回每表删除行数。
+
+        为何需要：引擎曾把每个候选股每 tick 的信号（含 HOLD）全部入库，
+        实测单日写入高达 81.8 万行，signals 累计 319 万行、qmt.db 涨到 **1.38GB**
+        （而 fills 只有 301 行）。空间本身事小，但它使复盘的 ts 范围查询
+        逐日变慢，且使人无法直接用 SQL 看数据。给出保留窗口后可常规维护。
+        """
+        cutoff = (datetime.now() - timedelta(days=max(0, int(keep_days)))
+                  ).strftime("%Y-%m-%d")
+        deleted = {}
+        with self._lock:
+            c = self._conn_get()
+            for t in self.PRUNABLE_TABLES:
+                try:
+                    cur = c.execute(f"DELETE FROM {t} WHERE substr(ts,1,10) < ?",
+                                    (cutoff,))
+                    deleted[t] = cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
+                except Exception as e:
+                    logger.warning("prune %s 失败: %s", t, e)
+                    deleted[t] = -1
+        deleted["cutoff"] = cutoff
+        return deleted
+
+    def vacuum(self) -> bool:
+        """回收空间（DELETE 不会自动缩小文件）。
+
+        注：WAL 模式下 VACUUM 需要独占访问，引擎在跑时会失败——属预期行为，
+        调用方应先 ``python main.py --stop``。
+        """
+        with self._lock:
+            try:
+                c = self._conn_get()
+                c.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                c.execute("VACUUM")
+                return True
+            except Exception as e:
+                logger.warning("VACUUM 失败（引擎可能正在运行，请先 --stop）: %s", e)
+                return False
 
     # ---------- 查询 ----------
 

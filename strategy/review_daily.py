@@ -30,27 +30,54 @@ equity_snapshots / ai_analyses）与 ``logs/notices.log``（耐久系统提示�
 from __future__ import annotations
 
 import argparse
+import html
 import json
 import re
-import sqlite3
 import sys
 from collections import defaultdict
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from config.settings import BASE_DIR
-from core.notices import notices_on_date
+# Windows 控制台 UTF-8（本文件会打印中文进度）
+try:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
 
-DB = BASE_DIR / "storage" / "qmt.db"
+# ❗ 必须先 import config.settings，再 import sqlite3。
+# 原因：config/settings.py 里有一段 Windows ``os.add_dll_directory`` 修复，用于
+# 把 conda env 的 ``Library\bin``（含 sqlite3.dll）加入搜索路径。若先 import
+# sqlite3，在**未执行 conda activate** 的场景（如直接用结果解释器路径调用
+# ``<env>/python.exe strategy/review_daily.py``，或由定时任务/自动化拉起）会直接抛
+# ``ImportError: DLL load failed while importing _sqlite3``，复盘工具彻底跑不起来。
+from config.settings import BASE_DIR, STRATEGY_PARAMS   # noqa: E402  (须先于 sqlite3)
+
+import sqlite3                             # noqa: E402
+
+from core.notices import notices_on_date   # noqa: E402
+from storage.db import default_db_path     # noqa: E402
+
+# 支持 QMT_DB 环境变量覆盖（与 Storage 一致），使单测/工具不碰生产库。
+DB = default_db_path()
 BASELINE = BASE_DIR / "logs" / "verify_live_quality.json"
 
 _TA_PAT = re.compile(r"总资产=([\d,]+\.?\d*)")
 _CASH_PAT = re.compile(r"现金=([\d,]+\.?\d*)")
 _HALT_PAT = re.compile(r"触发熔断:\s*([^（]+)")
+
+
+def E(v) -> str:
+    """HTML 转义（报表里所有外部文本均须过这里）。
+
+    为什么必需：报告会直接拼接 notice.msg / signal.reason / **LLM 的 summary**，
+    而 LLM 输出是不可控文本——一个 ``<`` 就能把整份报表版式打烂。
+    """
+    return html.escape("" if v is None else str(v), quote=True)
 
 
 # ----------------------------------------------------------------------------
@@ -91,6 +118,87 @@ def _rows(c: sqlite3.Connection, table: str, target: str) -> list:
         return []
 
 
+def _rows_since(c: sqlite3.Connection, table: str, target: str,
+                lookback_days: int) -> list:
+    """读取 [target - lookback_days, target 末] 区间的记录（按 ts 升序）。
+
+    【为何不直接读全史】复盘需要回溯到建仓腿（否则跘日 round-trip 会整笔
+    丢弃，holdingsdays 恒 0），但数据库里可能堆着**多个彼此独立的旧 paper 会话**
+    （本库实测：2026-08-25 多进程时代留下 250 笔成交，每个实例都从全新 100 万
+    账本开始、重启即弃仓）。无限回溯会把这些已废弃的仓位当成今日持仓，
+    算出「未实现盈亏 -794 万」这类无意义数字。
+    因此默认回溯窗口取策略的最长持仓周期（trend_max_hold_days），
+    既能覆盖真实建仓腿，又不把古代会话拉进来；可用 --lookback-days 调整。
+    """
+    try:
+        d0 = date.fromisoformat(target) - timedelta(days=max(0, lookback_days))
+        start = d0.isoformat()
+    except Exception:
+        start = "0000-01-01"
+    try:
+        return [dict(r) for r in c.execute(
+            f"SELECT * FROM {table} WHERE ts >= ? AND ts < ? ORDER BY ts",
+            (start, target + "T23:59:59.999999"),
+        ).fetchall()]
+    except Exception as e:
+        print(f"  [warn] 读取 {table}(回溯窗) 失败: {e}")
+        return []
+
+
+def _state_positions(c: sqlite3.Connection) -> dict:
+    """从 engine_state 读持仓（paper 模式的**权威账本**）。无则返回 {}。
+
+    比 fills 重放可靠：它是引擎自己落盘的当前账本，不受历史会话污染。
+    """
+    try:
+        row = c.execute("SELECT positions FROM engine_state WHERE id=1").fetchone()
+        if not row or not row["positions"]:
+            return {}
+        out = {}
+        for p in (json.loads(row["positions"]) or []):
+            q = int(p.get("quantity") or 0)
+            if q > 0:
+                out[p["code"]] = {"qty": q, "avg": float(p.get("avg_cost") or 0.0)}
+        return out
+    except Exception:
+        return {}
+
+
+def _last_snapshot_positions_count(c: sqlite3.Connection, target: str):
+    """当日最后一个权益快照里的持仓只数（用作交叉校验基准）。"""
+    try:
+        row = c.execute(
+            "SELECT positions_count FROM equity_snapshots "
+            "WHERE ts >= ? AND ts < ? ORDER BY id DESC LIMIT 1",
+            (target + "T", target + "T23:59:59.999999"),
+        ).fetchone()
+        return int(row["positions_count"]) if row and row[0] is not None else None
+    except Exception:
+        return None
+
+
+def _rows_upto(c: sqlite3.Connection, table: str, target: str) -> list:
+    """读取**目标日及之前全部**记录（按 ts 升序）。
+
+    【P1 修正 2026-09-02】原来复盘只读当天 fills 就去做 FIFO 配对，于是：
+      ① ``_match_trades``的 lots 从空开始 → 「昨天买、今天卖」的 round-trip 因
+         entry_qty=0 被整笔丢弃，``holding_days`` 恒为 0。而本策略是
+         trend_max_hold_days=120 的趋势骑行——实际上**几乎所有交易都会被漏掉**，
+         报表的「⑦ 逐笔交易明细」永远近似空表。
+      ② ``_replay_fills``的 cost_basis 只算当天买入，而 market_value 包含所有
+         持仓 → ``unrealized = market_value - cost_basis`` 对隔夜仓**严重虚高**。
+    现在从建仓源头重放，只在输出层按目标日过滤。
+    """
+    try:
+        return [dict(r) for r in c.execute(
+            f"SELECT * FROM {table} WHERE ts < ? ORDER BY ts",
+            (target + "T23:59:59.999999",),
+        ).fetchall()]
+    except Exception as e:
+        print(f"  [warn] 读取 {table}(全史) 失败: {e}")
+        return []
+
+
 def _count(c: sqlite3.Connection, table: str, target: str) -> int:
     p = _day_prefix(target)
     try:
@@ -119,33 +227,48 @@ def _latest_trade_date(c: sqlite3.Connection) -> str:
 # 盈亏 / 持仓重建（扩展：返回 EOD 成本价，供未实现盈亏）
 # ----------------------------------------------------------------------------
 
-def _replay_fills(fills: list) -> dict:
-    """平均成本法重建每个代码的已实现盈亏与 EOD 净持仓。"""
+def _replay_fills(fills: list, target: str = None) -> dict:
+    """平均成本法重建每个代码的已实现盈亏与 EOD 净持仓。
+
+    :param fills:  **建议传入全史 fills**（目标日及之前）。
+    :param target: 目标交易日 'YYYY-MM-DD'。传入时，已实现盈亏 / 买卖金额
+        只统计**当日**成交，而持仓与成本基础仍由全史重放得出——这正是
+        隔夜仓未实现盈亏能算对的关键。为 None 时退化为旧行为（全部计入）。
+    """
     pos = {}          # code -> {"qty":int, "avg":float}
     realized = defaultdict(float)
     buy_amt = sell_amt = 0.0
+
+    def _on_target(ts: str) -> bool:
+        if target is None:
+            return True
+        return str(ts or "").startswith(target)
+
     for f in fills:
         code = f["code"]
         side = (f["side"] or "").upper()
         qty = int(f["quantity"] or 0)
         price = float(f["price"] or 0.0)
+        today = _on_target(f.get("ts"))
         if side == "BUY":
             cur = pos.get(code, {"qty": 0, "avg": 0.0})
             tot = cur["qty"] + qty
             cur["avg"] = (cur["avg"] * cur["qty"] + price * qty) / tot if tot else 0.0
             cur["qty"] = tot
             pos[code] = cur
-            buy_amt += float(f["amount"] or price * qty)
+            if today:
+                buy_amt += float(f["amount"] or price * qty)
         elif side == "SELL":
             cur = pos.get(code, {"qty": 0, "avg": 0.0})
             q = min(qty, cur["qty"])
             pnl = (price - cur["avg"]) * q
-            realized[code] += pnl
+            if today:
+                realized[code] += pnl
+                sell_amt += float(f["amount"] or price * qty)
             cur["qty"] -= q
             if cur["qty"] <= 0:
                 cur = {"qty": 0, "avg": 0.0}
             pos[code] = cur
-            sell_amt += float(f["amount"] or price * qty)
     eod = {c: v["qty"] for c, v in pos.items() if v["qty"] != 0}
     eod_avg = {c: v["avg"] for c, v in pos.items() if v["qty"] != 0}
     cost_basis = round(sum(eod_avg[c] * eod[c] for c in eod), 2)
@@ -169,12 +292,15 @@ def _holding_days(entry_ts: str, exit_ts: str) -> int:
         return 0
 
 
-def _match_trades(fills: list) -> list:
+def _match_trades(fills: list, target: str = None) -> list:
     """FIFO 配对 BUY/SELL，重建逐笔 round-trip 交易（含持仓天数/收益率）。
 
-    用于「高质量复盘」的逐笔明细：建仓价、平仓价、持仓天数、单笔收益率。
-    同时记录建仓/平仓所属的执行模式（PAPER/LIVE），便于 paper→live 切换后
-    的逐笔记录核实。T+0/T1 混合下足够复盘使用。
+    :param fills:  **建议传入全史 fills**；只传当天会使跘日交易的建仓腿缺失，
+        entry_qty=0 而被整笔丢弃（趋势策略下几乎等于丢弃全部交易）。
+    :param target: 传入时只返回**平仓发生在该日**的 round-trip（报表只关心当日），
+        但建仓价/持仓天数仍来自全史配对，因而准确。
+
+    同时记录建仓/平仓所属的执行模式（PAPER/LIVE），便于 paper→live 切换后核实。
     """
     lots = defaultdict(list)   # code -> [[ts, price, qty, mode], ...]
     trades = []
@@ -222,6 +348,9 @@ def _match_trades(fills: list) -> list:
                     "entry_mode": entry_mode,
                     "exit_mode": fmode,
                 })
+    if target is not None:
+        trades = [t for t in trades
+                  if str(t.get("exit_ts") or "").startswith(target)]
     trades.sort(key=lambda t: t["exit_ts"])
     return trades
 
@@ -337,17 +466,29 @@ def _equity_svg(series: list) -> str:
 # ----------------------------------------------------------------------------
 
 def _in_trading_window(ts: str) -> bool:
-    """仅统计 A 股真实交易时段（09:00–15:00）内的熔断。
+    """仅统计 A 股真实交易时段内的熔断。
 
-    00:01 / 18:49 等时段的「理由=test」熔断属测试桩、收盘后触发属非交易时段，
-    若计入当日复盘会污染熔断计数（曾误报 21 次）。`datetime.fromisoformat`
-    在 3.11+ 兼容空格与 T 两种分隔符，覆盖 notices 与 snapshots 两种 ts 格式。
+    【修正 2026-09-02】边界从硬编码的 ``9 <= hour < 15`` 改为复用
+    ``core.market_calendar.DEFAULT_SESSIONS``。原实现把 **15:00—15:05 收盘
+    竞价窗口内的真熔断也排除了**（引擎的交易时段守卫本身跑到 15:05）。
+
+    还要说明的是：这个过滤器当初是为了绕开单测写进生产库/日志的测试桩
+    （“理由=test”的假成交、非交易时段的假熔断）——那是在给症状打补丁。
+    现已从源头治好（QMT_DB / QMT_NOTICES_LOG 测试隔离），本函数仅作为
+    历史脏数据的兼容层保留。
     """
     try:
         dt = datetime.fromisoformat(ts)
     except Exception:
         return False
-    return 9 <= dt.hour < 15
+    try:
+        from core.market_calendar import DEFAULT_SESSIONS
+        t = dt.time()
+        first_open = datetime.strptime(DEFAULT_SESSIONS[0][0], "%H:%M").time()
+        last_close = datetime.strptime(DEFAULT_SESSIONS[-1][1], "%H:%M").time()
+        return first_open <= t <= last_close
+    except Exception:
+        return 9 <= dt.hour < 15
 
 
 def _analyze_risk(snaps: list, notices: list) -> dict:
@@ -525,29 +666,29 @@ def _render_html(target: str, rep: dict) -> str:
 
     # ① 成交与盈亏
     realized_rows = "".join(
-        f"<tr><td>{c}</td><td>{v:,.2f}</td></tr>"
+        f"<tr><td>{E(c)}</td><td>{v:,.2f}</td></tr>"
         for c, v in sorted(pnl["realized_by_code"].items(), key=lambda x: -x[1])
     ) or '<tr><td colspan="2" style="color:#888">无已实现盈亏</td></tr>'
     eod_rows = "".join(
-        f"<tr><td>{c}</td><td>{q}</td><td>{pnl['realized_by_code'].get(c,0):,.2f}</td>"
+        f"<tr><td>{E(c)}</td><td>{q}</td><td>{pnl['realized_by_code'].get(c,0):,.2f}</td>"
         f"<td>{pnl['eod_avg'].get(c,0):,.3f}</td></tr>"
         for c, q in sorted(pnl["eod_positions"].items())
     ) or '<tr><td colspan="4" style="color:#888">无净持仓（当日已平仓）</td></tr>'
 
     # ② 信号明细
     sig_rows = "".join(
-        f"<tr><td>{s['ts']}</td><td>{s['code']}</td><td>{s['name']}</td>"
-        f"<td>{s['score']}</td><td>{s['price']}</td><td>{s['reason']}</td></tr>"
+        f"<tr><td>{E(s['ts'])}</td><td>{E(s['code'])}</td><td>{E(s['name'])}</td>"
+        f"<td>{E(s['score'])}</td><td>{E(s['price'])}</td><td>{E(s['reason'])}</td></tr>"
         for s in buy_sigs[:40]
     ) or '<tr><td colspan="6" style="color:#888">当日无 BUY 信号</td></tr>'
 
     # ③ 风控
     flag_rows = "".join(
-        f"<tr><td>{badge(f['level'])}</td><td>{f['item']}</td><td>{f['detail']}</td></tr>"
+        f"<tr><td>{badge(f['level'])}</td><td>{E(f['item'])}</td><td>{E(f['detail'])}</td></tr>"
         for f in cmp_["flags"]
     )
     halt_rows = "".join(
-        f"<tr><td>{h['ts']}</td><td>{h['reason']}</td><td>{h.get('src','')}</td></tr>"
+        f"<tr><td>{E(h['ts'])}</td><td>{E(h['reason'])}</td><td>{E(h.get('src',''))}</td></tr>"
         for h in risk["halt_events"]
     ) or '<tr><td colspan="3" style="color:#888">当日无熔断</td></tr>'
 
@@ -573,7 +714,7 @@ def _render_html(target: str, rep: dict) -> str:
             return '<span style="color:#fff;background:#c62828;padding:1px 7px;border-radius:8px;font-size:11px">LIVE</span>'
         return '<span style="color:#fff;background:#1565c0;padding:1px 7px;border-radius:8px;font-size:11px">PAPER</span>'
     trade_rows = "".join(
-        f"<tr><td>{t['code']}</td><td>{t['entry_ts']}</td><td>{t['exit_ts']}</td>"
+        f"<tr><td>{E(t['code'])}</td><td>{E(t['entry_ts'])}</td><td>{E(t['exit_ts'])}</td>"
         f"<td>{t['entry_price']}</td><td>{t['exit_price']}</td><td>{t['qty']}</td>"
         f"<td>{t['holding_days']}</td>"
         f"<td>{_mode_badge(t.get('entry_mode'))}/{_mode_badge(t.get('exit_mode'))}</td>"
@@ -602,17 +743,27 @@ def _render_html(target: str, rep: dict) -> str:
 
     # ⑧ AI
     ai_rows_html = "".join(
-        f"<tr><td>{a['ts']}</td><td>{a['code']}</td><td>{a['stance']}</td>"
-        f"<td>{a['confidence']}</td><td>{a['summary']}</td></tr>"
+        f"<tr><td>{E(a['ts'])}</td><td>{E(a['code'])}</td><td>{E(a['stance'])}</td>"
+        f"<td>{E(a['confidence'])}</td><td>{E(a['summary'])}</td></tr>"
         for a in ai_list[:40]
     ) or '<tr><td colspan="5" style="color:#888">当日无 AI 分析记录（未启用或无网络）</td></tr>'
 
     # ⑤ 系统提示
     notice_rows = "".join(
-        f"<tr><td>{n.get('ts','')}</td><td>{n.get('tag','')}</td>"
-        f"<td>{n.get('level','')}</td><td>{n.get('msg','')}</td></tr>"
+        f"<tr><td>{E(n.get('ts',''))}</td><td>{E(n.get('tag',''))}</td>"
+        f"<td>{E(n.get('level',''))}</td><td>{E(n.get('msg',''))}</td></tr>"
         for n in notices
     ) or '<tr><td colspan="4" style="color:#888">当日无系统提示记录</td></tr>'
+
+    # 持仓源告警横幅（数据不可信时必须显眼，不能让读报表的人误信一个假数字）
+    if rep.get("position_warning"):
+        warn_banner = (
+            f"<div class='card' style='background:#fff4e5;border-left:5px solid #ef6c00'>"
+            f"<h2 style='border-left:none;padding-left:0;color:#b35300'>⚠ 数据一致性告警</h2>"
+            f"<p style='font-size:13px;line-height:1.7'>{E(rep['position_warning'])}</p></div>"
+        )
+    else:
+        warn_banner = ""
 
     bm = cmp_["baseline_summary"]
     if bm.get("return_pct") is not None:
@@ -649,7 +800,10 @@ th {{ color:#6b7280; font-weight:600; }}
 code {{ background:#eef2f7; padding:1px 5px; border-radius:4px; }}
 </style></head><body><div class="wrap">
 <h1>📊 盘后复盘报告 · {target}</h1>
-<div class="sub">生成于 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ｜ 数据源 storage/qmt.db + logs/notices.log</div>
+<div class="sub">生成于 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ｜ 数据源 storage/qmt.db + logs/notices.log
+｜ 持仓源 {E(rep.get('position_source', '?'))} ｜ FIFO 回溯窗 {rep.get('lookback_days', '?')} 天</div>
+
+{warn_banner}
 
 <div class="card"><div class="kpis">
   <div class="kpi"><div class="v">{fills_n}</div><div class="l">成交笔数</div></div>
@@ -664,8 +818,7 @@ code {{ background:#eef2f7; padding:1px 5px; border-radius:4px; }}
 
 <div class="card"><h2>① 成交与盈亏</h2>
 <table><tr><th>代码</th><th>买入金额</th><th>卖出金额</th></tr>
-<tr><td>合计</td><td>{pnl['buy_amount']:,.2f}</td><td>{pnl['sell_amount']:,.2f}</td></tr></table>
-<h3 style="font-size:14px;margin:14px 0 6px">已实现盈亏（按代码）</h3>
+<tr><td>合计</td><td>{pnl['buy_amount']:,.2f}</td><td>{pnl['sell_amount']:,.2f}</td></tr></table><h3 style="font-size:14px;margin:14px 0 6px">已实现盈亏（按代码）</h3>
 <table><tr><th>代码</th><th>已实现盈亏(¥)</th></tr>{realized_rows}</table>
 <h3 style="font-size:14px;margin:14px 0 6px">EOD 净持仓（含成本价）</h3>
 <table><tr><th>代码</th><th>净持仓(股)</th><th>当日实现盈亏(¥)</th><th>成本价</th></tr>{eod_rows}</table>
@@ -677,7 +830,7 @@ code {{ background:#eef2f7; padding:1px 5px; border-radius:4px; }}
 <div class="card"><h2>② 信号明细（BUY）</h2>
 <table><tr><th>时间</th><th>代码</th><th>名称</th><th>评分</th><th>价</th><th>理由</th></tr>{sig_rows}</table>
 <p style="font-size:13px;color:#6b7280">信号笔数（BUY）{sig_n} ｜ 成交笔数 {fills_n} ｜
-涉及代码 {len(cmp_['distinct_codes'])}（{', '.join(cmp_['distinct_codes'][:12]) or '—'}）</p>
+涉及代码 {len(cmp_['distinct_codes'])}（{E(', '.join(cmp_['distinct_codes'][:12]) or '—')}）</p>
 </div>
 
 <div class="card"><h2>③ 风控事件（risk_snapshots + notices 双源）</h2>
@@ -692,7 +845,9 @@ code {{ background:#eef2f7; padding:1px 5px; border-radius:4px; }}
 
 <div class="card"><h2>⑥ 权益曲线 / 当日盈亏 / 日内最大回撤</h2>{eq_block}</div>
 
-<div class="card"><h2>⑦ 逐笔交易明细（FIFO 配对）</h2>
+<div class="card"><h2>⑦ 逐笔交易明细（FIFO 配对，建仓腿回溯至全史）</h2>
+<p style="font-size:12px;color:#888">配对基于目标日及之前的全部成交（共 {rep.get('fills_history_n', '?')} 笔），
+因此跘日持仓的 round-trip 与真实持仓天数均可正确重建（旧版只读当日成交，跘日交易会被整笔丢弃、holding_days 恒为 0）。</p>
 <table><tr><th>代码</th><th>建仓</th><th>平仓</th><th>建仓价</th><th>平仓价</th><th>数量</th><th>持仓(天)</th><th>模式</th><th>盈亏(¥)</th><th>收益率</th></tr>{trade_rows}</table>
 </div>
 
@@ -730,6 +885,9 @@ def main():
     ap = argparse.ArgumentParser(description="盘后复盘工具")
     ap.add_argument("--date", help="交易日 YYYY-MM-DD（默认取最近有成交日）")
     ap.add_argument("--out-dir", default=str(BASE_DIR / "reports"), help="HTML 输出目录")
+    ap.add_argument("--lookback-days", type=int,
+                    default=int(STRATEGY_PARAMS.get("trend_max_hold_days", 120)),
+                    help="FIFO 配对/持仓重放的回溯天数（默认=策略最长持仓周期）")
     args = ap.parse_args()
 
     c = _conn()
@@ -737,6 +895,9 @@ def main():
     print(f"[复盘] 目标交易日: {target}")
 
     fills = _rows(c, "fills", target)
+    # 回溯窗内的成交：FIFO 配对与持仓成本重放必须从建仓腿起算，否则跘日
+    # round-trip（本策略 trend_max_hold_days=120，几乎全部属此）会被整笔漏掉。
+    fills_all = _rows_since(c, "fills", target, args.lookback_days)
     sig_n = _count(c, "signals", target)
     signals = _rows(c, "signals", target)
     orders = _rows(c, "orders", target)
@@ -745,10 +906,38 @@ def main():
     notices = notices_on_date(target)
 
     eq_series, eq_source = _load_equity_series(c, target, notices)
+    state_pos = _state_positions(c)
+    snap_pos_n = _last_snapshot_positions_count(c, target)
     c.close()
 
-    pnl = _replay_fills(fills)
-    trades = _match_trades(fills)
+    pnl = _replay_fills(fills_all, target=target)
+    trades = _match_trades(fills_all, target=target)
+
+    # ---- 持仓源交叉校验【关键】----
+    # fills 重放得出的持仓可能不可靠（旧会话弃仓 / 测试桩 / 回溯窗截掉了建仓腿）。
+    # 优先用 engine_state（引擎落盘的权威账本）；否则用重放结果，但与当日权益
+    # 快照的 positions_count 对账，**不一致就显式告警**——而不是默默输出一个
+    # 像「未实现盈亏 -794 万」那样无意义的数字。
+    pos_source = "fills重放"
+    pos_warn = None
+    if state_pos:
+        pnl["eod_positions"] = {k: v["qty"] for k, v in state_pos.items()}
+        pnl["eod_avg"] = {k: v["avg"] for k, v in state_pos.items()}
+        pnl["cost_basis"] = round(
+            sum(v["qty"] * v["avg"] for v in state_pos.values()), 2)
+        pos_source = "engine_state(权威账本)"
+    replayed_n = len(pnl["eod_positions"])
+    if snap_pos_n is not None and replayed_n != snap_pos_n:
+        pos_warn = (
+            f"持仓只数对不上：{pos_source} 算出 {replayed_n} 只，而当日末权益快照记录"
+            f"为 {snap_pos_n} 只。本报表的「EOD 持仓 / 成本价 / 未实现盈亏」不可信。"
+            f"常见原因：① 数据库含多个彼此独立的旧 paper 会话（重启即弃仓，"
+            f"只有 BUY 没有对应 SELL）；② 历史测试桩写过生产库；③ 回溯窗"
+            f"({args.lookback_days} 天) 截掉了建仓腿。"
+            f"建议：用 python main.py --prune-db N 清理旧数据后重跑，"
+            f"并确认 engine_state 已在落盘。"
+        )
+        print(f"  [warn] {pos_warn}")
     risk = _analyze_risk(snaps, notices)
     baseline = _load_baseline()
     cmp_ = _compare_to_baseline(target, fills, risk, baseline)
@@ -788,6 +977,10 @@ def main():
         "target_date": target,
         "generated_at": datetime.now().isoformat(timespec="seconds"),
         "fills_n": len(fills),
+        "fills_history_n": len(fills_all),
+        "lookback_days": args.lookback_days,
+        "position_source": pos_source,
+        "position_warning": pos_warn,
         "signals_n": sig_n,
         "orders_n": len(orders),
         "risk_snapshots_n": len(snaps),

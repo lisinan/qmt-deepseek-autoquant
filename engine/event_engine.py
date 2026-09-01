@@ -33,9 +33,9 @@ from typing import Deque, Dict, List, Optional, Tuple
 
 from config.settings import (
     EXECUTION_MODE, IDLE_REFRESH_INTERVAL, INDEX_CODES, INITIAL_CASH,
-    LOG_DIR, MARKET_INDEX_CODE, PORTFOLIO_CONFIG, REFRESH_INTERVAL,
-    RISK_PARAMS, SESSION_GUARD, SINGLETON_LOCK, STOCK_CODES, STRATEGY_MODE,
-    STRATEGY_PARAMS, UNIVERSE,
+    LOG_DIR, MARKET_INDEX_CODE, PERSIST_HOLD_SIGNALS, PORTFOLIO_CONFIG,
+    REFRESH_INTERVAL, RISK_PARAMS, RISK_SNAPSHOT_MIN_INTERVAL, SESSION_GUARD,
+    SINGLETON_LOCK, STOCK_CODES, STRATEGY_MODE, STRATEGY_PARAMS, UNIVERSE,
 )
 from core.notices import system_notice, latest_notices
 from core.auto_reconnect import AutoReconnector
@@ -225,6 +225,11 @@ class EventEngine:
         # 权益曲线快照（供盘后复盘重建当日收益/最大回撤）：峰值与节流时间戳
         self._peak_equity: float = 0.0
         self._last_equity_ts: float = 0.0
+        # 风控快照写入节流：仅在「状态变化」或「超过最小间隔」时写库。
+        # 原实现每 10 tick（~30s）无条件写一行，实测累积 28.8 万行，绝大多数
+        # 是内容完全相同的重复快照，对复盘零信息量。
+        self._last_risk_fp: Optional[str] = None
+        self._last_risk_snap_ts: float = 0.0
 
         # 自动重连
         self._auto_reconnect_enabled = auto_reconnect
@@ -854,9 +859,43 @@ class EventEngine:
                     self._tick_count % portfolio_every_n == 0:
                 self._evaluate_sectors(ticks)
 
-        # 6) 持久化风控快照（每 10 tick）
-        if self._tick_count % 10 == 0:
-            self.storage.save_risk_snapshot(self.risk.snapshot())
+        # 6) 持久化风控快照（仅状态变化或超过最小间隔时）
+        self._maybe_save_risk_snapshot()
+
+    def _maybe_save_risk_snapshot(self) -> None:
+        """风控快照写库：状态变化即写，否则按 RISK_SNAPSHOT_MIN_INTERVAL 节流。
+
+        原实现每 10 tick（~30s）无条件写一行 → 累计 28.8 万行，而其中绝大多数
+        是字段完全相同的重复快照（未熔断、无交易时 payload 一字不变），对复盘
+        零信息量。保留「变化即写」确保熔断/降仓等事件一个不漏。
+        """
+        try:
+            snap = self.risk.snapshot()
+            fp = json.dumps(snap, sort_keys=True, ensure_ascii=False,
+                            default=str)
+            now = time.time()
+            changed = (fp != self._last_risk_fp)
+            stale = (now - self._last_risk_snap_ts) >= RISK_SNAPSHOT_MIN_INTERVAL
+            if not (changed or stale):
+                return
+            self.storage.save_risk_snapshot(snap)
+            self._last_risk_fp = fp
+            self._last_risk_snap_ts = now
+        except Exception as e:
+            logger.debug("风控快照写入失败(继续): %s", e)
+
+    def _save_signal(self, sig: Signal) -> None:
+        """信号入库（HOLD 默认不入库）。
+
+        原实现把每个候选股每 tick 的信号全部写库，含大量「HOLD / score<4.0」
+        这类零信息量行：实测 signals 表 319 万行（单日最高 81.8 万），而同期
+        fills 只有 301 行。HOLD 仍以 DEBUG 日志保留可诊断性。
+        开关：config.settings.PERSIST_HOLD_SIGNALS。
+        """
+        if sig.side == "HOLD" and not PERSIST_HOLD_SIGNALS:
+            logger.debug("HOLD %s score=%.2f %s", sig.code, sig.score, sig.reason)
+            return
+        self.storage.save_signal(sig)
 
     # ----- single mode -----
 
@@ -938,7 +977,7 @@ class EventEngine:
             if len(bars) < 60:
                 continue
             sig = self.strategy.on_bars(code, tick.name, bars)
-            self.storage.save_signal(sig)
+            self._save_signal(sig)
             if sig.side != "BUY":
                 continue
             self._handle_buy(sig, tick, current_prices)
@@ -972,7 +1011,7 @@ class EventEngine:
             targets = self._portfolio.select(codes_to_bars)
             # 保存所有目标信号
             for sig in targets:
-                self.storage.save_signal(sig)
+                self._save_signal(sig)
             current_prices = {c: t.price for c, t in ticks.items()}
             total_asset = self._total_asset()
             held_positions = {c: p for c, p in self._positions.items()

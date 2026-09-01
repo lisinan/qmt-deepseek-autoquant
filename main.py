@@ -373,6 +373,43 @@ def _setup_logging() -> None:
     )
 
 
+def _db_maintenance(args) -> int:
+    """数据库维护子命令（--db-stats / --prune-db N / --vacuum-db）。
+
+    为何内置而不单开脚本：保持单入口，且能复用 config.settings 里的
+    sqlite3 DLL 修复与 .env 加载（否则未执行 conda activate 时会 import 失败）。
+    """
+    from storage.db import Storage
+    st = Storage()
+    try:
+        path = st.db_path
+        size0 = path.stat().st_size if path.exists() else 0
+        print(f"[db] {path}  ({size0 / 1024 / 1024:,.1f} MB)")
+        if args.prune_db is not None:
+            res = st.prune(args.prune_db)
+            cutoff = res.pop("cutoff", "?")
+            print(f"[db] prune: 删除 {cutoff} 之前的高频观测行（保留 "
+                  f"{args.prune_db} 天）")
+            for t, n in res.items():
+                print(f"       {t:<24} -{n}")
+            print("       orders / fills / equity_snapshots 未动（账务证据）")
+        if args.vacuum_db:
+            ok = st.vacuum()
+            print(f"[db] vacuum: {'OK' if ok else '失败（引擎在跑？先 python main.py --stop）'}")
+        print("[db] 当前各表：")
+        for r in st.table_stats():
+            print(f"       {r['table']:<24} {r.get('rows', -1):>10,}  "
+                  f"{r.get('first') or '-'} .. {r.get('last') or '-'}")
+        size1 = path.stat().st_size if path.exists() else 0
+        print(f"[db] 文件大小: {size0 / 1024 / 1024:,.1f} MB → "
+              f"{size1 / 1024 / 1024:,.1f} MB")
+        if args.prune_db is not None and not args.vacuum_db:
+            print("[db] 提示：DELETE 不会自动缩小文件，需再跑一次 --vacuum-db")
+    finally:
+        st.close()
+    return 0
+
+
 def main() -> int:
     _setup_logging()
     ap = argparse.ArgumentParser(description="qmtIDE-deepseek 量化交易入口")
@@ -400,10 +437,21 @@ def main() -> int:
                     help="忽略单实例互斥，强制启动（不推荐）")
     ap.add_argument("--no-session-guard", action="store_true",
                     help="关闭交易时段守卫（非交易时段也全速轮询，仅调试用）")
+    ap.add_argument("--db-stats", action="store_true",
+                    help="打印各表行数/时间跨度后退出（数据库体检）")
+    ap.add_argument("--prune-db", type=int, metavar="DAYS",
+                    help="删除高频观测表（signals/risk_snapshots/"
+                         "sector_recommendations）中超过 N 天的行后退出。"
+                         "orders/fills 属账务证据，永不删除")
+    ap.add_argument("--vacuum-db", action="store_true",
+                    help="VACUUM 回收空间（需先 --stop 停引擎）")
     args = ap.parse_args()
 
     if args.stop:
         return _request_stop()
+
+    if args.db_stats or args.prune_db is not None or args.vacuum_db:
+        return _db_maintenance(args)
 
     # 单实例互斥：只有真正会长跑的模式才需要（快照是一次性的）
     long_running = not args.snapshot

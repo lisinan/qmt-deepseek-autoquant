@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import threading
 from collections import deque
 from datetime import datetime
@@ -35,8 +36,25 @@ _LOGGER = logging.getLogger("SYSTEM")
 
 # 耐久落盘：每条系统提示额外以 JSONL 追加到 logs/notices.log，
 # 重启不丢、可按日检索（供盘后复盘工具读取）。内存环形缓冲仅作 Web 实时展示用。
-_NOTICES_LOG = Path(__file__).resolve().parents[1] / "logs" / "notices.log"
+#
+# 【修正 2026-09-02】路径改为**惰求解析 + 环境变量可覆盖**。
+# 为什么：原实现在 import 时把路径硬绑到生产 logs/notices.log，于是**单测也会
+# 往生产日志里写入测试桩**（实测生产 notices.log 里掘出大量
+# 「提交买入委托 300308.SZ ×2000 @100.000 理由=test」与 18:19 的「触发熔断」）。
+# 这些脏数据又反过来逆向驱动了 review_daily._in_trading_window() 这个补丁
+# —— 在给症状打补丁，而不是治病。现在测试只需设 QMT_NOTICES_LOG 到 tmp 即可隔离。
+_DEFAULT_NOTICES_LOG = Path(__file__).resolve().parents[1] / "logs" / "notices.log"
 _NOTICES_LOG_LOCK = threading.Lock()
+
+
+def notices_log_path() -> Path:
+    """当前系统提示耐久日志路径。``QMT_NOTICES_LOG`` 环境变量优先。
+
+    每次调用重新读环境变量（而不是 import 时快照），使测试/工具可以在
+    运行中重定向到临时目录，不会污染生产复盘数据。频率极低，开销可忽。
+    """
+    override = (os.environ.get("QMT_NOTICES_LOG") or "").strip()
+    return Path(override) if override else _DEFAULT_NOTICES_LOG
 
 # level 名 -> logger 方法（SUCCESS/WARNING 等语义级映射到标准 level）
 _LEVEL_FN = {
@@ -62,9 +80,10 @@ def system_notice(level: str, tag: str, msg: str) -> None:
     fn("[系统提示][%s] %s", tag, msg)
     # 耐久落盘（JSONL，按日可查），失败不影响主流程
     try:
+        path = notices_log_path()
         with _NOTICES_LOG_LOCK:
-            _NOTICES_LOG.parent.mkdir(parents=True, exist_ok=True)
-            with _NOTICES_LOG.open("a", encoding="utf-8") as f:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open("a", encoding="utf-8") as f:
                 f.write(json.dumps(rec, ensure_ascii=False) + "\n")
     except Exception:
         pass
@@ -77,10 +96,11 @@ def notices_on_date(target_date: str) -> list:
     带 ``【系统提示】`` 前缀的行。返回按时间升序的 dict 列表。
     """
     out = []
+    notices_log = notices_log_path()
     # 主源：logs/notices.log（耐久 JSONL）
-    if _NOTICES_LOG.exists():
+    if notices_log.exists():
         try:
-            for line in _NOTICES_LOG.read_text(encoding="utf-8").splitlines():
+            for line in notices_log.read_text(encoding="utf-8").splitlines():
                 line = line.strip()
                 if not line or not line.startswith("{"):
                     continue
@@ -94,7 +114,7 @@ def notices_on_date(target_date: str) -> list:
             pass
     # 回退：当 notices.log 当日无记录时，解析 quant_system.log 中带【系统提示】的行
     if not out:
-        log_path = _NOTICES_LOG.parent / "quant_system.log"
+        log_path = notices_log.parent / "quant_system.log"
         if log_path.exists():
             try:
                 for line in log_path.read_text(encoding="utf-8", errors="ignore").splitlines():
