@@ -214,6 +214,20 @@ STRATEGY_PARAMS = {
     "min_signals": 3,               # 至少 3 个因子共振
     # 日线多周期闸门（MTF）
     "min_daily_bias": 0.2,          # 日线偏置 >= 该值才允许买入（trend_up 直接放行）
+    # 【2026-09-02 P0 修正】日线数据缺失时的处置。
+    #   原实现：features(code) 为 None 即 daily_ok=True「保守放行」。但 DailyContext
+    #   只装载静态 STOCK_CODES，而候选池还包含 DYNAMIC_UNIVERSE 的 ~30 只活跃股 →
+    #   动态池 100% 拿不到日线特征 → 日线闸门对它们**完全不生效**，等于只靠 1 分钟
+    #   噪音下单。实盘证据（storage/qmt.db 2026-09-01）：601138.SH / 688347.SH /
+    #   300604.SZ 等买入信号全部标记 [no-daily]。
+    #   现在：① DailyContext 的 codes 动态合并动态池（见 EventEngine._daily_codes）；
+    #        ② 本开关为 True 时，日线上下文「已就绪但查不到该标的」→ 拒绝入场，
+    #           不再把「没数据」当成通行证。warmup（从未刷新成功）阶段仍放行，
+    #           避免启动瞬间冻结引擎。设为 False 可回到旧的宽松行为（可逆）。
+    "require_daily_data": True,
+    # 动量排名作用域："all" = 静态+动态候选统一排名（修正后的正确语义）；
+    #   "static" = 仅静态池排名、动态池无条件放行（旧行为，仅供回归对照）。
+    "momentum_scope": "all",
     # 离场（ATR 自适应：实际止损/止盈距离在入场时按日线 ATR% 计算，
     #        下面 stop_loss / take_profit 仅作下限兜底）
     "stop_loss": -0.04,             # 固定止损下限（ATR 止损更远时以此保底）
@@ -261,7 +275,19 @@ STRATEGY_PARAMS = {
     "regime_ma": 60,                # 指数 MA 门（收盘 > MA60 视为市场健康）
     "regime_breadth_thresh": 0.5,   # 宽度门阈值（>=50% 个股站上 MA60 才放行）
     "regime_force_exit": False,     # 市场转弱（down）时强制清仓（regime_mode=off 时不会触发）
-    # 仓位（波动率目标）
+    # ---- 仓位（波动率目标）----
+    # 【2026-09-02 说明】trend 退出范式下，sizing 用的止损距离与真实止损**不一致**：
+    #   sizing:  stop_pct = max(|stop_loss|=4%, atr%×atr_stop_mult=2.5) ≈ 6.75%
+    #   真实止损: wide   = max(|hard_stop_pct|=18%, atr%×6)             ≈ 18%
+    # 于是名义 risk_per_trade=2% 的真实值约为 2% × 18/6.75 ≈ 5.3%。
+    # 这**不是**可以随手改掉的 bug —— 已验证的回测基准（+162% / Sharpe 1.69）正是在
+    # 该口径下跑出来的（backtest_daily.BacktestConfig.trend_vol_sizing 默认 False，
+    # 即用紧止损算仓位、每笔顶到 30% 上限、靠现金夹紧实现「~满仓 5 只」）。
+    # 因此这里**保持与回测一致**，把差异显式化为下面的开关，留给 walk-forward A/B：
+    #   trend_vol_sizing=True → 改用真实趋势止损做风险平价（敞口会从 ~97% 降到 ~55%），
+    #   必须先用 opt_harness 多折验证收益/Sharpe 再决定是否切换。
+    # 无论开关取值，启动时都会如实播报「真实单笔风险」，避免 -25% 断路器被误校准。
+    "trend_vol_sizing": False,
     "risk_per_trade": 0.02,         # 单笔风险占总资产比例（风险平价，原 1%→2%）
     "max_position_amount": 300000,  # 单标的最大仓位(元)（原 5万→30万，按信念放大）
     # 集中度上限（并发持仓数）：经 IS/OOS + 多折 walk-forward 双验证，

@@ -33,8 +33,9 @@ from typing import Deque, Dict, List, Optional, Tuple
 
 from config.settings import (
     EXECUTION_MODE, IDLE_REFRESH_INTERVAL, INDEX_CODES, INITIAL_CASH,
-    LOG_DIR, MARKET_INDEX_CODE, REFRESH_INTERVAL, SESSION_GUARD,
-    SINGLETON_LOCK, STOCK_CODES, STRATEGY_MODE, STRATEGY_PARAMS, UNIVERSE,
+    LOG_DIR, MARKET_INDEX_CODE, PORTFOLIO_CONFIG, REFRESH_INTERVAL,
+    RISK_PARAMS, SESSION_GUARD, SINGLETON_LOCK, STOCK_CODES, STRATEGY_MODE,
+    STRATEGY_PARAMS, UNIVERSE,
 )
 from core.notices import system_notice, latest_notices
 from core.auto_reconnect import AutoReconnector
@@ -240,25 +241,107 @@ class EventEngine:
 
     # ============================================================ 公开
 
+    def _daily_codes(self) -> List[str]:
+        """日线上下文应该覆盖的全量标的 = 静态个股 + 指数 + **动态候选池活跃股**。
+
+        【P0 修正 2026-09-02】原实现只在 ``__init__`` 里传了
+        ``STOCK_CODES + INDEX_CODES``，而 ``_run_single_step`` /
+        ``_run_portfolio_step`` 的候选池还包含 ``dynamic_universe.active_codes``
+        （~30 只）。后果：这 30 只股的 ``features()`` 永远为 None，于是
+          ① 日线趋势闸门（策略核心优化 A）对它们 100% 不生效；
+          ② ``atr_pct()`` 返回 0 → 波动率目标仓位退化为固定 4% 估算；
+          ③ ``top_momentum()`` 排不到它们 → 动量闸门无条件放行。
+        实盘证据（storage/qmt.db, 2026-09-01）：601138.SH / 688347.SH /
+        300604.SZ 等全部买入信号均带 ``[no-daily]`` 标记，即只靠 1 分钟级
+        噪音在下单。现在每次刷新都合并活跃池，三道闸门全覆盖。
+        """
+        codes = list(STOCK_CODES) + list(INDEX_CODES)
+        if self.dynamic_universe is not None:
+            try:
+                codes += list(self.dynamic_universe.active_codes)
+            except Exception as e:
+                logger.debug("_daily_codes 取动态活跃池失败(忽略): %s", e)
+        return list(dict.fromkeys(codes))
+
     def _refresh_universe_async(self) -> None:
-        """后台刷新动态候选池（不阻塞 engine.run()）。"""
+        """后台刷新动态候选池（不阻塞 engine.run()）。
+
+        刷新完成后**立即追一次日线刷新**，把新进活跃池的代码补上日线特征，
+        否则新代码在本交易日内仍是「无日线」状态。DailyContext.refresh 带
+        TTL，已有新鲜特征的标的不会重复拉网络，成本只有新增部分。
+        """
         try:
             logger.info("正在刷新动态候选池...")
             self.dynamic_universe.refresh(force=True)
             logger.info("动态候选池刷新完成")
         except Exception as e:
             logger.warning("动态候选池刷新失败: %s", e)
+        try:
+            n = self.daily.refresh(codes=self._daily_codes(), force=False)
+            logger.info("动态池日线特征补齐完成: 覆盖 %d 只", n)
+        except Exception as e:
+            logger.warning("动态池日线特征补齐失败: %s", e)
 
     def _refresh_daily_async(self, force: bool = True) -> None:
         """后台刷新日线多周期上下文（不阻塞 engine.run()）。"""
         try:
             logger.info("正在刷新日线多周期上下文...")
-            self.daily.refresh(force=force)
+            self.daily.refresh(codes=self._daily_codes(), force=force)
             logger.info("日线上下文刷新完成: regime=%s n=%d",
                         self.daily.market_regime(),
                         len(self.daily._feats))
         except Exception as e:
             logger.warning("日线上下文刷新失败: %s", e)
+
+    def _notice_risk_budget(self, max_positions: int) -> None:
+        """如实播报真实风险预算（而不是名义值）。
+
+        为什么必需：原启动横幅声称「实盘断路器阈值远高于策略自然回撤」，但：
+          单仓上限   = min(max_single_position_pct, max_order_amount/equity)
+          理论敞口   = 单仓上限 × max_positions
+          最坏情形   = 实际敞口 × |真实止损|
+        当前参数下 0.30×5 = 150% 理论敞口（现金夹紧后 95%）、最坏情形 ≈ -17%，
+        与 -25% 断路器的安全边距并不宽。把这几个数字当场算出来写进系统提示，
+        使校准关系可被直接核验，而不是靠一句无数据支持的声称。
+        """
+        try:
+            equity = self._total_asset() or INITIAL_CASH
+            buffer_pct = float(PORTFOLIO_CONFIG.get("cash_buffer_pct", 0.0) or 0.0)
+            cap_pct = float(RISK_PARAMS["max_single_position_pct"])
+            if equity > 0:
+                cap_pct = min(cap_pct,
+                              float(RISK_PARAMS["max_order_amount"]) / equity)
+            gross = cap_pct * max(1, int(max_positions))
+            investable = 1.0 - buffer_pct
+            if STRATEGY_PARAMS.get("exit_mode", "scalp") == "trend":
+                real_stop = abs(STRATEGY_PARAMS.get("hard_stop_pct", -0.18))
+            else:
+                real_stop = abs(STRATEGY_PARAMS.get("stop_loss", -0.04))
+            actual_gross = min(gross, investable)   # 现金夹紧后的真实上限
+            worst = actual_gross * real_stop
+            dd_limit = abs(float(self.risk.p["max_drawdown_pct"]))
+            nominal = float(STRATEGY_PARAMS.get("risk_per_trade", 0.0)) * 100
+            per_trade_real = cap_pct * real_stop * 100
+            over = gross > investable
+            level = "WARNING" if (worst >= dd_limit or over) else "SYSTEM"
+            msg = (
+                f"风险预算实测值：单仓上限={cap_pct * 100:.0f}% × 持仓上限"
+                f"{int(max_positions)} = 理论敞口{gross * 100:.0f}%；现金夹紧后"
+                f"实际上限{actual_gross * 100:.0f}%（预留现金{buffer_pct * 100:.0f}%）。"
+                f"真实止损{real_stop * 100:.0f}% → 单笔真实风险≈{per_trade_real:.1f}%"
+                f"（名义 risk_per_trade={nominal:.1f}%），满仓同时打止损最坏情形≈"
+                f"-{worst * 100:.0f}%，回撤断路器-{dd_limit * 100:.0f}%。"
+            )
+            if over:
+                msg += (f"⚠ 理论敞口{gross * 100:.0f}% > 可投资上限"
+                        f"{investable * 100:.0f}%，配置本身允许超配，现已由现金夹紧"
+                        f"强制封顶（不再可能负现金）；建议把 max_single_position_pct 降到"
+                        f"≤{investable / max(1, int(max_positions)) * 100:.0f}% 使配置自洽。")
+            if worst >= dd_limit:
+                msg += ("⚠ 最坏情形已触及断路器阈值，二者未拉开安全边距。")
+            system_notice(level, "风控", msg)
+        except Exception as e:
+            logger.debug("_notice_risk_budget 失败(忽略): %s", e)
 
     def _reset_daily_if_needed(self) -> None:
         """跨交易日重置日内交易计数，避免 max_daily_trades 在进程长跑后永久拦截。
@@ -315,13 +398,15 @@ class EventEngine:
             f"数据源={self.data_mode} 券商={self.broker_mode} | "
             f"订阅标的={len(codes)} 单实例锁={'开' if SINGLETON_LOCK else '关'}"
         )
+        self._notice_risk_budget(_mp)
         system_notice(
             "SYSTEM", "分析结论",
-            f"策略配置已加载并经验证：趋势骑行退出(trend) + 波动率目标仓位 + "
+            f"策略配置已加载：趋势骑行退出(trend) + 波动率目标仓位 + "
             f"并发持仓上限={_mp} + regime 闸门=关闭(追收益)。个股/组合风控全保留；"
-            f"实盘收益断路器阈值(-{abs(self.risk.p['max_drawdown_pct'])*100:.0f}%)远高于"
-            f"策略自然回撤，配合 {self.risk.p['dd_recover_days']} 日冷却自动恢复，"
-            f"确保回测收益可在实盘兑现。"
+            f"日线闸门现已覆盖静态+动态候选池（require_daily_data="
+            f"{STRATEGY_PARAMS.get('require_daily_data', True)}），买入已受现金夹紧约束。"
+            f"回撤断路器 -{abs(self.risk.p['max_drawdown_pct'])*100:.0f}%，"
+            f"冷却 {self.risk.p['dd_recover_days']} 日自动恢复。"
         )
         if self.exec_mode == "live" and not qmt_broker.is_connected:
             system_notice("WARNING", "系统",
@@ -776,22 +861,34 @@ class EventEngine:
     # ----- single mode -----
 
     def _apply_momentum_gate(self, candidate_codes: set) -> set:
-        """动量闸门：静态宇宙只保留 60 日动量前 N 名（且动量必须为正），
-        动态候选池始终放行（其自有 sector_scorer 动量机制）。
-        规避"死水股"占用资金，把仓位集中到最强趋势。
+        """动量闸门：只保留 N 日动量前 N 名（且动量必须为正）。
+
+        【P0 修正 2026-09-02】原实现把候选池拆成 static / dynamic 两半，只对
+        static 排名，dynamic **无条件放行**（注释声称「其自有 sector_scorer 动量
+        机制」，但 sector_scorer 只是观察用途，不参与入场决策）—— 结果是占候选池
+        ~70% 的动态股完全不受动量筛选。现在（momentum_scope="all"）静态+动态统一
+        排名，语义与回测的横截面动量排名一致；设为 "static" 可回到旧行为。
+
+        无日线数据的标的无法参与动量排名（momentum_60d 返回 0），因此依赖
+        ``require_daily_data`` 在策略层拦下，而不是在这里默默放行。
         """
         if not STRATEGY_PARAMS.get("momentum_rank", False):
             return candidate_codes
         if self.daily is None:
             return candidate_codes
-        static = [c for c in candidate_codes if c in STOCK_CODES]
-        dynamic = candidate_codes - set(static)
+        top_n = int(STRATEGY_PARAMS.get("momentum_top_n", 6))
+        lookback = int(STRATEGY_PARAMS.get("momentum_lookback", 60))
+        scope = STRATEGY_PARAMS.get("momentum_scope", "all")
+        if scope == "static":
+            # 旧行为（仅供回归对照）：只对静态池排名，动态池放行
+            static = [c for c in candidate_codes if c in STOCK_CODES]
+            dynamic = candidate_codes - set(static)
+            top = set(self.daily.top_momentum(static, top_n, lookback))
+            return (top | dynamic) & candidate_codes
+        # 默认：静态 + 动态统一横截面排名
         top = set(self.daily.top_momentum(
-            static,
-            int(STRATEGY_PARAMS.get("momentum_top_n", 6)),
-            int(STRATEGY_PARAMS.get("momentum_lookback", 60)),
-        ))
-        return (top | dynamic) & candidate_codes
+            sorted(candidate_codes), top_n, lookback))
+        return top & candidate_codes
 
     def _regime_ok(self) -> bool:
         """市场环境是否允许交易（与回测 regime_ok 一致）。
@@ -997,19 +1094,11 @@ class EventEngine:
         # 若取不到日线 ATR，退化为固定金额估算（波动约 3%）
         if atr_pct <= 0:
             atr_pct = abs(STRATEGY_PARAMS.get("stop_loss", -0.03))
-        raw_qty = self.sizer.size(price, self._total_asset(), atr_pct,
-                                  fixed_stop=STRATEGY_PARAMS.get("stop_loss"))
-        qty = int(raw_qty * scale)
-        if qty <= 0:
-            logger.info("BUY 跳过 %s: 风险预算下仓位为 0 (atr_pct=%.3f)",
-                        sig.code, atr_pct)
-            return
-        # ATR 自适应止损/止盈价（入场即锁定，不受盘中波动影响）
+        # ---- 先算真实止损/止盈距离（下面 sizing 可选择复用它）----
         if STRATEGY_PARAMS.get("exit_mode", "scalp") == "trend":
             # 趋势骑行：宽幅硬止损作灾难保护；不设固定止盈（让趋势奔跑）
-            wide = max(abs(STRATEGY_PARAMS.get("hard_stop_pct", -0.18)),
-                       atr_pct * 6.0)
-            stop_dist = wide
+            stop_dist = max(abs(STRATEGY_PARAMS.get("hard_stop_pct", -0.18)),
+                            atr_pct * 6.0)
             stop_price = round(price * (1 - stop_dist), 3)
             target_price = round(price * 10.0, 3)   # 实质不触发
         else:
@@ -1019,6 +1108,29 @@ class EventEngine:
                               atr_pct * STRATEGY_PARAMS["tp_atr_mult"])
             stop_price = round(price * (1 - stop_dist), 3)
             target_price = round(price * (1 + target_dist), 3)
+        # ---- 仓位计算 ----
+        # sizing_stop 默认用「紧止损」口径，**与已验证的回测基准一致**
+        # （BacktestConfig.trend_vol_sizing 默认 False）。置 True 则改用真实趋势
+        # 止损做风险平价（单笔风险名实相符，但敞口会大幅下降）—— 切换前必须
+        # 先跑 walk-forward A/B，详见 settings.STRATEGY_PARAMS["trend_vol_sizing"]。
+        if (STRATEGY_PARAMS.get("exit_mode", "scalp") == "trend"
+                and STRATEGY_PARAMS.get("trend_vol_sizing", False)):
+            raw_qty = self.sizer.size(price, self._total_asset(), atr_pct,
+                                      stop_pct=stop_dist)
+        else:
+            raw_qty = self.sizer.size(price, self._total_asset(), atr_pct,
+                                      fixed_stop=STRATEGY_PARAMS.get("stop_loss"))
+        qty = int(raw_qty * scale)
+        # ---- 买入力（buying power）夹紧【P0 修正 2026-09-02】----
+        # 原实现完全没有现金校验，paper 分支直接 ``self._cash -= qty*price``。
+        # 配置上 max_single_position_pct(0.30) × max_positions(5) = 150%，本身就
+        # 允许超配；目前未爆只是运气（最新快照 cash=93,999 / 已满仓 90%），
+        # 再多一个槽位或一次高价入场现金就为负 → 污染 _total_asset() → 风控回撤
+        # 计算 → 断路器误判。回测侧一直有这个夹紧（backtest_daily.py:887-890），
+        # 这里补齐，使 live/paper 与回测的资金约束一致。
+        qty = self._clamp_to_buying_power(sig.code, qty, price)
+        if qty <= 0:
+            return
         order = Order(ts=datetime.now(), code=sig.code, side="BUY",
                       quantity=qty, price=price, order_type="limit",
                       account="cash")
@@ -1086,6 +1198,40 @@ class EventEngine:
                 "SUCCESS", "交易",
                 f"买入成交 {sig.code} {sig.name} ×{qty} @{price:.3f} "
                 f"止损{stop_price:.3f} 现金余{self._cash:,.2f} 理由={_reason}")
+
+    def _clamp_to_buying_power(self, code: str, qty: int,
+                               price: float) -> int:
+        """把下单数量夹紧到可用现金内（整百股）。不够买 100 股则返回 0。
+
+        为什么必需：既有实现下单前只过 RiskManager（它只看单笔金额 / 占总资产
+        比例，**不看钱够不够**），paper 分支直接扣现金。max_single_position_pct
+        × max_positions = 0.30 × 5 = 150%，结构上就允许透支。透支后：
+          ① _total_asset() 被负现金拉低 → RiskManager 回撤计算失真 → 断路器误触发；
+          ② paper 回报与真实可执行性脱钩（券商会直接拒单）；live 则会乐观建仓
+            一个根本没成交的仓位。
+        回测侧一直有这个夹紧（``if cost > cash: qty = ...``），这里补齐。
+        """
+        if qty <= 0 or price <= 0:
+            return 0
+        buffer_pct = float(PORTFOLIO_CONFIG.get("cash_buffer_pct", 0.0) or 0.0)
+        reserve = self._total_asset() * buffer_pct
+        avail = self._cash - reserve
+        if avail <= 0:
+            self._log_reject_once(
+                code, f"insufficient_cash: 可用{avail:.0f} ≤ 0"
+                      f"（现金{self._cash:.0f} 预留{reserve:.0f}）")
+            return 0
+        affordable = int((avail / price) // 100) * 100
+        if affordable <= 0:
+            self._log_reject_once(
+                code, f"insufficient_cash: 可用{avail:.0f} 不足 1 手"
+                      f"（{price:.3f}×100={price*100:.0f}）")
+            return 0
+        if affordable < qty:
+            logger.info("BUY 数量受现金夹紧 %s: %d → %d 股（可用现金 %.0f）",
+                        code, qty, affordable, avail)
+            return affordable
+        return qty
 
     def _handle_sell(self, sig: Signal, pos: Position) -> None:
         qty = pos.quantity

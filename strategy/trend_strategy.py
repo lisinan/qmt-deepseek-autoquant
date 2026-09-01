@@ -73,12 +73,28 @@ class TrendStrategy(BaseStrategy):
         # ---- 日线多周期闸门（核心优化 A）----
         daily_ok = True
         daily_reason = ""
+        f = None
         if self.daily is not None:
             f = self.daily.features(code)
             if f is None:
-                # 暂无日线数据：保守放行（warmup），不阻断
-                daily_ok = True
-                daily_reason = "no-daily"
+                # 【P0 修正 2026-09-02】原实现无条件「保守放行」，但 DailyContext 曾只
+                # 装静态池，于是整个动态候选池（~30 只，占候选池 70%）永远命中这条
+                # 分支 → 日线闸门彻底失效，只靠 1 分钟噪音下单（实盘信号全带
+                # [no-daily] 标记）。现在区分两种语义：
+                #   上下文未就绪（warmup）      → 放行，不冻结引擎；
+                #   上下文已就绪但无此标的数据 → 拒绝入场（无法验证日线趋势/ATR）。
+                # 开关：STRATEGY_PARAMS["require_daily_data"]（False = 回到旧的宽松行为）。
+                _ready = False
+                try:
+                    _ready = bool(self.daily.is_ready())
+                except AttributeError:
+                    _ready = False      # 鸭子类型的测试桩：视为未就绪，保持放行
+                if _ready and self.p.get("require_daily_data", True):
+                    daily_ok = False
+                    daily_reason = "no-daily-data"
+                else:
+                    daily_ok = True
+                    daily_reason = "daily-warmup"
             else:
                 if f.trend_up:
                     daily_ok = True
@@ -99,9 +115,8 @@ class TrendStrategy(BaseStrategy):
         else:
             ind = self._compute_indicators(bars)
             self._ind_cache[code] = (_cache_key, ind)
-        score, factors = self._score(ind, trend_up=(self.daily is not None
-                                                     and f is not None
-                                                     and f.trend_up))
+        score, factors = self._score(ind, trend_up=(f is not None
+                                                    and f.trend_up))
         last_close = bars[-1].close
         change_pct = (last_close - bars[-2].close) / bars[-2].close * 100 \
             if len(bars) >= 2 and bars[-2].close else 0.0

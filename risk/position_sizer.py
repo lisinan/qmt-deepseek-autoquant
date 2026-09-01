@@ -41,13 +41,23 @@ class PositionSizer:
         return max(abs(fixed_stop), atr_stop)
 
     def size(self, price: float, equity: float, atr_pct: float,
-             fixed_stop: float = None) -> int:
-        """返回应买入的股数（整百）。价格/权益无效返回 0。"""
+             fixed_stop: float = None, stop_pct: float = None) -> int:
+        """返回应买入的股数（整百）。价格/权益无效返回 0。
+
+        :param stop_pct: 显式指定的真实止损距离（正小数，如 0.18）。传入时
+            **直接采用**，不再走 ``max(|fixed_stop|, atr%×atr_stop_mult)`` 推导。
+            存在的原因：trend 退出范式的真实止损是 max(18%, atr%×6)，而推导
+            出来的是 max(4%, atr%×2.5)——相差 ~2.7 倍，使名义 risk_per_trade
+            与实际单笔风险不一致。调用方需要「名实相符」时用本参数。
+        """
         if price <= 0 or equity <= 0:
             return 0
-        if fixed_stop is None:
-            fixed_stop = self.p.get("stop_loss", -0.03)
-        sp = self.stop_pct(fixed_stop, atr_pct)
+        if stop_pct is not None:
+            sp = abs(float(stop_pct))
+        else:
+            if fixed_stop is None:
+                fixed_stop = self.p.get("stop_loss", -0.03)
+            sp = self.stop_pct(fixed_stop, atr_pct)
         if sp <= 0:
             return 0
         risk_budget = equity * self.risk_per_trade

@@ -31,6 +31,10 @@ logger = logging.getLogger(__name__)
 # 日线回看窗口（足够算 MA60 + 斜率 + ATR）
 DAILY_COUNT = 120
 
+# 特征新鲜度：同一交易日内重复 refresh 时，未过期的标的跳过网络拉取。
+# 让「动态候选池刷新后追加拉取新代码」这种增量刷新几乎零成本。
+FEATURE_TTL_SEC = 6 * 3600
+
 
 @dataclass
 class DailyFeatures:
@@ -161,16 +165,40 @@ class DailyContext:
 
     def refresh(self, codes: Optional[List[str]] = None,
                 force: bool = False) -> int:
-        """拉取并刷新日线特征。返回成功刷新的标的数。"""
-        target = list(codes if codes is not None else self._codes)
+        """拉取并刷新日线特征。返回成功刷新（或已有新鲜缓存）的标的数。
+
+        :param codes:  本次要覆盖的标的。传入后会**并入** ``self._codes``，
+                       使后续无参 refresh 也记得动态候选池（P0 修正：原实现
+                       只认 ``__init__`` 时传入的静态池，动态池永远拿不到日线，
+                       日线闸门 / ATR 风险平价 / 动量排名对其全部失效）。
+        :param force:  True = 无条件重拉；False = 跳过 FEATURE_TTL_SEC 内已刷新的标的
+                       （原实现 force 参数是死参数，从未被使用）。
+        """
+        if codes is not None:
+            with self._lock:
+                merged = list(dict.fromkeys(list(self._codes) + list(codes)))
+                self._codes = merged
+            target = list(codes)
+        else:
+            with self._lock:
+                target = list(self._codes)
         if self._index_code and self._index_code not in target:
             target.append(self._index_code)
         if not target:
             return 0
+        now = time.time()
         ok = 0
+        fetched = 0
         for code in target:
             try:
+                if not force:
+                    with self._lock:
+                        cached = self._feats.get(code)
+                    if cached and (now - cached.updated_at) < FEATURE_TTL_SEC:
+                        ok += 1
+                        continue          # 缓存仍新鲜，免一次网络往返
                 d = self._fetch_daily(code)
+                fetched += 1
                 if not d or len(d["close"]) < 60:
                     self._last_error = f"{code} 日线不足"
                     continue
@@ -184,8 +212,32 @@ class DailyContext:
                 logger.debug("DailyContext refresh err %s: %s", code, e)
         with self._lock:
             self._last_refresh = time.time()
-        logger.info("DailyContext 刷新完成: %d/%d", ok, len(target))
+            total_known = len(self._feats)
+        logger.info("DailyContext 刷新完成: %d/%d（本次网络拉取 %d，累计覆盖 %d 只）",
+                    ok, len(target), fetched, total_known)
         return ok
+
+    # ---------------------------------------------------------- 就绪状态
+
+    def is_ready(self) -> bool:
+        """是否已至少成功刷新过一次（且拿到了特征）。
+
+        供策略层区分两种「查不到日线特征」的语义：
+          - 未就绪（warmup / 启动瞬间）→ 放行，不冻结引擎；
+          - 已就绪但查不到该标的  → **该标的确实没有日线数据** → 应拒绝入场。
+        """
+        with self._lock:
+            return self._last_refresh > 0 and bool(self._feats)
+
+    def has(self, code: str) -> bool:
+        """是否已缓存该标的的日线特征。"""
+        with self._lock:
+            return code in self._feats
+
+    def covered_codes(self) -> List[str]:
+        """已拿到日线特征的标的列表（供动量排名等只在有数据的集合上工作）。"""
+        with self._lock:
+            return list(self._feats.keys())
 
     # ---------------------------------------------------------- 查询
 
