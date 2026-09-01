@@ -39,14 +39,30 @@ logger = logging.getLogger(__name__)
 
 bp = Blueprint("main", __name__)
 
+# 模块级共享 Storage【P1 修正 2026-09-02】
+# 原实现每个请求 ``return Storage()``：
+#   ① Storage.__init__ 会跑 19 条 CREATE TABLE/INDEX + 3 条 ALTER TABLE，
+#      /api/signals 这类高频端点每次都重跑一遗建表迁移；
+#   ② 返回后**从不调 close()**，靠 GC 回收 sqlite 连接 → 句柄泄漏；
+#   ③ SSE 每个客户端再额外开一条常驻连接。
+# Storage 内部已有 RLock + check_same_thread=False，本身就是为多线程共享设计，
+# 模块级单例既安全，又把建表迁移成本降为一次。
+_STORAGE = None
+_STORAGE_LOCK = threading.Lock()
+
 
 def _engine():
     return current_app.config["engine"]
 
 
 def _storage() -> Storage:
-    """每次新建一个 Storage 实例（避免线程问题）。"""
-    return Storage()
+    """进程内共享的 Storage 单例（线程安全，建表迁移只跑一次）。"""
+    global _STORAGE
+    if _STORAGE is None:
+        with _STORAGE_LOCK:
+            if _STORAGE is None:
+                _STORAGE = Storage()
+    return _STORAGE
 
 
 # ============================================================ 页面
@@ -296,55 +312,45 @@ def api_stream():
     """SSE 实时推送：每 1s 一次，包含 snapshot + ticks + recent signals/fills。"""
     # 在进入 generator 前把 engine 引用提出来，避免跨线程的 application context 问题
     e = _engine()
-    storage = Storage()
+    storage = _storage()          # 共享单例，不再每个 SSE 客户端开一条连接
 
     def gen() -> Generator[str, None, None]:
         last_signal_id = 0
         last_fill_id = 0
-        try:
-            while True:
-                try:
-                    snap = e.snapshot()
-                    ticks = e.latest_ticks()
-                    bars = e.latest_bars()
-                    sigs = storage.get_signals(limit=10)
-                    sigs = [s for s in sigs if int(s.get("id") or 0) > last_signal_id][-5:]
-                    if sigs:
-                        last_signal_id = max(last_signal_id,
-                                             max(int(s.get("id") or 0) for s in sigs))
-                    fills = storage.get_fills(limit=10)
-                    fills = [f for f in fills if int(f.get("id") or 0) > last_fill_id][-5:]
-                    if fills:
-                        last_fill_id = max(last_fill_id,
-                                           max(int(f.get("id") or 0) for f in fills))
-                    payload = {
-                        "ts": time.time(),
-                        "snapshot": snap,
-                        "ticks": ticks,
-                        "bars": bars,
-                        "new_signals": sigs,
-                        "new_fills": fills,
-                    }
-                    payload = {
-                        "ts": time.time(),
-                        "snapshot": snap,
-                        "ticks": ticks,
-                        "bars": bars,
-                        "new_signals": sigs,
-                        "new_fills": fills,
-                        "sector_heat": e.latest_sector_heat(),
-                        "recommendations": e.latest_recommendations(),
-                        "llm_rerank": e.latest_llm_rerank(),
-                        "dynamic_universe_summary": e.latest_dynamic_universe_summary(),
-                        "notices": e.latest_notices(20),
-                    }
-                    yield f"data: {json.dumps(payload, ensure_ascii=False, default=str)}\n\n"
-                except Exception as ex:
-                    logger.debug("sse tick err: %s", ex)
-                    yield f"data: {json.dumps({'error': str(ex)})}\n\n"
-                time.sleep(1.0)
-        finally:
-            storage.close()
+        while True:
+            try:
+                sigs = storage.get_signals(limit=10)
+                sigs = [s for s in sigs if int(s.get("id") or 0) > last_signal_id][-5:]
+                if sigs:
+                    last_signal_id = max(last_signal_id,
+                                         max(int(s.get("id") or 0) for s in sigs))
+                fills = storage.get_fills(limit=10)
+                fills = [f for f in fills if int(f.get("id") or 0) > last_fill_id][-5:]
+                if fills:
+                    last_fill_id = max(last_fill_id,
+                                       max(int(f.get("id") or 0) for f in fills))
+                # 注：原实现在这里把 payload 字典**构建了两遁**（第一个立即被第二个
+                # 覆盖），纯属浪费。已合并为一次。
+                payload = {
+                    "ts": time.time(),
+                    "snapshot": e.snapshot(),
+                    "ticks": e.latest_ticks(),
+                    "bars": e.latest_bars(),
+                    "new_signals": sigs,
+                    "new_fills": fills,
+                    "sector_heat": e.latest_sector_heat(),
+                    "recommendations": e.latest_recommendations(),
+                    "llm_rerank": e.latest_llm_rerank(),
+                    "dynamic_universe_summary": e.latest_dynamic_universe_summary(),
+                    "notices": e.latest_notices(20),
+                }
+                yield f"data: {json.dumps(payload, ensure_ascii=False, default=str)}\n\n"
+            except GeneratorExit:
+                raise
+            except Exception as ex:
+                logger.debug("sse tick err: %s", ex)
+                yield f"data: {json.dumps({'error': str(ex)})}\n\n"
+            time.sleep(1.0)
 
     return Response(gen(), mimetype="text/event-stream",
                     headers={"Cache-Control": "no-cache",

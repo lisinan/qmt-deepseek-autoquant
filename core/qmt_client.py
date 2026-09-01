@@ -104,6 +104,11 @@ class _MockClient:
 class _XtdClient:
     mode = "xtdata"
 
+    # push 缓存最大容忍陈旧度（秒）。超过则视为失效，降级走快照兰己。
+    # 60s 的依据：主循环间隔 REFRESH_INTERVAL=3s，正常推送远密于此；
+    # 而连续 20 轮拿不到新 tick 已足以说明该标的推送不正常。
+    PUSH_STALE_SEC = 60.0
+
     def __init__(self):
         from xtquant import xtdata
         self.xtdata = xtdata
@@ -181,16 +186,26 @@ class _XtdClient:
         codes = list(codes)
         result: Dict[str, dict] = {}
         missing: List[str] = []
+        now = time.time()
 
         with self._lock:
             for code in codes:
                 p = self._push_cache.get(code)
-                if p:
-                    n = self._normalize(code, p)
-                    if n:
-                        result[code] = n
-                    else:
-                        missing.append(code)
+                if not p:
+                    missing.append(code)
+                    continue
+                # 【P1 修正 2026-09-02】新鲜度检查。
+                # 原实现写入了 ``_pushed_at`` 却**从未读取**：某只股停止推送
+                # （停牌 / 订阅掉线 / 个别标的推送异常）时会**无限期复用陈旧价格**，
+                # 而止损判定、峰值跟踪、总资产/回撤风控全部依赖这个价格。
+                # 过期则降级走 get_full_tick 快照兰己，而不是默默用旧数。
+                pushed_at = p.get("_pushed_at") or 0.0
+                if pushed_at and (now - pushed_at) > self.PUSH_STALE_SEC:
+                    missing.append(code)
+                    continue
+                n = self._normalize(code, p)
+                if n:
+                    result[code] = n
                 else:
                     missing.append(code)
 
@@ -208,6 +223,23 @@ class _XtdClient:
                 logger.debug("get_full_tick 失败: %s", e)
 
         return result
+
+    def download_history(self, code: str, period: str = "1m") -> bool:
+        """补拉历史 K 线到 miniQMT 本地缓存。失败返回 False。
+
+        为何需要：``get_market_data_ex`` 只读**本地已缓存**的数据。实测
+        2026-09-02 直读本地 1m：300308.SZ 只有 07-22 的 bar（早 6 周，收盘价
+        1060.8 vs 真实 859.3，差 19%），其余多只完全无数据；调过
+        ``download_history_data`` 后才补到 2026-09-01 15:00。
+        实测首次全量下载 ~9.75s/只，因此调用方需自己做时间预算与后台化。
+        """
+        try:
+            self.xtdata.download_history_data(code, period=period,
+                                              start_time="", end_time="")
+            return True
+        except Exception as e:
+            logger.debug("download_history_data 失败 %s/%s: %s", code, period, e)
+            return False
 
     def get_history(self, code: str, period: str = "1d", count: int = 100) -> Optional[List[dict]]:
         try:
@@ -297,6 +329,16 @@ class QMTClient:
 
     def get_ticks(self, codes: Iterable[str]) -> Dict[str, dict]:
         return self._impl.get_ticks(codes)
+
+    def download_history(self, code: str, period: str = "1m") -> bool:
+        """向底层转发补拉请求；mock / 不支持的实现返回 False。"""
+        fn = getattr(self._impl, "download_history", None)
+        if fn is None:
+            return False
+        try:
+            return bool(fn(code, period))
+        except Exception:
+            return False
 
     def get_history(self, code: str, period: str = "1d", count: int = 100):
         return self._impl.get_history(code, period, count)

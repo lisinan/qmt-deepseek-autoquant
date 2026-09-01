@@ -32,10 +32,12 @@ from datetime import date, datetime
 from typing import Deque, Dict, List, Optional, Tuple
 
 from config.settings import (
-    EXECUTION_MODE, IDLE_REFRESH_INTERVAL, INDEX_CODES, INITIAL_CASH,
-    LOG_DIR, MARKET_INDEX_CODE, PERSIST_HOLD_SIGNALS, PORTFOLIO_CONFIG,
-    REFRESH_INTERVAL, RISK_PARAMS, RISK_SNAPSHOT_MIN_INTERVAL, SESSION_GUARD,
-    SINGLETON_LOCK, STOCK_CODES, STRATEGY_MODE, STRATEGY_PARAMS, UNIVERSE,
+    BAR_WARMUP, BAR_WARMUP_BUDGET_SEC, BAR_WARMUP_DOWNLOAD,
+    BAR_WARMUP_MAX_STALE_DAYS, EXECUTION_MODE, IDLE_REFRESH_INTERVAL,
+    INDEX_CODES, INITIAL_CASH, LOG_DIR, MARKET_INDEX_CODE,
+    PERSIST_HOLD_SIGNALS, PORTFOLIO_CONFIG, REFRESH_INTERVAL, RISK_PARAMS,
+    RISK_SNAPSHOT_MIN_INTERVAL, SESSION_GUARD, SINGLETON_LOCK, STOCK_CODES,
+    STRATEGY_MODE, STRATEGY_PARAMS, UNIVERSE,
 )
 from core.notices import system_notice, latest_notices
 from core.auto_reconnect import AutoReconnector
@@ -364,6 +366,115 @@ class EventEngine:
             self._day_open_asset = None  # 新交易日重新基线
             logger.info("日内交易计数跨日重置: daily_trade_count=0 (date=%s)", today)
 
+    def _warmup_bars(self, codes: List[str], download: bool = None,
+                     budget_sec: float = None) -> dict:
+        """用历史 1 分钟 K 线预热 ``self._bars``，消除「每次重启后瞎 60 分钟」。
+
+        【P1 修正 2026-09-02】``_bars`` 是纯内存 deque，而 ``on_bars`` 要求
+        ``len(bars) >= 60``。于是每次进程重启 / 每天开盘都得先攒满 60 根
+        1 分钟 bar 才能开始工作——等于每天前一小时是盘区（占交易时长 25%，
+        而早盘恰好是趋势股成交最活跃、突破最多发的时段）。
+
+        ❗ 为何必须校验新鲜度（实测踩到的坑）：``get_market_data_ex`` 只读
+        miniQMT **本地已缓存**的数据。2026-09-02 实测直读本地 1m：
+        300308.SZ 拿到的是 **07-22**（早 6 周）的 bar，收盘价 1060.8 vs
+        真实 859.3（差 19%）；300502/688256/000001 完全无数据。把这种陈旧价
+        当成当前行情灌进 MA/ATR/VWAP，比不预热**更危险**。所以：
+          ① 最后一根 bar 超过 BAR_WARMUP_MAX_STALE_DAYS 天一律拒用；
+          ② 本地无/陈旧时先 download_history_data 补拉再重读；
+          ③ 补拉实测 ~9.75s/只（46 只约 7.5 分钟），所以本方法由后台线程
+            调用，并按「持仓 → 静态池 → 其余」优先级 + 总时间预算推进。
+
+        并发安全：不在原 deque 上 clear+append（主循环可能同时在 append/读，
+        ``if dq and dq[-1]`` 两步之间被 clear 会抛 IndexError），而是另建一个
+        deque 后**原子换入** ``self._bars[code]``。
+        """
+        if download is None:
+            download = BAR_WARMUP_DOWNLOAD
+        if budget_sec is None:
+            budget_sec = BAR_WARMUP_BUDGET_SEC
+        maxlen = STRATEGY_PARAMS["ma_long"] * 6
+        deadline = time.time() + max(0.0, budget_sec)
+        stat = {"ready": 0, "already": 0, "stale": 0, "empty": 0,
+                "downloaded": 0, "budget_skipped": 0}
+
+        # 优先级：持仓（退出逻辑最急需 bar）→ 静态池 → 其余
+        held = [c for c, p in self._positions.items() if p.quantity > 0]
+        ordered = list(dict.fromkeys(
+            [c for c in held if c in codes]
+            + [c for c in codes if c in STOCK_CODES]
+            + list(codes)))
+
+        for code in ordered:
+            try:
+                if len(self._bars[code]) >= 60:
+                    stat["already"] += 1
+                    continue
+                bars = self._read_fresh_1m(code, maxlen)
+                if bars is None and download and time.time() < deadline:
+                    if qmt_client.download_history(code, "1m"):
+                        stat["downloaded"] += 1
+                        bars = self._read_fresh_1m(code, maxlen)
+                elif bars is None and download:
+                    stat["budget_skipped"] += 1
+                if not bars or len(bars) < 60:
+                    stat["empty" if not bars else "stale"] += 1
+                    continue
+                dq: Deque[Bar] = deque(bars[-maxlen:], maxlen=maxlen)
+                # 保留比历史更新的实时 bar（预热期间主循环可能已聚合出几根）
+                last_ts = dq[-1].ts
+                for b in list(self._bars[code]):
+                    if b.ts > last_ts:
+                        dq.append(b)
+                self._bars[code] = dq          # 原子换入
+                stat["ready"] += 1
+            except Exception as e:
+                stat["empty"] += 1
+                logger.debug("bar 预热失败 %s: %s", code, e)
+
+        logger.info("分钟线预热: 就绪 %d / 已有 %d / 陈旧拒用 %d / 无数据 %d / "
+                    "补拉 %d / 超预算跳过 %d（共 %d 只，缓冲区 %d 根）",
+                    stat["ready"], stat["already"], stat["stale"], stat["empty"],
+                    stat["downloaded"], stat["budget_skipped"],
+                    len(ordered), maxlen)
+        system_notice(
+            "SYSTEM" if stat["ready"] or stat["already"] else "WARNING", "数据",
+            f"分钟线预热完成：就绪 {stat['ready']} / 已有 {stat['already']} / "
+            f"陈旧拒用 {stat['stale']} / 无数据 {stat['empty']}（共 {len(ordered)} 只，"
+            f"补拉 {stat['downloaded']} 只）。就绪的标的无需再等 60 分钟即可评分；"
+            f"陈旧/无数据的标的已**拒绝使用**（避免把旧价当现价），仍走现场聚合。")
+        return stat
+
+    def _read_fresh_1m(self, code: str, count: int) -> Optional[List[Bar]]:
+        """读本地 1m K 线并做新鲜度校验。陈旧/缺失返回 None。"""
+        raw = qmt_client.get_history(code, period="1m", count=count)
+        if not raw:
+            return None
+        out: List[Bar] = []
+        for b in raw:
+            close = float(b.get("close") or 0)
+            ts = b.get("ts")
+            if close <= 0 or not isinstance(ts, datetime):
+                continue
+            out.append(Bar(
+                ts=ts.replace(second=0, microsecond=0),
+                open=float(b.get("open") or close),
+                high=float(b.get("high") or close),
+                low=float(b.get("low") or close),
+                close=close,
+                volume=int(b.get("volume") or 0),
+                amount=float(b.get("amount") or 0.0),
+            ))
+        if not out:
+            return None
+        age_days = (date.today() - out[-1].ts.date()).days
+        if age_days > BAR_WARMUP_MAX_STALE_DAYS:
+            logger.debug("预热拒用 %s：最后 bar %s 已陈旧 %d 天（上限 %d）",
+                         code, out[-1].ts.date(), age_days,
+                         BAR_WARMUP_MAX_STALE_DAYS)
+            return None
+        return out
+
     def run(self, max_ticks: int = 0) -> None:
         """主循环。max_ticks=0 表示无限循环。"""
         # 启动时刷新动态候选池（后台线程，不阻塞 engine.run()）
@@ -389,6 +500,11 @@ class EventEngine:
                         len(dynamic_codes),
                         len(self.dynamic_universe.codes))
         qmt_client.subscribe(codes)
+        # 分钟线预热：后台线程（首次补拉 1m 历史实测 ~9.75s/只，46 只约 7.5 分钟，
+        # 绝不能阻塞启动）。预热完成前主循环照常现场聚合，二者会在换入时合并。
+        if BAR_WARMUP:
+            threading.Thread(target=self._warmup_bars, args=(list(codes),),
+                             name="bar-warmup", daemon=True).start()
         logger.info("Engine 启动: mode=%s data=%s broker=%s exec=%s codes=%d",
                     self.strategy_mode, self.data_mode,
                     self.broker_mode, self.exec_mode, len(codes))
