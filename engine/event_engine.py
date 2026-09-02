@@ -516,6 +516,14 @@ class EventEngine:
         if BAR_WARMUP:
             threading.Thread(target=self._warmup_bars, args=(list(codes),),
                              name="bar-warmup", daemon=True).start()
+        # 实盘：尽早连接 broker（在系统提示前），使启动横幅与持仓初始化准确
+        if self.exec_mode == "live":
+            if qmt_broker.connect():
+                system_notice("SYSTEM", "系统", "实盘券商已连接 (XtQuantTrader)。")
+                self._init_positions_from_broker()  # 启动即拉真实持仓
+            else:
+                logger.warning("Live broker 连接失败，继续运行（下单不会成交）")
+        self.broker_mode = qmt_broker.mode
         logger.info("Engine 启动: mode=%s data=%s broker=%s exec=%s codes=%d",
                     self.strategy_mode, self.data_mode,
                     self.broker_mode, self.exec_mode, len(codes))
@@ -565,21 +573,16 @@ class EventEngine:
                 "仅用于策略验证，不涉及真实资金。"
             )
 
-        if self.exec_mode == "live":
-            ok = qmt_broker.connect()
-            if not ok:
-                logger.warning("Live broker 未连接，但继续运行（仅 paper 不会真下单）")
-
-        # 启动 broker 自动重连
+        # 启动 broker 自动重连（仅在真实断线时重连，不主动拆链）
         if self._auto_reconnect_enabled and self.exec_mode == "live":
             self._broker_reconnector = AutoReconnector(
                 name="broker",
-                connect_fn=lambda: qmt_broker.connect(force=True),
+                connect_fn=lambda: qmt_broker.connect(force=False),
             )
+            qmt_broker.set_on_disconnect(
+                lambda: self._broker_reconnector.notify_disconnect()
+                if self._broker_reconnector else None)
             self._broker_reconnector.start()
-            # 启动时尝试一次 connect（如果未连）
-            if not qmt_broker.is_connected:
-                qmt_broker.connect(force=True)
 
         # 自检模式（--ticks N）绕过时段守卫：允许任何时间跑固定轮数验证。
         guard_active = self.session_guard and not max_ticks
@@ -1906,6 +1909,10 @@ class EventEngine:
             logger.debug("退出前保存引擎状态失败: %s", e)
         if self._broker_reconnector:
             self._broker_reconnector.stop()
+        try:
+            qmt_broker.disconnect()
+        except Exception:
+            pass
         try:
             self.storage.close()
         except Exception:

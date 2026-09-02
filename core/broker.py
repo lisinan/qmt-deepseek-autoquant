@@ -45,6 +45,46 @@ def _load_config() -> dict:
         return dict(_DEFAULT_CONFIG)
 
 
+class _BrokerDisconnectCallback:
+    """XtQuantTrader 断开回调（鸭式匹配 XtQuantTraderCallback 接口）。
+
+    仅 on_disconnected 有实质逻辑：断线时把 broker 标记为未连，并触发上层
+    注册的回调（引擎据此让 AutoReconnector 重连）。其余回调均为 no-op，
+    避免扩展层调用未实现方法时抛 AttributeError。
+    """
+
+    def __init__(self, broker: "QMTBroker"):
+        self._broker = broker
+
+    def on_connected(self):
+        pass
+
+    def on_disconnected(self):
+        logger.warning("XtQuantTrader 断开(on_disconnected 回调触发)")
+        self._broker._mark_disconnected()
+
+    def on_account_status(self, status):
+        pass
+
+    def on_stock_asset(self, asset):
+        pass
+
+    def on_stock_order(self, order):
+        pass
+
+    def on_stock_trade(self, trade):
+        pass
+
+    def on_stock_position(self, position):
+        pass
+
+    def on_order_error(self, order_error):
+        pass
+
+    def on_cancel_error(self, cancel_error):
+        pass
+
+
 class QMTBroker:
     def __init__(self):
         self._lock = threading.RLock()
@@ -52,41 +92,103 @@ class QMTBroker:
         self._connected = False
         self._cfg = _load_config()
         self._subscribed: Dict[str, object] = {}
+        self._on_disconnect = None
+        self._disconnect_cb_registered = False
 
     # ---------- 连接 ----------
 
     def connect(self, force: bool = False) -> bool:
+        # 1) 已连且非强制 → 直接返回（幂等，避免自伤重连）
         with self._lock:
             if self._connected and not force:
                 return True
-            self._teardown()
-            try:
-                from xtquant.xttrader import XtQuantTrader
-                sess = self._cfg.get("session_id")
-                if not sess:
-                    sess = int(time.time()) % 1_000_000
-                    self._cfg["session_id"] = sess
-                t = XtQuantTrader(self._cfg["userdata_path"], int(sess))
-                t.start()
-                rc = t.connect()
-                if rc != 0:
-                    logger.warning("XtQuantTrader.connect rc=%s", rc)
+        # 2) 确保 trader 实例存在（仅创建一次；正常重连复用同一对象/同 session，
+        #    否则 force 重建会让旧 listener 仍占着 session → XtQuantTrader.connect rc=-1）
+        created = False
+        with self._lock:
+            if self._trader is None:
+                try:
+                    from xtquant.xttrader import XtQuantTrader
+                    sess = self._cfg.get("session_id")
+                    if not sess:
+                        sess = int(time.time()) % 1_000_000
+                        self._cfg["session_id"] = sess
+                    t = XtQuantTrader(self._cfg["userdata_path"], int(sess))
+                    t.start()
+                    self._trader = t
+                    created = True
+                except Exception as e:
+                    logger.warning("XtQuantTrader 创建失败: %s", e)
                     self._connected = False
                     return False
-                self._trader = t
-                self._connected = True
-                logger.info("XtQuantTrader 已连接 (path=%s, session=%s)",
-                            self._cfg["userdata_path"], sess)
-                return True
-            except Exception as e:
-                logger.warning("XtQuantTrader 启动异常: %s", e)
+        # 3) 注册断开回调（锁外，避免 on_disconnected 回调重入死锁）
+        if created:
+            self._register_disconnect_cb(self._trader)
+        # 4) 真正 connect（锁外，避免阻塞期间回调重入死锁）
+        with self._lock:
+            self._connected = False
+        try:
+            rc = self._trader.connect()
+        except Exception as e:
+            logger.warning("XtQuantTrader.connect 异常: %s", e)
+            with self._lock:
                 self._connected = False
-                return False
+            return False
+        with self._lock:
+            if rc == 0 or rc == -1:
+                self._connected = True
+                if rc == 0:
+                    logger.info("XtQuantTrader 已连接 (path=%s, session=%s)",
+                                self._cfg["userdata_path"], self._cfg["session_id"])
+                else:
+                    logger.info("XtQuantTrader.connect rc=-1（已连接/重复 connect，按已连处理）"
+                                " (path=%s, session=%s)",
+                                self._cfg["userdata_path"], self._cfg["session_id"])
+                return True
+            logger.warning("XtQuantTrader.connect rc=%s", rc)
+            self._connected = False
+            return False
 
     def _teardown(self):
+        # 仅用于 disconnect()；正常重连不再销毁实例，避免 session 冲突。
         self._trader = None
         self._connected = False
         self._subscribed.clear()
+        self._disconnect_cb_registered = False
+
+    def _mark_disconnected(self) -> None:
+        """断线回调：标记未连并触发上层回调（引擎据此让 AutoReconnector 重连）。"""
+        with self._lock:
+            self._connected = False
+        if self._on_disconnect:
+            try:
+                self._on_disconnect()
+            except Exception:
+                pass
+
+    def set_on_disconnect(self, cb) -> None:
+        self._on_disconnect = cb
+
+    def disconnect(self) -> None:
+        with self._lock:
+            self._connected = False
+            t = self._trader
+            self._trader = None
+            self._disconnect_cb_registered = False
+            if t is not None:
+                try:
+                    t.stop()
+                except Exception:
+                    pass
+
+    def _register_disconnect_cb(self, trader) -> None:
+        if self._disconnect_cb_registered:
+            return
+        try:
+            trader.register_callback(_BrokerDisconnectCallback(self))
+            self._disconnect_cb_registered = True
+        except Exception as e:
+            logger.debug("注册 broker 断开回调失败(忽略): %s", e)
 
     @property
     def is_connected(self) -> bool:

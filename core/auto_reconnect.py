@@ -68,21 +68,31 @@ class AutoReconnector:
     def _run(self) -> None:
         retries = 0
         while not self._stop.is_set():
+            # 已连上：空闲等待，靠 notify_disconnect() 把 _connected 置 False 再重连。
+            # 切勿周期性主动 reconnect——会把健康连接自身拆掉
+            # （旧逻辑：connect(force=True) 每 interval 重建 trader 实例，与仍在跑的
+            #  旧 listener 抢同一 session → XtQuantTrader.connect rc=-1，永久 disconnected）。
+            with self._lock:
+                connected = self._connected
+            if connected:
+                retries = 0
+                self._stop.wait(self._interval)
+                continue
+            # 未连接：尝试 connect_fn
             try:
                 ok = bool(self._connect_fn())
-                if ok:
-                    with self._lock:
-                        if not self._connected:
-                            logger.info("AutoReconnector[%s] 已恢复", self.name)
-                        self._connected = True
-                        self._reconnect_count += 1
-                    retries = 0
-                    # 已连上，等待断线（外部 notify_disconnect 触发重连）
-                    self._stop.wait(self._interval)
-                    continue
             except Exception as e:
+                ok = False
                 self._last_error = f"{type(e).__name__}: {e}"
                 logger.debug("AutoReconnector[%s] 异常: %s", self.name, e)
+            if ok:
+                with self._lock:
+                    if not self._connected:
+                        logger.info("AutoReconnector[%s] 已恢复", self.name)
+                    self._connected = True
+                    self._reconnect_count += 1
+                # 连上后回到循环顶：若仍 _connected 则空闲等待（不主动拆链）
+                continue
             # 失败 → 退避重试
             retries += 1
             wait = min(self._max_interval,
