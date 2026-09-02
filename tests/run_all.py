@@ -53,7 +53,8 @@ def _collect_tests():
             "tests.test_stock_names", "tests.test_mode_tagging",
             "tests.test_batch_a_fixes", "tests.test_batch_c_fixes",
             "tests.test_batch_d_fixes",
-            "tests.test_batch_b_t1"]
+            "tests.test_batch_b_t1",
+            "tests.test_batch_b_minute"]
     tests = []
     import_errors = []
     for m in mods:
