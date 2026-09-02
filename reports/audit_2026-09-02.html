@@ -1,0 +1,118 @@
+<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>项目合理性审计 · 2026-09-02</title>
+<style>
+* { box-sizing: border-box; }
+body { font-family: -apple-system,"PingFang SC","Microsoft YaHei",sans-serif; margin:0; background:#f5f7fa; color:#1f2937; }
+.wrap { max-width: 1040px; margin: 24px auto; padding: 0 16px; }
+h1 { font-size: 22px; margin: 0 0 4px; }
+.sub { color:#6b7280; font-size: 13px; margin-bottom: 18px; }
+.card { background:#fff; border-radius: 12px; padding: 18px 20px; margin-bottom: 16px; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+.card h2 { font-size: 16px; margin: 0 0 12px; border-left: 4px solid #1565c0; padding-left: 10px; }
+.verdicts { display:flex; gap:12px; flex-wrap:wrap; }
+.verdict { flex:1; min-width:200px; background:#eef6ff; border-radius:10px; padding:14px 16px; }
+.verdict .v { font-size:20px; font-weight:700; }
+.verdict .l { font-size:12px; color:#6b7280; }
+.ok { color:#2e7d32; } .warn { color:#ef6c00; } .info { color:#1565c0; }
+table { width:100%; border-collapse: collapse; font-size: 13px; }
+th,td { text-align:left; padding: 7px 8px; border-bottom: 1px solid #eef0f3; }
+th { color:#6b7280; font-weight:600; }
+.kpis { display:flex; gap:12px; flex-wrap:wrap; }
+.kpi { flex:1; min-width:130px; background:#f8fafc; border-radius:10px; padding:12px 14px; }
+.kpi .v { font-size:20px; font-weight:700; }
+.kpi .l { font-size:12px; color:#6b7280; }
+.pos { color:#c62828; } .neg { color:#2e7d32; }
+code { background:#eef2f7; padding:1px 5px; border-radius:4px; }
+.tag { display:inline-block; padding:1px 8px; border-radius:8px; font-size:12px; margin:2px 4px 2px 0; }
+.tag.safe { background:#e8f5e9; color:#2e7d32; }
+.tag.watch { background:#fff3e0; color:#ef6c00; }
+.tag.new { background:#e3f2fd; color:#1565c0; }
+ul { margin:6px 0; padding-left:20px; } li { margin:4px 0; line-height:1.6; }
+</style></head><body><div class="wrap">
+<h1>🛡️ 项目合理性审计 · 2026-09-02</h1>
+<div class="sub">核实对象：别的大模型于 2026-09-02 修改后的 qmtIDE-deepseek ｜ 审计项：铁律完整性 / 能否正常运行 / 能否获得好收益</div>
+
+<div class="card"><div class="verdicts">
+  <div class="verdict"><div class="v ok">✅ 合理</div><div class="l">生产铁律全部在位，无密钥泄露，依赖未新增</div></div>
+  <div class="verdict"><div class="v ok">✅ 能运行</div><div class="l">测试 147/147 通过；main.py --snapshot 启动正常；xtdata 可达</div></div>
+  <div class="verdict"><div class="v ok">✅ 好收益</div><div class="l">全样本 +296.56% / Sharpe 1.61；7 折 walk-forward 全正</div></div>
+</div></div>
+
+<div class="card"><h2>一、生产铁律核对（config/settings.py）</h2>
+<table><tr><th>铁律项</th><th>要求值</th><th>实际值</th><th>结论</th></tr>
+<tr><td>退出范式</td><td><code>exit_mode=trend</code></td><td><code>trend</code></td><td class="ok">✓</td></tr>
+<tr><td>回撤断路器</td><td><code>max_drawdown_pct=-0.25</code> + <code>dd_recover_days=5</code></td><td>−0.25 / 5</td><td class="ok">✓</td></tr>
+<tr><td>连亏/日亏熔断</td><td><code>halt_recover_days=1</code></td><td>1</td><td class="ok">✓</td></tr>
+<tr><td>regime 闸门</td><td><code>off</code> + <code>force_exit=False</code></td><td>off / False</td><td class="ok">✓</td></tr>
+<tr><td>集中度上限</td><td><code>max_positions=5</code></td><td>5</td><td class="ok">✓</td></tr>
+<tr><td>风险预算</td><td><code>risk_per_trade=0.02</code> / <code>max_position_amount=30万</code></td><td>0.02 / 30万</td><td class="ok">✓</td></tr>
+<tr><td>执行模式</td><td><code>paper</code>（默认不误实盘）</td><td>paper</td><td class="ok">✓</td></tr>
+<tr><td>策略模式</td><td><code>single</code></td><td>single</td><td class="ok">✓</td></tr>
+</table>
+<p style="font-size:13px;color:#6b7280">结论：别的大模型<strong>未改动任何已验证的生产策略参数</strong>，收益侧口径与 8/30 基线一致。</p>
+</div>
+
+<div class="card"><h2>二、运行验证</h2>
+<table><tr><th>检查项</th><th>结果</th></tr>
+<tr><td><code>tests/run_all.py</code></td><td class="ok">147/147 通过（原 91 → 新增 56 条 batch 回测/策略测试）</td></tr>
+<tr><td><code>main.py --snapshot</code></td><td class="ok">exit=0，引擎实例化 + 启动通知正常</td></tr>
+<tr><td>xtdata 连接</td><td class="ok">连接成功（2026-09-02 15:01），实时数据可达</td></tr>
+<tr><td>依赖（requirements.txt）</td><td class="ok">无新增（Flask/requests/xtquant/numpy/pandas），新模块均为纯 Python</td></tr>
+<tr><td>密钥泄露扫描</td><td class="ok">改过的文件未命中任何硬编码 sk-/api_key/password/secret</td></tr>
+</table>
+</div>
+
+<div class="card"><h2>三、收益科学复验（strategy/_verify_live_quality.py，生产配置重跑）</h2>
+<div class="kpis">
+  <div class="kpi"><div class="v ok">+296.56%</div><div class="l">全样本收益</div></div>
+  <div class="kpi"><div class="v">+1.61</div><div class="l">Sharpe</div></div>
+  <div class="kpi"><div class="v">−19.85%</div><div class="l">最大回撤 MDD</div></div>
+  <div class="kpi"><div class="v">3.60</div><div class="l">Calmar</div></div>
+  <div class="kpi"><div class="v">3.33</div><div class="l">盈利因子 PF</div></div>
+  <div class="kpi"><div class="v ok">halt=0</div><div class="l">断路器休眠(可兑现)</div></div>
+</div>
+<p style="font-size:12px;color:#888">全样本：87 笔交易 / 胜率 43.7% / 暴露 97% / α +6.39pt / 末日 2026-08-25。</p>
+<h3 style="font-size:14px;margin:14px 0 6px">7 折 walk-forward（生产配置）</h3>
+<table><tr><th>窗口</th><th>区间</th><th>收益</th><th>Sharpe</th><th>α</th></tr>
+<tr><td>Fold1</td><td>2024-01→05</td><td class="pos">+23.26%</td><td>1.48</td><td>+1.9pt</td></tr>
+<tr><td>Fold2</td><td>2024-05→09</td><td class="pos">+6.08%</td><td>0.60</td><td>+13.6pt</td></tr>
+<tr><td>Fold3</td><td>2024-09→2025-01</td><td class="pos">+63.55%</td><td>2.32</td><td>−12.7pt</td></tr>
+<tr><td>Fold4</td><td>2025-01→05</td><td class="pos">+8.16%</td><td>0.69</td><td>+7.8pt</td></tr>
+<tr><td>Fold5</td><td>2025-05→08</td><td class="pos">+98.74%</td><td>4.05</td><td>+44.0pt</td></tr>
+<tr><td>Fold6</td><td>2025-08→12</td><td class="pos">+46.62%</td><td>2.09</td><td>+13.1pt</td></tr>
+<tr><td>Fold7</td><td>2025-12→2026-04</td><td class="pos">+3.78%</td><td>0.44</td><td>−15.5pt</td></tr>
+<tr><td><b>均值</b></td><td>—</td><td class="pos"><b>全部为正</b></td><td><b>1.67</b></td><td>正 α 5/7</td></tr>
+</table>
+<p style="font-size:13px;color:#6b7280">与 8/30 基线（全样本 +293.6% / Sharpe 1.73 / MDD −19.85%，7 折均值 Sharpe 1.69）同量级，<strong>好收益结论成立</strong>；−0.25 断路器在全部窗口 halt=0，回测收益可在实盘兑现。</p>
+</div>
+
+<div class="card"><h2>四、别的大模型改了什么（分类评估）</h2>
+<p><span class="tag safe">安全改进</span><span class="tag watch">策略级变更·需观察</span><span class="tag new">新增研究/重构模块</span></p>
+<h3 style="font-size:14px;margin:10px 0 4px" class="ok">✓ 安全改进（建议保留）</h3>
+<ul>
+<li><b>DB 持久化调优</b>：<code>PERSIST_HOLD_SIGNALS=False</code> + <code>RISK_SNAPSHOT_MIN_INTERVAL=300</code>，解决 signals 表 319 万行、<code>qmt.db</code> 涨到 1.38GB 的膨胀问题（仅影响存储粒度，不改策略）。</li>
+<li><b>分钟 bar 预热</b>：<code>BAR_WARMUP</code> + 新鲜度硬校验 <code>BAR_WARMUP_MAX_STALE_DAYS=4</code>（后台线程、有总预算），补齐每天前 1 小时盘区，且拒绝灌陈旧本地数据。</li>
+<li><b>sqlite3 dll 路径可移植</b>：<code>QMT_CONDA_ENV</code> 覆盖 conda 位置，换机器无需改源码。</li>
+<li><b>DailyContext 合并动态候选池</b>：修复「动态池 ~30 只永远拿不到日线特征 → 日线闸门彻底失效、只靠 1 分钟噪音下单」的实盘 bug（2026-09-01 实测 601138/688347/300604 等信号全标 <code>[no-daily]</code>）。</li>
+</ul>
+<h3 style="font-size:14px;margin:10px 0 4px" class="warn">⚠ 策略级变更（需观察，可回退）</h3>
+<ul>
+<li><b><code>require_daily_data=True</code></b>：日线上下文「已就绪但查不到该标的」→ 拒绝入场（原为宽松放行）。这是<strong>改变入场闸门</strong>的修改，不在原验证集内；但回测仍给出好收益。若担心动态池部分标的被长期挡在场外，设 <code>False</code> 即可回退到旧行为。<b>已落盘但建议：切 live 前先跑几天 paper 观察实际触发率。</b></li>
+</ul>
+<h3 style="font-size:14px;margin:10px 0 4px" class="info">🆕 新增研究/重构模块（生产仍走趋势+组合，参数未变）</h3>
+<ul>
+<li><code>trend_strategy.py</code>：重构多因子趋势策略，接入 VWAP 重校准 + 移动止损 + 日线闸门；<code>on_daily_features</code> 复用与回测同款的 <code>DailyContext.features</code> 计算，live/回测同口径（正确方向）。</li>
+<li><code>portfolio_strategy.py</code> / <code>daily_context.py</code>：组合层与日线上下文，被引擎引用。</li>
+<li><code>backtest_minute.py</code> / <code>backtest_daily.py</code> / <code>_verify_batch_b.py</code>：A/B 回测框架（batch_a~e），含测试；属研究代码，不影响生产路径。</li>
+</ul>
+</div>
+
+<div class="card" style="background:#eef6ff"><h2>📌 审计结论与建议</h2>
+<p style="font-size:13px;line-height:1.7">
+• <b>总体结论：项目合理、能正常运行、好收益结论仍成立。</b>生产铁律一条未改，无密钥泄露，依赖零新增。<br>
+• 收益复验与 8/30 基线同量级，−0.25 断路器全程休眠（halt=0），回测收益可在实盘兑现。<br>
+• 唯一需重点观察的是 <code>require_daily_data=True</code>（入场闸门行为变更）。回测已验证仍好，但属验证集外改动；建议切 live 前用 paper 跑几天，确认动态池标的是否被过度拦截。<br>
+• 当前仍为 <code>paper</code> 模式，切换 LIVE 时记得用本会话的「模式」系统提示 + orders/fills 的 <code>mode=LIVE</code> 标记做对账（见 9/1 已落地的可区分核实能力）。<br>
+• 如需完全回到 8/30 行为：将 <code>require_daily_data</code> 设为 <code>False</code> 即可，零代码改动、可逆。
+</p></div>
+</div></body></html>

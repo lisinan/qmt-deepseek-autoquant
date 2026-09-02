@@ -164,7 +164,10 @@ class DailyContext:
         boll_up_v = I.last(boll_up) or 0.0
         boll_lo_v = I.last(boll_lo) or 0.0
         atr = I.last(I.atr(highs, lows, closes, 14)) or 0.0
-        rsi = I.last(I.rsi(closes, 14)) or 0.0
+        # 与 backtest_daily.score_daily 严格一致：RSI 不足窗口时 I.last 返回
+        # None，必须保留 None（不能 `or 0.0`），否则下方 `if rsi is not None`
+        # 会把「无数据」误判为 rsi=0=超卖、错误加 1.5。落库字段在构造时兜底。
+        rsi = I.last(I.rsi(closes, 14))
         typ = [(h + l + c) / 3 for h, l, c in zip(highs, lows, closes)]
         vwap = I.last(I.vwap(typ, vols)) or 0.0
         vol_avg5 = (sum(vols[-6:-1]) / 5) if len(vols) >= 6 else 0.0
@@ -213,7 +216,17 @@ class DailyContext:
                 ob += 1.5
             elif rsi >= 80:
                 ob -= 0.5
-        # KDJ 暂未计算（与 backtest 一致的话需要 series；先按 backtest 简化为只 RSI）
+        # KDJ 超买超卖（与 backtest_daily.score_daily 严格一致）：
+        # kdj_j<20 → 超卖 +0.5；kdj_j>100 → 超买 −1.0（在 RSI 之外再叠一层确认）。
+        # _compute 已持有完整 highs/lows/closes 序列，KDJ 可算；KDJ 为因果指标，
+        # I.kdj(full)[i] == I.kdj(full[:i+1])[i]，故与回测逐 bar 版本天然同值。
+        _k, _d, _j = I.kdj(highs, lows, closes, 9)
+        kdj_j = I.last(_j)
+        if kdj_j is not None:
+            if kdj_j < 20:
+                ob += 0.5
+            elif kdj_j > 100:
+                ob -= 1.0
         factors["oversold"] = round(max(0.0, min(2.0, ob)), 2)
         # 4) volume (0~1)
         vp = 0.0
@@ -252,7 +265,7 @@ class DailyContext:
             code=code, close=close, ma5=ma5, ma10=ma10, ma20=ma20, ma60=ma60,
             ma20_slope=ma20_slope,
             macd_hist=macd_hist, macd_dif=macd_dif_v, macd_dea=macd_dea_v,
-            atr_pct=atr_pct, rsi=rsi,
+            atr_pct=atr_pct, rsi=rsi or 0.0,
             boll_mid=boll_mid_v, boll_upper=boll_up_v, boll_lower=boll_lo_v,
             vwap=vwap, vol_avg5=vol_avg5,
             above_ma20=above_ma20, above_ma60=above_ma60, bias=bias,

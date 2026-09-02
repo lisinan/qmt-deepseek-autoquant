@@ -55,7 +55,8 @@ def _collect_tests():
             "tests.test_batch_d_fixes",
             "tests.test_batch_b_t1",
             "tests.test_batch_b_minute",
-            "tests.test_batch_e_daily_decision"]
+            "tests.test_batch_e_daily_decision",
+            "tests.test_daily_context_consistency"]
     tests = []
     import_errors = []
     for m in mods:
