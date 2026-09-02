@@ -117,6 +117,15 @@ def _to_tick(code: str, raw: dict) -> Tick:
 
 
 class EventEngine:
+    # ---- 决策频率控制（2026-09-02 #E 路径）----
+    # Live 不再每 tick 调 TrendStrategy.on_bars（其本质是 minute-bar 评分，
+    # 与生产已验证的 backtest_daily.score_daily 口径不一致）。改为：
+    #   ① 每 ENTRY_DECISION_INTERVAL_SEC 调一次 on_daily_features 算 BUY；
+    #   ② minute bar 仍每 tick 走 _aggregate_bar（供 last_price / peak / 盘中止损）；
+    #   ③ on_exit 仍每 tick 调（trend 模式下走 DailyContext，破位判断每日稳定）。
+    # 结果：CPU 下降 ~99%（12 只股 × 240 分钟/天 × 6 指标 评分 → 每 N 分钟 1 次）。
+    ENTRY_DECISION_INTERVAL_SEC = 300     # 5 分钟（远低于 backtest_daily 频率，
+                                          # 但对日线 score 足够频，不会过 trading）
     def __init__(self,
                  strategy=None,
                  risk: RiskManager = None,
@@ -232,6 +241,8 @@ class EventEngine:
         # 是内容完全相同的重复快照，对复盘零信息量。
         self._last_risk_fp: Optional[str] = None
         self._last_risk_snap_ts: float = 0.0
+        # 【2026-09-02 #E】日线决策节流戳：上次调 on_daily_features 的时间。
+        self._last_entry_decision_ts: float = 0.0
 
         # 自动重连
         self._auto_reconnect_enabled = auto_reconnect
@@ -1067,6 +1078,21 @@ class EventEngine:
         return True
 
     def _run_single_step(self, ticks: Dict[str, Tick]) -> None:
+        """单标的模式的入场决策（【2026-09-02 #E】已切换为日线路径）。
+
+        之前：每 tick 对每只候选股调 TrendStrategy.on_bars(minute_bars)，
+              是 minute-bar 评分，与生产已验证结论不对口（实测负收益）。
+        现在：每 ENTRY_DECISION_INTERVAL_SEC 调一次 on_daily_features，
+              score 来自 DailyContext（与 backtest_daily 同口径）。
+              资金、持仓、趋势入场、cash 夹紧等完整保留。
+        """
+        # 节流：日线 score 不会变快于 DailyContext 刷新；避免每 tick 重复评分。
+        now = time.time()
+        if (now - self._last_entry_decision_ts
+                < self.ENTRY_DECISION_INTERVAL_SEC):
+            return
+        self._last_entry_decision_ts = now
+
         held_codes = {c for c, p in self._positions.items() if p.quantity > 0}
         current_prices = {c: t.price for c, t in ticks.items()}
         # 候选 = 静态 + 动态
@@ -1081,30 +1107,46 @@ class EventEngine:
         if not regime_ok:
             logger.debug("regime 门关闭，跳过单标的入场")
 
-        for code, tick in ticks.items():
-            if code in held_codes or code not in candidate_codes:
+        for code in candidate_codes:
+            if code in held_codes:
                 continue
             if not regime_ok:
                 continue
-            # 并发持仓上限：达上限则不再开新仓（已持仓照常管理/退出）
-            if len([p for p in self._positions.values() if p.quantity > 0]) >= self.max_positions:
+            # 并发持仓上限：达上限则不再开新仓
+            if len([p for p in self._positions.values()
+                    if p.quantity > 0]) >= self.max_positions:
                 continue
-            bars = list(self._bars.get(code, []))
-            if len(bars) < 60:
-                continue
-            sig = self.strategy.on_bars(code, tick.name, bars)
+            # 【#E】日线决策：不再用 minute bars，用 DailyContext.features
+            feat = self.daily.features(code) if self.daily else None
+            sig = self.strategy.on_daily_features(code, code, feat)
             self._save_signal(sig)
             if sig.side != "BUY":
+                continue
+            # 成交价用最新 tick（分钟线上的实时价）。若无 tick 则跳过（保护性）。
+            tick = ticks.get(code)
+            if tick is None:
                 continue
             self._handle_buy(sig, tick, current_prices)
 
     # ----- portfolio mode -----
 
     def _run_portfolio_step(self, ticks: Dict[str, Tick]) -> None:
-        # 注意：以下逐轮追踪日志一律 DEBUG。主循环每 3s 一轮、每 5 轮进这里，
-        # 放在 INFO 会把 quant_system.log 撑爆（实测 535MB / 63 万条同类记录）。
+        """组合模式的入场决策（【2026-09-02 #E】已切换为日线路径）。
+
+        之前：每 5 tick 用 minute bars 调 PortfolioStrategy.select →
+              同样掉进 (b) 揭露的「minute-bar 评分与已验证回测不对口」陷阱。
+        现在：节流后用 DailyFeatures 调 select_daily，score 来自 DailyContext，
+              与生产已验证的 backtest_daily 同口径。
+        """
         logger.debug("_run_portfolio_step: enter, ticks=%d", len(ticks))
-        # regime 入场闸门：市场状态不佳时不开新仓（已有持仓由 step4 强制清仓处理）
+        # 节流：日线 score 不会比 DailyContext 刷新更快。
+        now = time.time()
+        if (now - self._last_entry_decision_ts
+                < self.ENTRY_DECISION_INTERVAL_SEC):
+            return
+        self._last_entry_decision_ts = now
+
+        # regime 入场闸门
         regime_ok = self._regime_ok()
         if not regime_ok:
             logger.debug("_run_portfolio_step: regime 门关闭，跳过组合入场")
@@ -1119,13 +1161,13 @@ class EventEngine:
                      len(candidate_codes), regime_ok)
 
         if regime_ok:
-            codes_to_bars = {
-                code: (ticks[code].name if code in ticks else code,
-                       list(self._bars.get(code, [])))
-                for code in candidate_codes
-            }
-            targets = self._portfolio.select(codes_to_bars)
-            # 保存所有目标信号
+            # 【#E】日线决策：传 (code, name, features) 而非 (code, name, minute bars)
+            codes_to_features = {}
+            for code in candidate_codes:
+                name = ticks[code].name if code in ticks else code
+                feat = self.daily.features(code) if self.daily else None
+                codes_to_features[code] = (name, feat)
+            targets = self._portfolio.select_daily(codes_to_features)
             for sig in targets:
                 self._save_signal(sig)
             current_prices = {c: t.price for c, t in ticks.items()}

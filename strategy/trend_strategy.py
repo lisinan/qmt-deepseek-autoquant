@@ -64,6 +64,56 @@ class TrendStrategy(BaseStrategy):
 
     # ============================================================ 公共
 
+    def on_daily_features(self, code: str, name: str,
+                         features: "DailyFeatures") -> Signal:
+        """【2026-09-02 #E】日线决策路径。
+
+        这是 live 引擎 (a) 路线的核心接口：EventEngine 不再传 minute bars，
+        而是传 DailyContext.features(code)，由本方法判定 BUY/HOLD。
+        scoring 直接复用 DailyContext 里与 backtest_daily.score_daily **同款**
+        计算出的 features.score —— 从而 live 与回测的买入信号严格同口径。
+
+        为什么这能解决 (b) 揭露的问题：
+          分钟级 minute score 是在 1 分钟尺度上算的（ma5=5min），满是噪声；
+          日级 daily score 是在 1 日尺度上算的（ma5=5day），与生产已验证结论一致。
+          本方法还保留「trend_up || bias」日线闸门 —— 与生产 on_bars 等价。
+        """
+        from strategy.daily_context import DailyFeatures
+        if code in INDEX_CODES:
+            return self._hold(code, name, [], reason="index")
+        if features is None:
+            return self._hold(code, name, [], reason="no-daily")
+        if not isinstance(features, DailyFeatures):
+            return self._hold(code, name, [], reason="bad-features")
+
+        # 日线闸门（与 on_bars 中的 daily_ok 逻辑一致）
+        daily_ok = (features.trend_up
+                    or features.bias >= self.p.get("min_daily_bias", 0.2))
+        daily_reason = (f"bias={features.bias:.2f} "
+                        f"trend_up={features.trend_up}")
+        if not daily_ok:
+            return self._hold(code, name, [], score=features.score,
+                              reason=f"daily-gate:{daily_reason}")
+
+        score = features.score
+        factors = features.factors or {}
+        th = self.p["buy_score_threshold"]
+        min_sig = self.p["min_signals"]
+        pos_factors = sum(1 for v in factors.values() if v and v > 0)
+
+        if score >= th and pos_factors >= min_sig:
+            reason = "; ".join(
+                f"{k}+{v:.1f}" for k, v in factors.items() if v and v > 0)
+            return Signal(
+                ts=datetime.now(), code=code, name=name,
+                side="BUY", score=score, price=features.close,
+                reason=f"[{daily_reason}] " + reason,
+                factors={"change_pct": 0, **factors},
+            )
+        return self._hold(
+            code, name, [], score=score,
+            reason=f"score<{th}" if score < th else f"sigs<{min_sig}")
+
     def on_bars(self, code: str, name: str, bars: List[Bar]) -> Signal:
         if code in INDEX_CODES:
             return self._hold(code, name, bars, reason="index")

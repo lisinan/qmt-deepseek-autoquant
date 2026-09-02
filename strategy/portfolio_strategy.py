@@ -86,6 +86,39 @@ class PortfolioStrategy:
                         ",".join(fundamental_filtered[:10]))
         return scored[:self.max_positions]
 
+    def select_daily(self,
+                     codes_to_features: Dict[str, Tuple[str, object]],
+                     exclude: Optional[set] = None
+                     ) -> List[Signal]:
+        """【2026-09-02 #E】日线决策路径：与 ``select`` 等价但用 DailyFeatures。
+
+        EventEngine._run_portfolio_step 调用本接口而非 ``select``，使
+        portfolio 模式也走「与 backtest_daily 同口径」的 score。
+        同样的阈值、同样的趋势入场、同样的基本面过滤。
+        """
+        exclude = exclude or set()
+        scored: List[Signal] = []
+        fundamental_filtered: List[str] = []
+        for code, (name, feat) in codes_to_features.items():
+            if code in exclude or code in INDEX_CODES:
+                continue
+            sig = self.trend.on_daily_features(code, name, feat)
+            if sig.side != "BUY":
+                continue
+            if sig.score < self.score_threshold:
+                continue
+            if self.use_fundamental_filter and tushare_client.enabled:
+                if not tushare_client.passes_filter(code):
+                    fundamental_filtered.append(code)
+                    continue
+            scored.append(sig)
+        scored.sort(key=lambda s: (s.score, s.ts.timestamp()), reverse=True)
+        if fundamental_filtered:
+            logger.info("Portfolio(daily): 基本面过滤剔除 %d 只: %s",
+                        len(fundamental_filtered),
+                        ",".join(fundamental_filtered[:10]))
+        return scored[:self.max_positions]
+
     # ============================================================ 调仓
 
     def plan_rebalance(self,

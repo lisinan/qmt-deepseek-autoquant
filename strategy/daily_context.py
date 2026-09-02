@@ -17,9 +17,9 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from config.settings import INDEX_CODES, MARKET_INDEX_CODE
 from core import indicators as I
@@ -40,20 +40,34 @@ FEATURE_TTL_SEC = 6 * 3600
 class DailyFeatures:
     code: str
     close: float = 0.0
+    ma5: float = 0.0
+    ma10: float = 0.0
     ma20: float = 0.0
     ma60: float = 0.0
     ma20_slope: float = 0.0      # 每根日线绝对变化量（近似斜率）
     macd_hist: float = 0.0
+    macd_dif: float = 0.0
+    macd_dea: float = 0.0
     atr_pct: float = 0.0         # ATR / close，用于风险平价
     rsi: float = 0.0
+    boll_mid: float = 0.0
+    boll_upper: float = 0.0
+    boll_lower: float = 0.0
+    vwap: float = 0.0
+    vol_avg5: float = 0.0
     above_ma20: bool = False
     above_ma60: bool = False
     bias: float = 0.0            # -1 ~ +1 综合趋势偏置
     trend_up: bool = False       # 日线主升（可入场）
+    # 【2026-09-02 #E】日级 6 因子评分（与 backtest_daily.score_daily 严格一致）。
+    # 这样 EventEngine 可直接用 features.score 作为 BUY 判定，**与回测同口径**——
+    # 解决了“分钟级回测实测负收益、live 路径从未被验证”这件事。
+    score: float = 0.0
+    factors: dict = field(default_factory=dict)
     updated_at: float = 0.0
 
     def to_dict(self) -> dict:
-        return {
+        d = {
             "code": self.code, "close": round(self.close, 3),
             "ma20": round(self.ma20, 3), "ma60": round(self.ma60, 3),
             "ma20_slope": round(self.ma20_slope, 4),
@@ -61,7 +75,11 @@ class DailyFeatures:
             "atr_pct": round(self.atr_pct, 4), "rsi": round(self.rsi, 2),
             "above_ma20": self.above_ma20, "above_ma60": self.above_ma60,
             "bias": round(self.bias, 3), "trend_up": self.trend_up,
+            "score": round(self.score, 2),
         }
+        if self.factors:
+            d["factors"] = {k: round(v, 2) for k, v in self.factors.items()}
+        return d
 
 
 class DailyContext:
@@ -124,18 +142,32 @@ class DailyContext:
     # ---------------------------------------------------------- 特征计算
 
     def _compute(self, code: str, d: Dict[str, List[float]]) -> DailyFeatures:
+        # 主要特征计算由下方函数体提供。
+
         closes = d["close"]
         highs = d["high"]
         lows = d["low"]
         vols = d["volume"]
+        # 与 backtest_daily.score_daily 严格对齐的指标集
+        ma5 = I.last(I.sma(closes, 5)) or 0.0
+        ma10 = I.last(I.sma(closes, 10)) or 0.0
         ma20 = I.last(I.sma(closes, 20)) or 0.0
         ma60 = I.last(I.sma(closes, 60)) or 0.0
         ma20_series = I.sma(closes, 20)
         ma20_slope = I.slope(ma20_series, lookback=5) or 0.0
-        _, _, hist = I.macd(closes, 12, 26, 9)
+        macd_dif, macd_dea, hist = I.macd(closes, 12, 26, 9)
         macd_hist = I.last(hist) or 0.0
+        macd_dif_v = I.last(macd_dif) or 0.0
+        macd_dea_v = I.last(macd_dea) or 0.0
+        boll_mid, boll_up, boll_lo = I.boll(closes, 20, 2.0)
+        boll_mid_v = I.last(boll_mid) or 0.0
+        boll_up_v = I.last(boll_up) or 0.0
+        boll_lo_v = I.last(boll_lo) or 0.0
         atr = I.last(I.atr(highs, lows, closes, 14)) or 0.0
         rsi = I.last(I.rsi(closes, 14)) or 0.0
+        typ = [(h + l + c) / 3 for h, l, c in zip(highs, lows, closes)]
+        vwap = I.last(I.vwap(typ, vols)) or 0.0
+        vol_avg5 = (sum(vols[-6:-1]) / 5) if len(vols) >= 6 else 0.0
         close = closes[-1]
         above_ma20 = bool(ma20 and close > ma20)
         above_ma60 = bool(ma60 and close > ma60)
@@ -153,13 +185,90 @@ class DailyContext:
 
         trend_up = (above_ma20 and above_ma60 and ma20_slope > 0
                     and macd_hist >= 0)
+
+        # === 6 因子评分（与 backtest_daily.score_daily 严格一致）===
+        # 这是 (a) 路线的核心：让 live 直接复用**已验证**的日线评分逻辑。
+        factors: Dict[str, float] = {}
+        # 1) trend (0~2)
+        tr = 0.0
+        if ma5 and ma10 and ma20:
+            if ma5 > ma10 > ma20:
+                tr += 1.0
+                if ma20_slope > 0:
+                    tr += 1.0
+            elif ma5 > ma10:
+                tr += 0.5
+        factors["trend"] = round(tr, 2)
+        # 2) momentum (0~1，仅 macd_hist > 0；与 backtest 一致)
+        mm = 0.0
+        if macd_hist is not None and macd_hist > 0:
+            mm += 1.0
+        factors["momentum"] = round(mm, 2)
+        # 3) oversold (0~2)
+        ob = 0.0
+        if rsi is not None:
+            if 30 < rsi < 70:
+                ob += 1.0
+            elif rsi <= 30:
+                ob += 1.5
+            elif rsi >= 80:
+                ob -= 0.5
+        # KDJ 暂未计算（与 backtest 一致的话需要 series；先按 backtest 简化为只 RSI）
+        factors["oversold"] = round(max(0.0, min(2.0, ob)), 2)
+        # 4) volume (0~1)
+        vp = 0.0
+        if vols and vol_avg5 > 0 and vols[-1] > 0:
+            ratio = vols[-1] / vol_avg5
+            if ratio >= 1.2:
+                vp = 1.0
+            elif ratio >= 1.0:
+                vp = 0.5
+        factors["volume"] = round(vp, 2)
+        # 5) position (0~1)
+        pos = 0.0
+        if close and boll_mid_v and boll_up_v and boll_lo_v:
+            if boll_lo_v <= close <= boll_up_v:
+                pos = (0.5 + 0.5 * (close - boll_mid_v) /
+                       (boll_up_v - boll_mid_v)
+                       if boll_up_v > boll_mid_v else 0.5)
+            elif close > boll_up_v:
+                pos = 0.0 if close > boll_up_v * 1.02 else 0.5
+            elif close < boll_lo_v:
+                pos = 0.3 if close > boll_lo_v * 0.98 else 0.0
+        factors["position"] = round(pos, 2)
+        # 6) vwap (0~2)
+        vw = 0.0
+        if close and vwap:
+            diff = (close - vwap) / vwap
+            if diff > 0.0008:
+                vw = 2.0
+            elif diff > -0.004:
+                vw = 1.0
+        factors["vwap"] = round(vw, 2)
+
+        score = round(sum(factors.values()), 2)
+
         return DailyFeatures(
-            code=code, close=close, ma20=ma20, ma60=ma60,
-            ma20_slope=ma20_slope, macd_hist=macd_hist,
-            atr_pct=atr_pct, rsi=rsi, above_ma20=above_ma20,
-            above_ma60=above_ma60, bias=bias, trend_up=trend_up,
+            code=code, close=close, ma5=ma5, ma10=ma10, ma20=ma20, ma60=ma60,
+            ma20_slope=ma20_slope,
+            macd_hist=macd_hist, macd_dif=macd_dif_v, macd_dea=macd_dea_v,
+            atr_pct=atr_pct, rsi=rsi,
+            boll_mid=boll_mid_v, boll_upper=boll_up_v, boll_lower=boll_lo_v,
+            vwap=vwap, vol_avg5=vol_avg5,
+            above_ma20=above_ma20, above_ma60=above_ma60, bias=bias,
+            trend_up=trend_up, score=score, factors=factors,
             updated_at=time.time(),
         )
+
+    @staticmethod
+    def _compute_for_test(code: str, d: Dict[str, List[float]]) -> "DailyFeatures":
+        """静态版：供 backtest_minute 在不同时间切片上复用 _compute 逻辑。
+
+        backtest_minute 每日调一次，对每个 code 截到该日之前的 bar 重算
+        score。与 DailyContext 实例上的 _compute 输出严格一致。
+        """
+        tmp = DailyContext(codes=[code])
+        return tmp._compute(code, d)
 
     # ---------------------------------------------------------- 刷新
 

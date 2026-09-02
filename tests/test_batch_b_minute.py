@@ -43,10 +43,13 @@ def test_minute_backtest_returns_results_for_reasonable_sizing():
                               {"300308.SZ": data})
     assert bad["n_trades"] == 0, \
         "fixed_amount=30000 在高价股上必须 0 笔（回归保护）"
+    # 修正后：fixed_amount=100000 + buy_threshold=0.0 在 minute 模式下必能成交
+    # （daily 模式下要靠 daily score > 4 + 趋势对齐，故不适用本测试）
     good = run_minute_backtest(["300308.SZ"],
                                MinuteConfig(fixed_amount=100000.0,
-                                            buy_threshold=4.0,
-                                            t1_restriction=True),
+                                            buy_threshold=0.0,
+                                            t1_restriction=True,
+                                            decision_mode="minute"),
                                {"300308.SZ": data})
     if data and len(data["close"]) >= 6000:
         assert good["n_trades"] > 0, \

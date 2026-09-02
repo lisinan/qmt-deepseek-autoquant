@@ -190,6 +190,11 @@ class MinuteConfig:
     trend_max_hold_days: int = 30           # 分钟回测取 30 天够 walk-forward
     max_bars_per_code: int = 120            # 喂给 TrendStrategy 的最大 bar 数
 
+    # 【2026-09-02 #E】决策路径：“minute”= 每分钟跑 on_bars（与生产生产 live 同款，
+    #                  实测负收益）；“daily”= 每天一次 on_daily_features（与 backtest_daily
+    #                  同口径）。同 1m 数据、同 TrendStrategy、同成本模型，只变决策路径。
+    decision_mode: str = "daily"             # “minute” | “daily”
+
     # 与 production STRATEGY_PARAMS 兼容
     strategy_params: dict = field(default_factory=dict)
 
@@ -265,6 +270,38 @@ def run_minute_backtest(codes: List[str], cfg: MinuteConfig,
     # 喂给策略的 bar deque（每个 code 一个；只保留最近 max_bars_per_code 根）
     bar_buf: Dict[str, deque] = {c: deque(maxlen=cfg.max_bars_per_code)
                                   for c in codes}
+
+    # 【#E】日线决策：每个 code 最近一根日线 score / features（按日期缓存）
+    # 在 daily_decision 模式下，所有入场决策都查这张表。
+    daily_score_by_code: Dict[str, dict] = {c: None for c in codes}
+    last_daily_date: Optional[str] = None
+
+    def _rebuild_daily_scores(date_str: str) -> None:
+        """切到新日时重算所有 code 的日线 score（与 DailyContext._compute 同逻辑）。"""
+        if daily_score_by_code and all(v is not None for v in daily_score_by_code.values()):
+            return                                  # 今日已建过
+        for code in codes:
+            d = data.get(code)
+            if not d or len(d["close"]) < 60:
+                daily_score_by_code[code] = None
+                continue
+            # 截至 date_str 之前的全部 bar（不用当日末数据）
+            cutoff_idx = None
+            for i, dt_str in enumerate(d["date"]):
+                if dt_str > date_str:
+                    cutoff_idx = i
+                    break
+            if cutoff_idx is None or cutoff_idx < 60:
+                daily_score_by_code[code] = None
+                continue
+            sub = {k: v[:cutoff_idx] for k, v in d.items()}
+            try:
+                from strategy.daily_context import DailyContext
+                f = DailyContext._compute_for_test(
+                    code, sub)
+                daily_score_by_code[code] = f
+            except Exception:
+                daily_score_by_code[code] = None
 
     def _get(code: str, k_idx: int):
         """取 code 在 sorted_dt[k_idx] 的 (open, high, low, close, volume)。"""
@@ -365,6 +402,12 @@ def run_minute_backtest(codes: List[str], cfg: MinuteConfig,
         if n_held >= cfg.max_positions:
             continue
 
+        # 【#E】切到新交易日时重建日线 score 表（仅一次/天，与 live 引擎节流后等价）
+        if cfg.decision_mode == "daily":
+            if cur_date != last_daily_date:
+                _rebuild_daily_scores(cur_date)
+                last_daily_date = cur_date
+
         # 按候选池扫描：取评分最高的 top-N
         scores: List[Tuple[float, str]] = []
         for code in codes:
@@ -375,10 +418,16 @@ def run_minute_backtest(codes: List[str], cfg: MinuteConfig,
                 if feats is not None:
                     if not (feats.trend_up or feats.bias >= 0.2):
                         continue
-            bars = list(bar_buf[code])
-            if len(bars) < 60:
-                continue
-            sig = strategy.on_bars(code, code, bars)
+            if cfg.decision_mode == "daily":
+                # 【#E】日线决策：用 on_daily_features（与 live 引擎同路径）
+                f = daily_score_by_code.get(code)
+                sig = strategy.on_daily_features(code, code, f)
+            else:
+                # minute 决策（原路径，(b) 路线证明为亏）
+                bars = list(bar_buf[code])
+                if len(bars) < 60:
+                    continue
+                sig = strategy.on_bars(code, code, bars)
             n_signals += 1
             if sig.side == "BUY" and sig.score >= cfg.buy_threshold:
                 scores.append((sig.score, code))
@@ -525,6 +574,9 @@ def main() -> int:
     ap.add_argument("--count", type=int, default=60000,
                     help="每只标的拉多少根 1m K 线")
     ap.add_argument("--folds", type=int, default=7)
+    ap.add_argument("--decision", choices=["minute", "daily", "both"],
+                    default="both",
+                    help="minute=on_bars(现状、亏)/ daily=on_daily_features(回测同口径)/ both=同台对比")
     ap.add_argument("--out", default=str(ROOT / "logs" / "verify_minute.json"))
     args = ap.parse_args()
 
@@ -536,54 +588,88 @@ def main() -> int:
         return 1
     print(f"[load] {len(data)}/{len(codes)} 只就绪")
 
-    cfg = MinuteConfig()
-    print(f"[run ] {args.folds} 折 walk-forward...")
-    folds = walk_forward_minute(codes, cfg, data, folds=args.folds)
+    modes = (["minute", "daily"] if args.decision == "both"
+             else [args.decision])
+    comparison = {}
+    for mode in modes:
+        cfg = MinuteConfig(decision_mode=mode)
+        print()
+        print("=" * 78)
+        print(f"决策路径 = {mode}   (minute=on_bars, daily=on_daily_features)")
+        print("=" * 78)
+        folds = walk_forward_minute(codes, cfg, data, folds=args.folds)
 
-    summary = []
-    print(f"\n{'fold':<6}{'bars':<8}{'ret%':<10}{'sharpe':<10}"
-          f"{'mdd%':<10}{'trades':<8}{'win%':<8}{'avg_hold_min':<12}")
-    for r in folds:
-        summary.append({
-            "fold": r.get("fold"), "bars": r.get("n_bars_fold"),
-            "ret": r.get("total_return"), "sharpe": r.get("sharpe"),
-            "mdd": r.get("max_drawdown"), "n_trades": r.get("n_trades"),
-            "win_rate": r.get("win_rate"),
-            "avg_hold_min": r.get("avg_hold_min")})
-        print(f"{r.get('fold'):<6}{r.get('n_bars_fold'):<8}"
-              f"{r.get('total_return', 0)*100:<+10.2f}"
-              f"{r.get('sharpe', 0):<+10.2f}"
-              f"{r.get('max_drawdown', 0)*100:<+10.2f}"
-              f"{r.get('n_trades', 0):<8}"
-              f"{r.get('win_rate', 0)*100:<+8.1f}"
-              f"{r.get('avg_hold_min', 0):<12}")
+        summary = []
+        print()
+        print(f"{'fold':<6}{'bars':<8}{'ret%':<10}{'sharpe':<10}"
+              f"{'mdd%':<10}{'trades':<8}{'win%':<8}{'avg_hold_min':<12}")
+        for r in folds:
+            summary.append({
+                "fold": r.get("fold"), "bars": r.get("n_bars_fold"),
+                "ret": r.get("total_return"), "sharpe": r.get("sharpe"),
+                "mdd": r.get("max_drawdown"), "n_trades": r.get("n_trades"),
+                "win_rate": r.get("win_rate"),
+                "avg_hold_min": r.get("avg_hold_min")})
+            print(f"{r.get('fold'):<6}{r.get('n_bars_fold'):<8}"
+                  f"{r.get('total_return', 0)*100:<+10.2f}"
+                  f"{r.get('sharpe', 0):<+10.2f}"
+                  f"{r.get('max_drawdown', 0)*100:<+10.2f}"
+                  f"{r.get('n_trades', 0):<8}"
+                  f"{r.get('win_rate', 0)*100:<+8.1f}"
+                  f"{r.get('avg_hold_min', 0):<12}")
 
-    ok = [s for s in summary if s.get("sharpe") is not None]
-    if ok:
-        avg = {
-            "ret": sum(s["ret"] for s in ok) / len(ok),
-            "sharpe": sum(s["sharpe"] for s in ok) / len(ok),
-            "mdd": sum(s["mdd"] for s in ok) / len(ok),
+        ok = [s for s in summary if s.get("sharpe") is not None]
+        avg = {}
+        if ok:
+            avg = {
+                "ret": sum(s["ret"] for s in ok) / len(ok),
+                "sharpe": sum(s["sharpe"] for s in ok) / len(ok),
+                "mdd": sum(s["mdd"] for s in ok) / len(ok),
+            }
+            print()
+            print(f"[folds 均值] ret {avg['ret']*100:+.2f}%  "
+                  f"Sharpe {avg['sharpe']:+.2f}  MDD {avg['mdd']*100:+.2f}%")
+        full = run_minute_backtest(
+            codes, MinuteConfig(decision_mode=mode), data, daily=None)
+        print()
+        print(f"[全样本 full] ret {full['total_return']*100:+.2f}%  "
+              f"Sharpe {full['sharpe']:+.2f}  "
+              f"MDD {full['max_drawdown']*100:+.2f}%  "
+              f"trades {full['n_trades']}  "
+              f"win% {full['win_rate']*100:.1f}")
+        comparison[mode] = {
+            "folds_mean": avg,
+            "full": {k: full.get(k) for k in
+                     ("total_return", "sharpe", "max_drawdown", "n_trades",
+                      "win_rate", "avg_hold_min")},
+            "folds": summary,
         }
-        print(f"\n[folds 均值] ret {avg['ret']*100:+.2f}%  "
-              f"Sharpe {avg['sharpe']:+.2f}  MDD {avg['mdd']*100:+.2f}%")
-        if "sharpe" in summary[-1]:
-            full = run_minute_backtest(
-                codes, cfg, data, daily=None)
-            print(f"\n[全样本 full] ret {full['total_return']*100:+.2f}%  "
-                  f"Sharpe {full['sharpe']:+.2f}  "
-                  f"MDD {full['max_drawdown']*100:+.2f}%  "
-                  f"trades {full['n_trades']}  "
-                  f"win% {full['win_rate']*100:.1f}")
-            summary.append({"fold": "full", "bars": len(data[next(iter(data))]["close"]),
-                            **{k: full.get(k) for k in
-                               ("ret", "sharpe", "mdd", "n_trades", "win_rate")}})
+
+    if "minute" in comparison and "daily" in comparison:
+        m = comparison["minute"]; d = comparison["daily"]
+        print()
+        print("=" * 78)
+        print("同台对比（同 1m 数据、同 TrendStrategy、同成本模型）：")
+        print("=" * 78)
+        print(f"  minute 决策: 折均 ret {m['folds_mean'].get('ret', 0)*100:+6.2f}%  "
+              f"Sharpe {m['folds_mean'].get('sharpe', 0):+5.2f}  "
+              f"全样本 {m['full'].get('total_return', 0)*100:+6.2f}%  "
+              f"trades {m['full'].get('n_trades', 0)}")
+        print(f"  daily  决策: 折均 ret {d['folds_mean'].get('ret', 0)*100:+6.2f}%  "
+              f"Sharpe {d['folds_mean'].get('sharpe', 0):+5.2f}  "
+              f"全样本 {d['full'].get('total_return', 0)*100:+6.2f}%  "
+              f"trades {d['full'].get('n_trades', 0)}")
+        if m['folds_mean'].get('ret') and d['folds_mean'].get('ret'):
+            delta = d['folds_mean']['ret'] - m['folds_mean']['ret']
+            print()
+            print(f"  → daily 相对 minute 改善: Δret {delta*100:+.2f}pt")
 
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2,
+    out_path.write_text(json.dumps(comparison, ensure_ascii=False, indent=2,
                                    default=str), encoding="utf-8")
-    print(f"\n[out] {out_path}")
+    print()
+    print("[out]", out_path)
     return 0
 
 

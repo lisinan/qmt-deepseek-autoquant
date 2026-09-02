@@ -36,3 +36,71 @@ live 实际跑的是分钟级，而回测验证的是日级。这是一条必须
 2. **保留 (b) 的回测基础设施** (`backtest_minute.py` + `test_batch_b_minute.py`)，
    便于以后为分钟级重做调参时复用，且作为 (a) 切换**前后**的事实基线。
 3. 不要把分钟级结论写进 README "已验证" 列表——它们与生产 live 不在同一代码路径。
+
+---
+
+# (a) 路线实装后 — live 改用日线决策
+
+2026-09-02 在 (b) 路线已揭露 minute 决策负收益的基础上，落地 (a)：把
+EventEngine 入场决策从 `TrendStrategy.on_bars(minute_bars)` 切到
+`TrendStrategy.on_daily_features(DailyFeatures)`。**关键事实：仍然是同一份
+TrendStrategy 代码，变化的是传入的"决策原料"——这是 (b)/(a) 真正能
+**同台对比**的前提。
+
+## 决策链路 (a)
+
+```
+EventEngine._run_once [每 3s 一轮]
+   │
+   ├─ _run_single_step / _run_portfolio_step
+   │     │
+   │     ├─ 节流：每 ENTRY_DECISION_INTERVAL_SEC = 5 分钟 一次
+   │     │
+   │     ├─ 取 self.daily.features(code)         # DailyContext 已算好 score
+   │     │     （与 backtest_daily.score_daily 严格同款）
+   │     │
+   │     ├─ strategy.on_daily_features(code, name, features)
+   │     │     ├─ daily-gate (trend_up || bias >= 0.2)
+   │     │     ├─ score >= buy_score_threshold (4.0)
+   │     │     └─ pos_factors >= min_signals (3)
+   │     │
+   │     └─ _handle_buy(sig, tick, prices)       # 分钟线只用于成交价
+   │
+   └─ 离场检查（每 tick）: on_exit + minute-bar 价格 / peak
+        # 趋势破位判定仍走 DailyContext.trend_broken
+```
+
+## 同台 walk-forward 对比（同 1m 数据、同 TrendStrategy、同成本）
+
+| 决策路径 | 7折 ret | Sharpe | MDD | 全样本 ret | 折均交易数 |
+|---|---|---|---|---|---|
+| minute（生产现状） | **-11.67%** | -1.12 | -17.71% | -26.87% | 428 |
+| **daily（#E 切换）** | **+9.94%** | **+1.92** | -4.40% | +9.17% | 322 |
+| **Δret** | **+21.61pt** | | | | |
+
+7 折全从负转正；Sharpe 从 -1.12 跳到 +1.92。CPU 同步下降约 99%（每 5 分钟一次评分而非每秒）。
+
+## 代码改动（最低限度、不改策略语义）
+
+1. `DailyFeatures` 加字段 `score: float` + `factors: dict`，由 `DailyContext._compute` 在 refresh 时算好（与 backtest 同款）。
+2. `TrendStrategy.on_daily_features(code, name, features)` 镜像 `on_bars` 的 BUY/HOLD 判定逻辑（趋势闸门 + 阈值 + 因子数），只是用 `features.score` 代替分钟线重算。
+3. `EventEngine._run_single_step` 改用 `on_daily_features` + `ENTRY_DECISION_INTERVAL_SEC=300` 节流。
+4. `EventEngine._run_portfolio_step` 改用 `PortfolioStrategy.select_daily`。
+5. `strategy/backtest_minute.py` 加 `--decision both` 模式，跑两条路径同台对比。
+
+## 经验证的事实
+
+1. **同一份 TrendStrategy 代码** + 同一份 1m 数据 + 同一份成本模型 + 同一份 T+1，
+   决策路径不同 → 7折 ret 从 -11.67% 翻到 +9.94%（+21.61pt）。
+2. **CPU 降低约 99%**：每 5 分钟评分一次而非每 tick × 每只股。
+3. **回测与 live 同口径**：`DailyContext._compute` 的 score 严格等于
+   `backtest_daily.score_daily` 的输出（同一份指标 + 同一份阈值），
+   live 跑出的信号理论上与回测结论可对接。
+4. **回归保护**：`tests/test_batch_e_daily_decision.py` 11 例把"必须用
+   on_daily_features / 不能是 on_bars / 节流 / DailyFeatures.score
+   必须存在"等关键事实钉死。
+
+## 仍待验证
+
+- (F) 批次：EventEngine 拆分 + `_bench_cache.py` 等 24 个 _opt_*.py 整理
+- 实盘连续 2–4 周验证 daily 决策在 live 端的稳定性
