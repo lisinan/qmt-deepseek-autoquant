@@ -34,9 +34,12 @@ JSON 字段：
 - risks: 中文一句话风险提示（<= 50 字）
 
 规则：
-1. 多指标冲突时给 neutral 而非二选一
-2. confidence 的绝对值不要轻易超过 0.7
-3. 没有明确信号就给 neutral + confidence 接近 0
+1. 综合 MA/MACD/KDJ/RSI/BOLL/量价后给出一个明确方向；仅当多空信号
+   势均力敌（没有任何一方占优）时才给 neutral，不要为求稳而强行 neutral。
+2. confidence 须与把握成正比：方向明确时允许 ±0.7~±0.9，仅在信号
+   模糊时给 |confidence|<0.3；禁止无理由地压低置信度。
+3. 明确看多/看空必须给对应 stance + 较高 confidence；只有"确实没有任何
+   可识别信号"才给 neutral + confidence 接近 0。
 """
 
 
