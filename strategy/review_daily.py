@@ -652,6 +652,265 @@ def _compare_to_baseline(target: str, fills: list, risk: dict, baseline: dict) -
 
 
 # ----------------------------------------------------------------------------
+# 迭代优化洞察（稳定 / 安全 / 准确 / 高效 四维打分 + 优先级发现）
+# ----------------------------------------------------------------------------
+
+def _slippage_buy(fills: list, signals: list) -> float | None:
+    """BUY 成交相对 BUY 信号触发价的滑点（%）。正=不利（买贵了）。
+
+    匹配：每个 BUY 成交取其之前、同代码、最近一条 BUY 信号价为基准。
+    无匹配（当日无信号/无成交）返回 None，不报错。
+    """
+    def _ts(s):
+        try:
+            return datetime.fromisoformat(s)
+        except Exception:
+            return None
+    sigs = sorted([s for s in signals
+                   if (s.get("side") or "").upper() == "BUY" and _ts(s.get("ts"))],
+                  key=lambda s: _ts(s["ts"]))
+    if not sigs:
+        return None
+    tot, n = 0.0, 0
+    for f in fills:
+        if (f.get("side") or "").upper() != "BUY":
+            continue
+        ft = _ts(f.get("ts"))
+        if ft is None:
+            continue
+        price = float(f.get("price") or 0.0)
+        if price <= 0:
+            continue
+        ref = None
+        for s in reversed(sigs):
+            if _ts(s["ts"]) <= ft and s.get("code") == f.get("code"):
+                sp = float(s.get("price") or 0.0)
+                if sp > 0:
+                    ref = sp
+                break
+        if ref:
+            tot += (price - ref) / ref * 100.0
+            n += 1
+    return round(tot / n, 3) if n else None
+
+
+def _optimization_insights(rep: dict, notices: list,
+                           fills: list, signals: list) -> dict:
+    """从当日真实记录挖掘「稳定/安全/准确/高效」四维优化方向。
+
+    纯分析、数据驱动：每个发现都带证据（具体数字/日志关键词）与代码/配置定位，
+    按 P0>P1>P2 优先级排序。不改动任何生产参数——只产出迭代方向。
+    """
+    risk = rep.get("risk", {})
+    equity = rep.get("equity")
+    pnl = rep.get("pnl", {})
+    ai_list = rep.get("ai_list", [])
+    signals_n = rep.get("signals_n", 0)
+    fills_n = rep.get("fills_n", 0)
+
+    # ---- 系统提示侧写 ----
+    warn_n = err_n = disconnect_n = budget_n = tickgap_n = 0
+    for n_ in notices:
+        lvl = (n_.get("level") or "").upper()
+        msg = n_.get("msg", "") or ""
+        mlow = msg.lower()
+        if lvl in ("ERROR", "ERR") or "traceback" in mlow or "exception" in mlow:
+            err_n += 1
+        elif lvl in ("WARNING", "WARN") or "warning" in mlow:
+            warn_n += 1
+        if ("disconnect" in mlow or "断开" in msg or "重连" in msg
+                or "reconnect" in mlow or "连接失败" in msg or "connection" in mlow):
+            disconnect_n += 1
+        if ("风险预算" in msg or "risk_budget" in mlow
+                or "max_single_position_pct" in msg):
+            budget_n += 1
+        if ("空tick" in msg or "tick 缺失" in msg or "无 tick" in msg
+                or "数据缺失" in msg or "心跳" in msg):
+            tickgap_n += 1
+    notice_volume = len(notices)
+
+    # ---- 关键指标 ----
+    halt_count = int(risk.get("halt_count", 0) or 0)
+    max_consec = int(risk.get("max_consecutive_losses", 0) or 0)
+    dd = float(equity["intraday_max_dd_pct"]) if equity else None
+    eq_points = int(equity["points"]) if equity else 0
+    eod_pos_n = len(pnl.get("eod_positions", {}) or {})
+    max_positions = int(STRATEGY_PARAMS.get("max_positions", 5) or 5)
+    slip = _slippage_buy(fills, signals)
+    adverse_slip = slip if (slip is not None and slip > 0) else 0.0
+
+    # AI 立场分布
+    ai_dist = defaultdict(int)
+    for a in ai_list:
+        ai_dist[(a.get("stance") or "unknown")] += 1
+
+    # ---- 四维打分（0-100）----
+    stability = 100
+    if err_n:
+        stability -= min(40, err_n * 15)
+    if disconnect_n:
+        stability -= min(25, disconnect_n * 8)
+    if tickgap_n:
+        stability -= min(15, tickgap_n * 5)
+    if budget_n:
+        stability -= 5
+    stability = max(0, min(100, stability))
+
+    safety = 100
+    if halt_count:
+        safety -= min(60, halt_count * 25)
+    if dd is not None:
+        if dd <= -18.0:
+            safety -= 25
+        elif dd <= -10.0:
+            safety -= 10
+    if max_consec >= 3:
+        safety -= 12
+    if eod_pos_n > max_positions:
+        safety -= 20
+    safety = max(0, min(100, safety))
+
+    accuracy = 100
+    if adverse_slip > 0.05:
+        accuracy -= min(30, adverse_slip * 60)
+    if signals_n > 0 and fills_n == 0 and eod_pos_n < max_positions:
+        accuracy -= 10
+    accuracy = max(0, min(100, accuracy))
+
+    efficiency = 100
+    if notice_volume > 200:
+        efficiency -= min(25, (notice_volume - 200) / 50.0 * 5)
+    if eq_points and eq_points < 50:
+        efficiency -= 15
+    elif not eq_points:
+        efficiency -= 5
+    efficiency = max(0, min(100, efficiency))
+
+    scores = {"稳定": stability, "安全": safety,
+              "准确": accuracy, "高效": efficiency}
+    overall = round(sum(scores.values()) / 4.0)
+
+    # ---- 优先级发现 ----
+    findings = []
+
+    def add(axis, prio, level, title, evidence, action, ref):
+        findings.append({"axis": axis, "priority": prio, "level": level,
+                         "title": title, "evidence": evidence,
+                         "action": action, "ref": ref})
+
+    if err_n:
+        add("稳定", "P1", "err", f"当日 {err_n} 条 ERROR/异常",
+            f"系统提示中 ERROR/Traceback 共 {err_n} 条",
+            "查 logs/quant_system.log 与当日 traceback，优先修根因（DLL/网络/数据可得性）",
+            "engine/event_engine.py 主循环异常隔离；core/notices.py")
+    if disconnect_n:
+        add("稳定", "P1", "warn", f"券商连接断开/重连 {disconnect_n} 次",
+            f"notices 含 disconnected/重连关键词 {disconnect_n} 次",
+            "复查断线自修复是否真正复用单一 XtQuantTrader 实例，避免 force 重连自伤",
+            "core/broker.py / core/auto_reconnect.py")
+    if tickgap_n:
+        add("稳定", "P2", "info", f"出现 {tickgap_n} 次空 tick/数据缺失",
+            f"notices 含空tick/数据缺失关键词 {tickgap_n} 次",
+            "确认 xtdata 行情源可达；单实例自愈是否覆盖；非交易时段回落 mock 属正常",
+            "data/xtdata；engine 单实例自愈")
+    if halt_count:
+        reasons = "、".join(f"{k}×{v}" for k, v in
+                            sorted(risk.get("halt_reasons", {}).items(),
+                                   key=lambda x: -x[1]))
+        add("安全", "P0", "err", f"触发 {halt_count} 次熔断",
+            f"原因分布：{reasons}；最大连亏 {max_consec}",
+            "确认冷却窗口（连亏/日亏 1 日、回撤 5 日）后已自动 resume；若为误触复查阈值",
+            "core/risk_manager.py；settings max_drawdown_pct/dd_recover_days")
+    if dd is not None and dd <= -10.0:
+        add("安全", "P0" if dd <= -18.0 else "P1", "err",
+            f"日内最大回撤 {dd:+.2f}%",
+            f"equity_snapshots 日内谷值回撤 {dd:.2f}%"
+            + ("（逼近硬止损 -18%）" if dd <= -18.0 else ""),
+            "复核持仓集中度与趋势退出 MA；已满仓时分散/波动率目标是否生效",
+            "settings trend_exit_ma / max_single_position_pct")
+    if max_consec >= 3:
+        add("安全", "P1", "warn", f"连亏 {max_consec} 次",
+            f"当日最大连亏 {max_consec} 次",
+            "连亏熔断冷却 1 日应已恢复；若频繁触发查信号质量而非放宽阈值",
+            "settings halt_recover_days")
+    if eod_pos_n > max_positions:
+        add("安全", "P0", "err",
+            f"EOD 净持仓 {eod_pos_n} > max_positions={max_positions}",
+            f"引擎权威账本持仓 {eod_pos_n} 只",
+            f"现金夹紧上限应限制为 {max_positions} 只等效敞口；若超限查建仓并发闸门",
+            "settings max_positions；engine 现金夹紧")
+    if budget_n:
+        add("安全", "P2", "info",
+            f"仍出现 {budget_n} 次每日风险预算 WARNING",
+            f"notices 含「风险预算/max_single_position_pct」关键词 {budget_n} 次",
+            "确认 settings.max_single_position_pct=0.19 已与现金夹紧自洽；若持续，"
+            "查波动率目标仓位对低波大票的裁剪是否过激",
+            "config/settings.py")
+    if adverse_slip > 0.05:
+        add("准确", "P1", "warn", f"平均不利滑点 {adverse_slip:.3f}%",
+            f"BUY 成交相对信号价平均高 {adverse_slip:.3f}%（正=买贵）",
+            "评估限价单/执行算法；回测滑点假设是否过乐观（实盘摩擦被低估→α 虚高）",
+            "engine/_handle_buy 执行 path")
+    if signals_n > 0 and fills_n == 0 and eod_pos_n < max_positions:
+        add("准确", "P2", "info", "有信号但零成交且未满仓",
+            f"当日 BUY 信号 {signals_n} 笔、成交 {fills_n} 笔、EOD 净持仓 {eod_pos_n}",
+            "查资金可用/滑点阈值/执行路径是否阻断；确认非「已满仓」导致的正常跳过",
+            "engine/_handle_buy；cash 夹紧")
+    if ai_dist:
+        non_neutral = ai_dist.get("bullish", 0) + ai_dist.get("bearish", 0)
+        if non_neutral == 0:
+            add("准确", "P2", "info", "AI 当日仍全中性（无方向性增量）",
+                f"AI 立场分布：{dict(ai_dist)}",
+                "AI 为观察层：bullish 不影响交易、bearish+高置信可抑制买入；全中性"
+                "说明技术面混杂或模型保守，属预期，不作为收益拖累",
+                "ai/analyst.py（已放宽中性偏置）")
+        else:
+            add("准确", "P2", "info", "AI 已给出方向性观点",
+                f"AI 立场分布：{dict(ai_dist)}",
+                "观察 bullish/bearish 与实际盈亏是否吻合，逐步校准（勿直接作交易 gate，"
+                "避免侵蚀已验证动量 alpha）",
+                "ai/analyst.py")
+    if eq_points and eq_points < 50:
+        add("高效", "P2", "info", f"权益快照仅 {eq_points} 点（偏稀疏）",
+            f"equity_snapshots 当日 {eq_points} 点，约每 "
+            f"{round(240 * 60 / eq_points) if eq_points else '?'} 分钟一次",
+            "确认 engine._persist_equity 间隔~60s；稀疏会低估日内回撤精度",
+            "engine/_persist_equity")
+    if notice_volume > 200:
+        add("高效", "P2", "info", f"系统提示 {notice_volume} 条（日志量偏多）",
+            f"notices 当日 {notice_volume} 条",
+            "检查是否有重复 INFO 刷屏（此前已修产业链推荐池重复日志）；必要时调日志级别",
+            "engine/event_engine.py 日志去重")
+
+    prio_rank = {"P0": 0, "P1": 1, "P2": 2}
+    axis_rank = {"稳定": 0, "安全": 1, "准确": 2, "高效": 3}
+    findings.sort(key=lambda f: (prio_rank.get(f["priority"], 9),
+                                 axis_rank.get(f["axis"], 9)))
+    if not findings:
+        add("综合", "P2", "ok", "四维均健康，无高优优化项",
+            f"稳定 {stability} / 安全 {safety} / 准确 {accuracy} / 高效 {efficiency}",
+            "维持现状；持续观察滑点、回撤与日志量即可",
+            "—")
+
+    return {
+        "scores": scores,
+        "overall": overall,
+        "findings": findings,
+        "metrics": {
+            "warn_n": warn_n, "err_n": err_n, "disconnect_n": disconnect_n,
+            "budget_n": budget_n, "tickgap_n": tickgap_n,
+            "notice_volume": notice_volume, "halt_count": halt_count,
+            "max_consecutive_losses": max_consec,
+            "intraday_max_dd_pct": dd,
+            "eod_positions": eod_pos_n, "max_positions": max_positions,
+            "avg_buy_slippage_pct": slip,
+            "ai_distribution": dict(ai_dist),
+            "equity_points": eq_points,
+        },
+    }
+
+
+# ----------------------------------------------------------------------------
 # 报告渲染
 # ----------------------------------------------------------------------------
 
@@ -673,6 +932,13 @@ def _render_html(target: str, rep: dict) -> str:
                  "err": "#c62828"}.get(level, "#555")
         return (f'<span style="color:#fff;background:{color};padding:2px 8px;'
                 f'border-radius:10px;font-size:12px">{level.upper()}</span>')
+
+    def _score_color(v):
+        if v >= 85:
+            return "#2e7d32"
+        if v >= 70:
+            return "#ef6c00"
+        return "#c62828"
 
     # ① 成交与盈亏
     realized_rows = "".join(
@@ -775,6 +1041,37 @@ def _render_html(target: str, rep: dict) -> str:
     else:
         warn_banner = ""
 
+    # ⑨ 迭代优化洞察（稳定/安全/准确/高效 四维打分 + 优先级发现）
+    opt = rep.get("optimization") or {}
+    if opt:
+        sc = opt.get("scores", {})
+        overall_v = opt.get("overall", 0)
+        score_kpi = "".join(
+            f"<div class='kpi'><div class='v' style='color:{_score_color(sc[a])}'>"
+            f"{sc[a]}</div><div class='l'>{a}</div></div>"
+            for a in ["稳定", "安全", "准确", "高效"]
+        )
+        finding_rows = "".join(
+            f"<tr><td><b>{E(f['priority'])}</b></td><td>{E(f['axis'])}</td>"
+            f"<td>{badge(f['level'])}</td><td>{E(f['title'])}</td>"
+            f"<td>{E(f['evidence'])}</td><td>{E(f['action'])}</td>"
+            f"<td><code>{E(f['ref'])}</code></td></tr>"
+            for f in opt.get("findings", [])
+        ) or '<tr><td colspan="7" style="color:#888">无优化项</td></tr>'
+        opt_block = (
+            f"<div class='card'><h2>⑨ 迭代优化洞察（稳定/安全/准确/高效）</h2>"
+            f"<div class='kpis'>{score_kpi}"
+            f"<div class='kpi'><div class='v' style='color:{_score_color(overall_v)}'>"
+            f"{overall_v}</div><div class='l'>迭代健康分(均)</div></div></div>"
+            f"<p style='font-size:12px;color:#888;margin:8px 0'>目的：从当日真实记录挖掘优化方向与优先级，"
+            f"驱动项目在稳定/安全/准确/高效上持续迭代，最终提升收益。以下仅产出方向，不改动生产参数。</p>"
+            f"<table><tr><th>优先级</th><th>轴</th><th>级别</th><th>发现</th>"
+            f"<th>数据证据</th><th>建议动作</th><th>定位</th></tr>{finding_rows}</table>"
+            f"</div>"
+        )
+    else:
+        opt_block = ""
+
     bm = cmp_["baseline_summary"]
     if bm.get("return_pct") is not None:
         bm_str = (f"全样本 +{bm['return_pct']}% / Sharpe {bm['sharpe']} / "
@@ -873,6 +1170,8 @@ code {{ background:#eef2f7; padding:1px 5px; border-radius:4px; }}
 <div class="card"><h2>⑤ 系统提示流水（{len(notices)} 条）</h2>
 <table><tr><th>时间</th><th>分类</th><th>级别</th><th>内容</th></tr>{notice_rows}</table>
 </div>
+
+{opt_block}
 
 <div class="card" style="background:#eef6ff"><h2>📌 复盘结论与优化线索</h2>
 <p style="font-size:13px;line-height:1.7">
@@ -1036,6 +1335,7 @@ def main():
         "ai_list": ai_list,
         "notices_sample": notices[:50],
     }
+    rep["optimization"] = _optimization_insights(rep, notices, fills, signals)
 
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
