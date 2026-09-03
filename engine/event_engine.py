@@ -955,7 +955,16 @@ class EventEngine:
             logger.warning("regime 强制清仓：市场状态转弱(%s MA%d)，平掉全部持仓",
                            self.regime_index, self.regime_ma)
         for code, pos in list(self._positions.items()):
-            if pos.quantity <= 0 or code not in ticks:
+            if pos.quantity <= 0:
+                continue
+            if code not in ticks:
+                # 【A 加固 2026-09-03】日线兜底强平：原实现此处直接 continue，
+                # 导致无 tick 持仓永远跳过 on_exit（开盘跳空+当轮无tick 的分钟止损
+                # 盲区）。无 tick 且非 regime 强平时，改用日线 close 作价格代理重算
+                # on_exit，使退出条件仍周期性触发；regime 强平维持原语义（仅在有 tick
+                # 时按实时价提交），故无 tick + regime_block 时跳过。
+                if not regime_block:
+                    self._daily_fallback_exit(code, pos)
                 continue
             if regime_block:
                 self._handle_sell(Signal(
@@ -1486,6 +1495,36 @@ class EventEngine:
                 "WARNING", "交易",
                 f"卖出成交 {sig.code} {pos.name} ×{qty} @{price:.3f} "
                 f"盈亏{_pnl:+.2f} 现金余{self._cash:,.2f} 理由={_reason}")
+
+    def _daily_fallback_exit(self, code: str, pos: "Position",
+                             reason_prefix: str = "") -> None:
+        """日线兜底强平：闭合「无 tick 持仓」的分钟止损盲区（加固 A，2026-09-03）。
+
+        主循环原实现在 ``code not in ticks`` 时直接 ``continue``，导致当轮没有 tick
+        的持仓永远不进入 ``TrendStrategy.on_exit``。开盘跳空、一字跌停、长停复盘或
+        稀疏 tick 场景下，硬止损 -18% / 趋势破位 / 持仓超时等退出条件会滞后到下一轮
+        有 tick 才触发——这正是实盘分钟止损的结构性盲区。
+
+        此处改用 ``DailyContext`` 最新日线 close 作为价格代理重算 ``on_exit``，使无
+        tick 持仓也每隔 tick 得到一次退出再评估（零额外数据成本，日线本就每轮就绪）：
+          - self.daily 未就绪或 features(code) 为 None → 安全跳过（不误杀、不卡死）；
+          - bars 传空列表：on_exit 内「单日暴跌」分支需连续分钟 bar，此处无需
+            （日线 close 已含当日跌幅），故跳过该分支；
+          - 复用 on_exit 全部 trend 退出条件（硬止损/趋势破位/超时），与实时路径同口径。
+        """
+        if self.daily is None:
+            return
+        feat = self.daily.features(code)
+        if feat is None:
+            return
+        daily_close = feat.close
+        if not daily_close or daily_close <= 0:
+            return
+        exit_sig = self._trend.on_exit(code, pos, daily_close, [])
+        if exit_sig and exit_sig.side == "SELL":
+            if reason_prefix:
+                exit_sig.reason = f"{reason_prefix}|{exit_sig.reason}"
+            self._handle_sell(exit_sig, pos)
 
     def _poll_and_record_fill(self, order_id: str, code: str, side: str,
                               qty: int, price: float, account: str,
