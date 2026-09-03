@@ -83,8 +83,12 @@
   }
   function posRow(code, p) {
     const cls = colorClass(p.pnl_pct);
+    // 优先用持仓自带名称（后端已解析为中文名），否则回退前端 NAME() 映射，
+    // 再回退代码本身——保证「持仓窗口」始终显示公司名称而非裸代码。
+    const nm = (p.name && p.name !== code) ? p.name : NAME(code);
     return '<tr>' +
-      '<td>' + esc(code) + ' ' + esc(p.name || NAME(code)) + '</td>' +
+      '<td class="code">' + esc(code) + '</td>' +
+      '<td>' + esc(nm) + '</td>' +
       '<td class="num">' + p.quantity + '</td>' +
       '<td class="num">' + fmt(p.avg_cost, 3) + '</td>' +
       '<td class="num">' + fmt(p.last_price, 3) + '</td>' +
@@ -117,6 +121,8 @@
     var r = snap.risk || {};
     $('risk-halted').textContent = r.halted ? ('熔断 (' + r.halt_reason + ')') : '正常';
     $('risk-halted').className = r.halted ? 'halted' : 'ok';
+    // 风控卡片整体状态色：熔断红框 / 正常绿框
+    $('risk-box').className = 'risk-box ' + (r.halted ? 'alert' : 'safe');
     // 日内盈亏：优先显示真实日内总盈亏（已实现 + 当日浮动），无基线时回退已实现 daily_pnl
     var ip = (r.intraday_pnl != null) ? r.intraday_pnl : (r.daily_pnl || 0);
     var ipc = (r.intraday_pnl_pct != null) ? r.intraday_pnl_pct : null;

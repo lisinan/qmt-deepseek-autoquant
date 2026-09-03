@@ -52,6 +52,7 @@ from core.qmt_client import qmt_client
 from ai.analyst import AIAnalyst, ai_analyst
 from ai.llm_reranker import LLMReranker, llm_reranker
 from data.dynamic_universe import DynamicUniverse, dynamic_universe
+from data.stock_names import get_stock_name
 from risk.manager import RiskManager
 from storage.db import Storage
 from strategy.base import BaseStrategy
@@ -318,7 +319,7 @@ class EventEngine:
           单仓上限   = min(max_single_position_pct, max_order_amount/equity)
           理论敞口   = 单仓上限 × max_positions
           最坏情形   = 实际敞口 × |真实止损|
-        当前参数下 0.30×5 = 150% 理论敞口（现金夹紧后 95%）、最坏情形 ≈ -17%，
+        当前参数下 0.19×5 = 95% 理论敞口（已与现金夹紧上限 95% 自洽）、最坏情形 ≈ -17%，
         与 -25% 断路器的安全边距并不宽。把这几个数字当场算出来写进系统提示，
         使校准关系可被直接核验，而不是靠一句无数据支持的声称。
         """
@@ -1286,6 +1287,8 @@ class EventEngine:
         logger.info("BUY 拒绝 %s: %s", code, reason)
 
     def _handle_buy(self, sig: Signal, tick, current_prices: Dict) -> None:
+        # 持仓名称解析为规范中文名（兜底回退代码），避免仪表板持仓只显示代码
+        disp_name = get_stock_name(sig.code)
         scale = self.risk.position_scale
         if scale <= 0:
             return
@@ -1374,7 +1377,7 @@ class EventEngine:
                     "peak_price": price, "open_date": datetime.now(),
                 }
                 self._positions[sig.code] = Position(
-                    code=sig.code, name=sig.name, quantity=qty,
+                    code=sig.code, name=disp_name, quantity=qty,
                     avg_cost=price, last_price=price, open_date=datetime.now(),
                     peak_price=price, stop_price=stop_price,
                     target_price=target_price)
@@ -1389,7 +1392,7 @@ class EventEngine:
         else:
             self._cash -= qty * price
             self._positions[sig.code] = Position(
-                code=sig.code, name=sig.name, quantity=qty,
+                code=sig.code, name=disp_name, quantity=qty,
                 avg_cost=price, last_price=price, open_date=datetime.now(),
                 peak_price=price, stop_price=stop_price,
                 target_price=target_price)

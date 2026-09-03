@@ -61,6 +61,7 @@ import sqlite3                             # noqa: E402
 
 from core.notices import notices_on_date   # noqa: E402
 from storage.db import default_db_path     # noqa: E402
+from data.stock_names import get_stock_name, get_name_map   # noqa: E402  (名称解析，best-effort)
 
 # 支持 QMT_DB 环境变量覆盖（与 Storage 一致），使单测/工具不碰生产库。
 DB = default_db_path()
@@ -554,10 +555,19 @@ def _buy_signals(signals: list) -> list:
     for s in signals:
         if (s.get("side") or "").upper() != "BUY":
             continue
+        code = s.get("code")
+        name = s.get("name")
+        # 旧引擎写入的 name 可能等于 code（名称解析 bug 修复前的记录），
+        # 用 get_stock_name 兜底解析为中文名，保证历史复盘可读。
+        if not name or name == code:
+            try:
+                name = get_stock_name(code)
+            except Exception:
+                pass
         out.append({
             "ts": s.get("ts"),
-            "code": s.get("code"),
-            "name": s.get("name"),
+            "code": code,
+            "name": name,
             "score": s.get("score"),
             "price": s.get("price"),
             "reason": s.get("reason"),
@@ -881,6 +891,27 @@ code {{ background:#eef2f7; padding:1px 5px; border-radius:4px; }}
 # 主流程
 # ----------------------------------------------------------------------------
 
+def _load_dynamic_universe():
+    """best-effort 加载 storage/dynamic_universe.json 作为名称解析的动态候选池。
+
+    该文件由引擎运行时写入，含动态候选池的中文名（如科创板标的），本地即可解析，
+    不依赖网络。返回带 ``universe_map()`` 的对象（与 data/stock_names.build_name_map
+    的契约一致），失败返回 None。
+    """
+    try:
+        p = BASE_DIR / "storage" / "dynamic_universe.json"
+        if not p.exists():
+            return None
+        data = json.loads(p.read_text(encoding="utf-8"))
+        umap = data.get("universe", data) if isinstance(data, dict) else {}
+        class _DynamicUniverse:
+            def universe_map(self):
+                return umap
+        return _DynamicUniverse()
+    except Exception:
+        return None
+
+
 def main():
     ap = argparse.ArgumentParser(description="盘后复盘工具")
     ap.add_argument("--date", help="交易日 YYYY-MM-DD（默认取最近有成交日）")
@@ -962,6 +993,12 @@ def main():
         "total_return_pct": round(total_return_pct, 2),
     }
 
+    # best-effort 名称解析：本地动态候选池(JSON) + 全市场(Tushare, 离线则跳过)。
+    # 使历史复盘里 name=code 的旧记录也能显示中文名。
+    try:
+        get_name_map(dynamic_universe=_load_dynamic_universe(), force_full=True)
+    except Exception:
+        pass
     buy_sigs = _buy_signals(signals)
     ai_list = _ai_list(ai_rows)
 

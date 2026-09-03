@@ -107,9 +107,22 @@ td.num { text-align: right; font-family: monospace; }
   text-transform: uppercase; margin-bottom: 2px; }
 .kpi span { font-size: 16px; font-weight: 600; font-family: monospace; }
 
-.risk-box { background: #151a23; padding: 8px; border-radius: 4px; }
-.risk-box > div { display: flex; justify-content: space-between; padding: 3px 0; }
+/* 右栏整体可滚动，避免持仓表过长时把风控区挤出可视区 */
+#right-panel { overflow-y: auto; }
+#right-panel .scroll { max-height: 42vh; }
+
+.risk-box { background: #151a23; padding: 12px; border-radius: 6px;
+  border: 1px solid #2a3441; transition: border-color .3s, box-shadow .3s; }
+.risk-box.safe { border-left: 4px solid #5fd99e; }
+.risk-box.alert { border-left: 4px solid #ef5350;
+  box-shadow: inset 0 0 0 1px #ef5350; }
+.risk-box > div { display: flex; justify-content: space-between; align-items: center;
+  padding: 7px 2px; border-bottom: 1px solid #20262f; }
+.risk-box > div:last-child { border-bottom: none; }
 .risk-box label { color: #8898a6; font-size: 11px; }
-.risk-box span { font-family: monospace; font-size: 12px; }
+.risk-box span { font-family: monospace; font-size: 14px; font-weight: 600; }
 .risk-box .halted { color: #ef5350; }
 .risk-box .ok { color: #5fd99e; }
+
+/* 持仓表代码列：等宽弱色，名称列自然高亮 */
+td.code { font-family: monospace; color: #8898a6; }

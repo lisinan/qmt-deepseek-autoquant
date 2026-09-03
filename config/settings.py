@@ -318,7 +318,7 @@ RISK_PARAMS = {
     "halt_recover_days": 1,             # 连续亏损/日亏熔断后冷却 N 日自动恢复（默认 1 日）
     "max_consecutive_losses": 3,        # 连续亏损 3 次降仓
     "max_consecutive_losses_halt": 5,   # 连续亏损 5 次暂停
-    "max_single_position_pct": 0.30,    # 单标的占总资产上限
+    "max_single_position_pct": 0.19,    # 单标的占总资产上限（0.19×5=0.95 与现金夹紧上限自洽，消除每日风险预算告警）
     "max_daily_trades": 10,             # 日内最大交易次数
     "max_order_amount": 300000,         # 单笔金额上限（与 max_position_amount 对齐）
 }
