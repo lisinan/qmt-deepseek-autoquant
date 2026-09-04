@@ -721,8 +721,12 @@ def _optimization_insights(rep: dict, notices: list,
         if ("disconnect" in mlow or "断开" in msg or "重连" in msg
                 or "reconnect" in mlow or "连接失败" in msg or "connection" in mlow):
             disconnect_n += 1
-        if ("风险预算" in msg or "risk_budget" in mlow
-                or "max_single_position_pct" in msg):
+        # 仅把「真实 WARNING 级」风险预算播报计入告警计数。
+        # _notice_risk_budget 的常规 SYSTEM 级播报（最坏情形未触断路器、未超配）
+        # 也含「风险预算实测值」字样，属无害信息，不应误标为 WARNING。
+        if (("风险预算" in msg or "risk_budget" in mlow
+                or "max_single_position_pct" in msg)
+                and (lvl in ("WARNING", "WARN") or "warning" in mlow)):
             budget_n += 1
         if ("空tick" in msg or "tick 缺失" in msg or "无 tick" in msg
                 or "数据缺失" in msg or "心跳" in msg):
