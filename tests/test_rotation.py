@@ -68,6 +68,9 @@ def _make_engine(scores, held, hot_codes, enable=True, cooldown=0.0):
     eng.rotation_min_score_gap = 2.0
     eng.rotation_cooldown_sec = cooldown
     eng.rotation_hot_top_n = 15
+    eng.rotation_intraday_breakout_pct = 1.5
+    eng.rotation_min_score_gap_hot = 0.0
+    eng.rotation_max_swaps_per_eval = 3
     eng.max_positions = 5
     eng.dynamic_universe = None
     eng._last_rotate_ts = 0.0
@@ -91,8 +94,10 @@ def _make_engine(scores, held, hot_codes, enable=True, cooldown=0.0):
     return eng
 
 
-def _ticks(codes):
-    return {c: SimpleNamespace(price=10.0) for c in codes}
+def _ticks(codes, chg=None):
+    chg = chg or {}
+    return {c: SimpleNamespace(price=10.0, change_pct=chg.get(c, 0.0))
+            for c in codes}
 
 
 def test_rotation_swaps_weakest_for_hot_candidate():
@@ -154,6 +159,51 @@ def test_hot_codes_set_union_of_llm_and_sector():
     eng.sector_scorer = _Scorer(["300308.SZ", "300502.SZ"])
     hot = EventEngine._hot_codes_set(eng)
     assert hot == {"300394.SZ", "300308.SZ", "300502.SZ"}, hot
+
+
+def test_rotation_hot_bypasses_momentum_gate():
+    # 动量闸门把候选池过滤成空集（模拟 60 日动量前 N 不含光模块），
+    # 但候选仍在 AI 热板块名单 → 应绕过动量闸门、仍发生轮换。
+    held = ["688072.SH", "688120.SH", "002415.SZ", "688082.SH", "301165.SZ"]
+    scores = {"688072.SH": 3.0, "688120.SH": 2.0, "002415.SZ": 4.0,
+              "688082.SH": 1.0, "301165.SZ": 2.0, "300308.SZ": 9.0}
+    eng = _make_engine(scores, held, hot_codes=["300308.SZ"])
+    eng._apply_momentum_gate = lambda s: set()  # 闸门排除一切候选
+    EventEngine._maybe_rotate(eng, _ticks(["300308.SZ"]))
+    assert eng._sells == ["688082.SH"], eng._sells
+    assert eng._buys == [("300308.SZ", 9.0)], eng._buys
+
+
+def test_rotation_breakout_relaxes_gap():
+    # 候选在热板块 + 日内突破(change_pct≥阈值)，但日线评分差<rotation_min_score_gap；
+    # 突破应放宽门槛（rotation_min_score_gap_hot=0）仍触发轮换。
+    held = ["688072.SH", "688120.SH", "002415.SZ", "688082.SH", "301165.SZ"]
+    scores = {"688072.SH": 3.0, "688120.SH": 2.0, "002415.SZ": 4.0,
+              "688082.SH": 1.0, "301165.SZ": 2.0, "300308.SZ": 2.5}
+    eng = _make_engine(scores, held, hot_codes=["300308.SZ"])
+    # 若无突破：2.5-1.0=1.5 < 2.0 → 不换；有突破(3%)→换
+    EventEngine._maybe_rotate(
+        eng, _ticks(["300308.SZ"], {"300308.SZ": 3.0}))
+    assert eng._sells == ["688082.SH"], eng._sells
+    assert eng._buys == [("300308.SZ", 2.5)], eng._buys
+
+
+def test_rotation_batch_multiple_swaps():
+    # 多只热板块候选日内突破 → 单次评估批量换出多只最弱老仓（最多 max_swaps）。
+    held = ["688072.SH", "688120.SH", "002415.SZ", "688082.SH", "301165.SZ"]
+    scores = {"688072.SH": 3.0, "688120.SH": 2.0, "002415.SZ": 4.0,
+              "688082.SH": 1.0, "301165.SZ": 2.0,
+              "300308.SZ": 9.0, "300502.SZ": 8.0, "300394.SZ": 7.0}
+    eng = _make_engine(
+        scores, held,
+        hot_codes=["300308.SZ", "300502.SZ", "300394.SZ"])
+    EventEngine._maybe_rotate(eng, _ticks(
+        ["300308.SZ", "300502.SZ", "300394.SZ"],
+        {"300308.SZ": 3.0, "300502.SZ": 3.0, "300394.SZ": 3.0}))
+    bought = {c for c, _ in eng._buys}
+    assert len(eng._buys) == 3, eng._buys
+    assert bought == {"300308.SZ", "300502.SZ", "300394.SZ"}, bought
+    assert len(eng._sells) == 3, eng._sells
 
 
 if __name__ == "__main__":
