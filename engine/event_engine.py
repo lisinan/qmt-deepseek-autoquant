@@ -188,6 +188,15 @@ class EventEngine:
             STRATEGY_PARAMS.get("regime_force_exit", False))
         # 并发持仓上限（集中度控制）：经 IS/OOS + 多折双验证，5 显著优于 8。
         self.max_positions = int(STRATEGY_PARAMS.get("max_positions", 8))
+        # 板块轮动 / 弱换强（默认关闭，确认后开启；不改变默认交易行为）
+        self.enable_rotation = bool(
+            STRATEGY_PARAMS.get("enable_rotation", False))
+        self.rotation_min_score_gap = float(
+            STRATEGY_PARAMS.get("rotation_min_score_gap", 2.0))
+        self.rotation_cooldown_sec = float(
+            STRATEGY_PARAMS.get("rotation_cooldown_sec", 1800))
+        self.rotation_hot_top_n = int(
+            STRATEGY_PARAMS.get("rotation_hot_top_n", 15))
         self.analyst = analyst or AIAnalyst()
         self.sector_scorer = SectorScorer() if enable_sector_scorer else None
         self.dynamic_universe = DynamicUniverse() if enable_dynamic_universe else None
@@ -361,6 +370,143 @@ class EventEngine:
             system_notice(level, "风控", msg)
         except Exception as e:
             logger.debug("_notice_risk_budget 失败(忽略): %s", e)
+
+    def _notify_if_locked_out_of_hot_sector(self, held_codes: set) -> None:
+        """可观测性：组合已满且未持有当前热点板块时主动提示（不改变交易行为）。
+
+        背景：策略为「集中最强 5 只 + 趋势骑行」，一旦 5 槽满且持仓未破趋势，
+        入场循环（_run_single_step / _run_portfolio_step）会直接跳过所有候选，
+        既不评分也不轮动，于是无法参与新热板块（如光模块）的上涨。这里仅把
+        这一「错过热板块」状态显式播报出来，便于 notices / 盘后复盘发现，
+        而不是静默错过。真正的修复（板块轮动 / 弱换强）需用户确认后开启。
+        """
+        try:
+            now = time.time()
+            if now - getattr(self, "_last_locked_note_ts", 0.0) < 600:
+                return
+            # 当前推荐热点：优先 LLM 重排 top，回退板块评分推荐池
+            hot: list = []
+            res = getattr(self, "_llm_last_result", None)
+            if res is not None and getattr(res, "ranked_codes", None):
+                hot = list(res.ranked_codes[:5])
+            elif self.sector_scorer is not None:
+                recs = list(self.sector_scorer.recommendations)[:5]
+                hot = [getattr(r, "code", None) for r in recs]
+                hot = [c for c in hot if c]
+            if not hot:
+                return
+            missing = [c for c in hot if c not in held_codes]
+            if not missing:
+                return  # 热点已在持仓中，无需提示
+            self._last_locked_note_ts = now
+            shown = ", ".join(missing[:3])
+            system_notice(
+                "SYSTEM", "风控",
+                f"组合已满({len(held_codes)}/{self.max_positions})且未持有当前热点"
+                f"[{shown} 等]，将错过热板块行情。如需参与请在确认后开启板块轮动"
+                f"(enable_rotation)。")
+        except Exception:
+            pass
+
+    def _hot_codes_set(self) -> set:
+        """当前「热板块」候选代码集合：LLM rerank top + 板块推荐池 top。
+
+        仅当某候选落在 AI 观测层明确看多的名单里，才允许其参与轮换换入，
+        避免把资金轮动到无热度的边缘标的。两组来源任一为空都不影响另一组。
+        """
+        hot: set = set()
+        res = getattr(self, "_llm_last_result", None)
+        if res is not None and getattr(res, "ranked_codes", None):
+            hot.update(res.ranked_codes[:5])
+        if self.sector_scorer is not None:
+            try:
+                recs = list(self.sector_scorer.recommendations)[:self.rotation_hot_top_n]
+                hot.update(r.code for r in recs if getattr(r, "code", None))
+            except Exception:
+                pass
+        return hot
+
+    def _maybe_rotate(self, ticks: Dict[str, Tick]) -> None:
+        """板块轮动 / 弱换强（默认关闭，enable_rotation=True 时生效）。
+
+        仅当组合已满（无空槽）时介入——有空槽时普通入场逻辑已处理。流程：
+          1) 用 on_daily_features 给每只持仓打分，取最弱（最低分，含已破趋势的 SELL）。
+          2) 给未持仓、有实时 tick、过动量闸门的候选打分，且必须落在「热板块」
+             （LLM rerank top / 板块推荐池 top），取最高分候选。
+          3) 若 候选分 − 最弱持仓分 ≥ rotation_min_score_gap，则先卖最弱、再买候选。
+        此机制不改变「集中最强5只+趋势骑行」的默认行为（enable_rotation 默认 False）；
+        仅在你确认后开启，用于在满仓时捕捉新热板块（如光模块）的上涨。冷却窗口
+        rotation_cooldown_sec 防止在行情噪声中来回换仓（抖动）。
+        """
+        if not getattr(self, "enable_rotation", False):
+            return
+        now = time.time()
+        if now - getattr(self, "_last_rotate_ts", 0.0) < self.rotation_cooldown_sec:
+            return
+        # 评估节流：on_daily_features 有一定开销，避免每轮全量重算
+        if now - getattr(self, "_last_rotate_eval_ts", 0.0) < 120.0:
+            return
+        held = {c: p for c, p in self._positions.items() if p.quantity > 0}
+        if len(held) < self.max_positions:
+            return
+        if self.daily is None or self.strategy is None:
+            return
+
+        # 1) 最弱持仓
+        weakest_code, weakest_score = None, float("inf")
+        for code, pos in held.items():
+            feat = self.daily.features(code)
+            sig = self.strategy.on_daily_features(code, pos.name, feat)
+            s = sig.score if sig is not None else 0.0
+            if s < weakest_score:
+                weakest_score, weakest_code = s, code
+        if weakest_code is None:
+            return
+
+        # 2) 候选（未持仓、有 tick、过动量闸门、属热板块）
+        cand = set(STOCK_CODES)
+        if self.dynamic_universe is not None:
+            cand.update(self.dynamic_universe.active_codes)
+        cand -= INDEX_CODES
+        cand = self._apply_momentum_gate(cand)
+        cand -= set(held.keys())
+        hot = self._hot_codes_set()
+        best_code, best_score, best_sig = None, float("-inf"), None
+        for code in cand:
+            if code not in ticks:
+                continue
+            if code not in hot:
+                continue
+            feat = self.daily.features(code)
+            sig = self.strategy.on_daily_features(code, code, feat)
+            if sig is None or sig.side != "BUY":
+                continue
+            if sig.score > best_score:
+                best_score, best_code, best_sig = sig.score, code, sig
+        if best_code is None:
+            return
+
+        # 3) 评分差阈值
+        if best_score - weakest_score < self.rotation_min_score_gap:
+            return
+
+        # 4) 执行：先卖最弱（释放现金与槽位），再买最强
+        self._last_rotate_eval_ts = now
+        wpos = held[weakest_code]
+        wsig = Signal(
+            ts=datetime.now(), code=weakest_code, name=wpos.name,
+            side="SELL", price=wpos.last_price,
+            reason=f"板块轮动换出(评分{weakest_score:.1f}<候选{best_score:.1f})")
+        self._handle_sell(wsig, wpos)
+        self._last_rotate_ts = now
+        bp = ticks[best_code]
+        best_sig.price = float(getattr(bp, "price", 0) or 0)
+        self._handle_buy(best_sig, bp,
+                         {c: t.price for c, t in ticks.items()})
+        system_notice(
+            "SYSTEM", "交易",
+            f"板块轮动：换出 {weakest_code}(评分{weakest_score:.1f}) → "
+            f"换入 {best_code}(评分{best_score:.1f}，热板块)")
 
     def _reset_daily_if_needed(self) -> None:
         """跨交易日重置日内交易计数，避免 max_daily_trades 在进程长跑后永久拦截。
@@ -1115,6 +1261,11 @@ class EventEngine:
         candidate_codes -= INDEX_CODES
         candidate_codes = self._apply_momentum_gate(candidate_codes)
 
+        # 可观测性：组合已满且无热点暴露时提示（不改变交易行为）
+        if len([p for p in self._positions.values() if p.quantity > 0]) >= self.max_positions:
+            self._notify_if_locked_out_of_hot_sector(held_codes)
+            self._maybe_rotate(ticks)
+
         # regime 入场闸门：市场状态不佳时不开新仓（已有持仓由 step4 强制清仓处理）
         regime_ok = self._regime_ok()
         if not regime_ok:
@@ -1170,6 +1321,13 @@ class EventEngine:
             candidate_codes.update(self.dynamic_universe.active_codes)
         candidate_codes -= INDEX_CODES
         candidate_codes = self._apply_momentum_gate(candidate_codes)
+
+        # 可观测性：组合已满且无热点暴露时提示（不改变交易行为）
+        _held = {c for c, p in self._positions.items() if p.quantity > 0}
+        if len(_held) >= self.max_positions:
+            self._notify_if_locked_out_of_hot_sector(_held)
+            self._maybe_rotate(ticks)
+
         logger.debug("_run_portfolio_step: candidate_codes=%d regime_ok=%s",
                      len(candidate_codes), regime_ok)
 

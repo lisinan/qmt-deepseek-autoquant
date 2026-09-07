@@ -51,6 +51,7 @@ def _collect_tests():
             "tests.test_storage", "tests.test_ai_client",
             "tests.test_event_engine_live", "tests.test_review_daily",
             "tests.test_stock_names", "tests.test_mode_tagging",
+            "tests.test_rotation",
             "tests.test_batch_a_fixes", "tests.test_batch_c_fixes",
             "tests.test_batch_d_fixes",
             "tests.test_batch_b_t1",
