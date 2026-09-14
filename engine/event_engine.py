@@ -28,7 +28,7 @@ import threading
 import time
 from collections import defaultdict, deque
 from pathlib import Path
-from datetime import date, datetime
+from datetime import date, datetime, timedelta, time as dtime
 from typing import Deque, Dict, List, Optional, Tuple
 
 from config.settings import (
@@ -37,12 +37,13 @@ from config.settings import (
     INDEX_CODES, INITIAL_CASH, LOG_DIR, MARKET_INDEX_CODE,
     PERSIST_HOLD_SIGNALS, PORTFOLIO_CONFIG, REFRESH_INTERVAL, RISK_PARAMS,
     RISK_SNAPSHOT_MIN_INTERVAL, SESSION_GUARD, SINGLETON_LOCK, STOCK_CODES,
-    STRATEGY_MODE, STRATEGY_PARAMS, T1_RESTRICTION, UNIVERSE,
+    STRATEGY_MODE, STRATEGY_PARAMS, T1_RESTRICTION, ENTRY_PROTECT_MINUTES,
+    UNIVERSE,
 )
 from core.notices import system_notice, latest_notices
 from core.auto_reconnect import AutoReconnector
 from core.market_calendar import (
-    is_trading_time, seconds_to_next_session, session_label,
+    is_trading_day, is_trading_time, seconds_to_next_session, session_label,
 )
 from risk.position_sizer import PositionSizer
 from strategy.daily_context import DailyContext
@@ -77,6 +78,37 @@ def is_t1_locked(open_date, trade_date: date) -> bool:
         return False
     try:
         return open_date.date() == trade_date
+    except AttributeError:
+        return False
+
+
+def is_in_entry_protection(open_date, protect_minutes: int,
+                           now: Optional[datetime] = None) -> bool:
+    """建仓保护期：仓位是否仍处于「首个可卖交易日开盘后 protect_minutes 分钟内」。
+
+    与 T+1 叠加——T+1 锁当日，本函数锁首个可卖交易日的早盘窗口，专门消除轮动
+    换入候选被分钟级波动「换入即误伤」的隐患。语义（A 股连续竞价 09:30 开盘）：
+      - open_date 之后第一个交易日 09:30 起，向后 protect_minutes 分钟为保护窗；
+      - 窗口内：不触发任何退出（破位/止损/日线兜底/轮动换出/regime 强平）；
+      - protect_minutes<=0 → 关闭；open_date 为 None → 不锁定（保守，不误杀）。
+    仅在「卖出被提上日程」时调用（非每 tick），日历开销可忽略。
+    ``now`` 可注入（默认 datetime.now()），便于单元测试确定性。
+    """
+    if protect_minutes <= 0 or open_date is None:
+        return False
+    try:
+        now = now or datetime.now()
+        first_sellable = None
+        for off in range(1, 9):
+            d = (open_date.date() + timedelta(days=off))
+            if is_trading_day(d):
+                first_sellable = d
+                break
+        if first_sellable is None:
+            return False
+        session_open = datetime.combine(first_sellable, dtime(9, 30))
+        protect_until = session_open + timedelta(minutes=protect_minutes)
+        return now < protect_until
     except AttributeError:
         return False
 
@@ -229,6 +261,9 @@ class EventEngine:
         # A 股 T+1 硬约束（2026-09-14）：当日买入的仓位当日不可卖。统一在
         # _handle_sell 单点拦截；仅交易非 A 股时置 False（settings.T1_RESTRICTION）。
         self.t1_restriction = bool(T1_RESTRICTION)
+        # 建仓保护期（2026-09-14，叠加于 T+1）：首个可卖交易日开盘后 N 分钟内不退出，
+        # 避免轮动换入候选被分钟级波动误伤。N<=0 关闭（settings.ENTRY_PROTECT_MINUTES）。
+        self.entry_protect_minutes = int(ENTRY_PROTECT_MINUTES)
         self.analyst = analyst or AIAnalyst()
         self.sector_scorer = SectorScorer() if enable_sector_scorer else None
         self.dynamic_universe = DynamicUniverse() if enable_dynamic_universe else None
@@ -1710,7 +1745,8 @@ class EventEngine:
             return affordable
         return qty
 
-    def _handle_sell(self, sig: Signal, pos: Position) -> None:
+    def _handle_sell(self, sig: Signal, pos: Position,
+                     now: Optional[datetime] = None) -> None:
         # ---- A 股 T+1 约束（2026-09-14 修复）----
         # 当日买入的仓位当日不可卖出，否则会生成实盘不可能成交的「同日 round-trip」
         # （如 2026-09-08 300394 于 10:21:14 买入、10:21:17 即被「趋势破位」卖出）。
@@ -1723,6 +1759,20 @@ class EventEngine:
                 "WARNING", "交易",
                 f"[T+1 拦截] {pos.code} 于 {pos.open_date:%Y-%m-%d %H:%M} 买入，"
                 f"当日不可卖出（锁定至下一交易日）；跳过理由={getattr(sig, 'reason', '')}")
+            return
+        # ---- 建仓保护期（2026-09-14，叠加于 T+1）----
+        # 首个可卖交易日开盘后 ENTRY_PROTECT_MINUTES 分钟内不退出，避免轮动换入候选
+        # 被分钟级波动「换入即误伤」。与 T+1 同理，所有卖出路径经此处单点拦截。
+        if (self.entry_protect_minutes > 0
+                and is_in_entry_protection(pos.open_date, self.entry_protect_minutes, now)):
+            logger.warning(
+                "[保护期] 拦截卖出 %s：买入于 %s，首个可卖日早盘保护窗内（%d 分钟）",
+                pos.code, pos.open_date, self.entry_protect_minutes)
+            system_notice(
+                "WARNING", "交易",
+                f"[保护期拦截] {pos.code} 于 {pos.open_date:%Y-%m-%d %H:%M} 买入，"
+                f"首个可卖日开盘后 {self.entry_protect_minutes} 分钟内不退出"
+                f"（防分钟级误伤）；跳过理由={getattr(sig, 'reason', '')}")
             return
         qty = pos.quantity
         price = sig.price or pos.last_price
