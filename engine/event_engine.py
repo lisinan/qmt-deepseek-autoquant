@@ -37,7 +37,7 @@ from config.settings import (
     INDEX_CODES, INITIAL_CASH, LOG_DIR, MARKET_INDEX_CODE,
     PERSIST_HOLD_SIGNALS, PORTFOLIO_CONFIG, REFRESH_INTERVAL, RISK_PARAMS,
     RISK_SNAPSHOT_MIN_INTERVAL, SESSION_GUARD, SINGLETON_LOCK, STOCK_CODES,
-    STRATEGY_MODE, STRATEGY_PARAMS, UNIVERSE,
+    STRATEGY_MODE, STRATEGY_PARAMS, T1_RESTRICTION, UNIVERSE,
 )
 from core.notices import system_notice, latest_notices
 from core.auto_reconnect import AutoReconnector
@@ -61,6 +61,24 @@ from strategy.sector_scorer import SectorScorer, sector_scorer
 from strategy.trend_strategy import TrendStrategy
 
 logger = logging.getLogger(__name__)
+
+
+def is_t1_locked(open_date, trade_date: date) -> bool:
+    """A 股 T+1：判断某持仓在 trade_date 当天是否处于「当日买入不可卖」锁定。
+
+    - ``open_date`` 为 None（历史账本缺字段 / 测试桩）→ 视为可卖，不误杀；
+    - ``open_date`` 的日期 == 当前交易日 → 锁定（当日买入当日不能卖）；
+    - 否则（上一交易日及更早买入）→ 可卖。
+
+    语义与回测 ``BacktestConfig.t1_restriction`` 一致（按建仓日整仓粒度），
+    不区分「加仓部分」——本策略不日内加仓，整仓 open_date 即建仓日。
+    """
+    if open_date is None:
+        return False
+    try:
+        return open_date.date() == trade_date
+    except AttributeError:
+        return False
 
 # 心跳间隔（秒）：每 10 分钟输出一次「存活 + 效率」系统提示，
 # 让运维侧随时确认引擎没有卡死、CPU/内存无异常，且无需刷屏级 DEBUG。
@@ -203,6 +221,14 @@ class EventEngine:
             STRATEGY_PARAMS.get("rotation_min_score_gap_hot", 0.0))
         self.rotation_max_swaps_per_eval = int(
             STRATEGY_PARAMS.get("rotation_max_swaps_per_eval", 3))
+        # 4/5 补强空槽（2026-09-12 新增，用户确认开启）：组合差一仓时，直接把
+        # 空槽补上合格热板块候选（纯买入、不卖 existing）。默认开；置 False 即回滚到
+        # 仅满仓才轮换的旧行为。
+        self.rotation_fill_empty_slot = bool(
+            STRATEGY_PARAMS.get("rotation_fill_empty_slot", True))
+        # A 股 T+1 硬约束（2026-09-14）：当日买入的仓位当日不可卖。统一在
+        # _handle_sell 单点拦截；仅交易非 A 股时置 False（settings.T1_RESTRICTION）。
+        self.t1_restriction = bool(T1_RESTRICTION)
         self.analyst = analyst or AIAnalyst()
         self.sector_scorer = SectorScorer() if enable_sector_scorer else None
         self.dynamic_universe = DynamicUniverse() if enable_dynamic_universe else None
@@ -463,7 +489,7 @@ class EventEngine:
         if now - getattr(self, "_last_rotate_eval_ts", 0.0) < 120.0:
             return
         held = {c: p for c, p in self._positions.items() if p.quantity > 0}
-        if len(held) < self.max_positions:
+        if len(held) < self.max_positions - 1:
             return
         if self.daily is None or self.strategy is None:
             return
@@ -478,6 +504,44 @@ class EventEngine:
         hot = self._hot_codes_set()
         # 热板块候选绕过动量闸门（日线滞后不该挡 AI 已确认的热度）
         cand = gated | (hot & base)
+
+        # —— 4/5 补强空槽分支（2026-09-12 新增；用户确认开启）——
+        # 组合差一仓（len==max_positions-1）时，不强制卖 existing，直接把空槽补上
+        # 一个合格热板块候选（AI 热板块 + 日内突破/日线 BUY 双判定），回到 5/5 且
+        # 第 5 仓是确认热度标的。复用现有 hot 集合、突破/BUY 判定与冷却节流。
+        # 仅补一仓、不进入 5/5 的弱换强逻辑；旋钮 rotation_fill_empty_slot 可一键回滚。
+        if len(held) == self.max_positions - 1:
+            if not getattr(self, "rotation_fill_empty_slot", True):
+                return
+            slot_cands = []
+            for code in cand:
+                tick = ticks.get(code)
+                if tick is None:
+                    continue
+                if code not in hot:
+                    continue
+                feat = self.daily.features(code)
+                sig = self.strategy.on_daily_features(code, code, feat)
+                if sig is None:
+                    continue
+                chg = float(getattr(tick, "change_pct", 0) or 0.0)
+                is_breakout = chg >= self.rotation_intraday_breakout_pct
+                if not is_breakout and sig.side != "BUY":
+                    continue
+                slot_cands.append((code, sig, sig.score, is_breakout))
+            self._last_rotate_eval_ts = now
+            if not slot_cands:
+                return
+            slot_cands.sort(key=lambda x: x[2], reverse=True)
+            code, sig, eff_score, is_breakout = slot_cands[0]
+            bp = ticks[code]
+            sig.price = float(getattr(bp, "price", 0) or 0)
+            self._handle_buy(sig, bp, {c: t.price for c, t in ticks.items()})
+            self._last_rotate_ts = now
+            system_notice(
+                "SYSTEM", "交易",
+                f"板块轮动补强空槽：买入{code}（热板块/日内突破）")
+            return
 
         # 评估每只候选：日内突破 + 日线评分（用于与最弱持仓比差）
         cands = []
@@ -1301,9 +1365,11 @@ class EventEngine:
         candidate_codes -= INDEX_CODES
         candidate_codes = self._apply_momentum_gate(candidate_codes)
 
-        # 可观测性：组合已满且无热点暴露时提示（不改变交易行为）
-        if len([p for p in self._positions.values() if p.quantity > 0]) >= self.max_positions:
-            self._notify_if_locked_out_of_hot_sector(held_codes)
+        # 可观测性 + 轮换：满仓报踏空；4/5 起允许轮换补强空槽（不改变默认交易行为）
+        _held_n = len([p for p in self._positions.values() if p.quantity > 0])
+        if _held_n >= self.max_positions - 1:
+            if _held_n >= self.max_positions:
+                self._notify_if_locked_out_of_hot_sector(held_codes)
             self._maybe_rotate(ticks)
 
         # regime 入场闸门：市场状态不佳时不开新仓（已有持仓由 step4 强制清仓处理）
@@ -1364,8 +1430,9 @@ class EventEngine:
 
         # 可观测性：组合已满且无热点暴露时提示（不改变交易行为）
         _held = {c for c, p in self._positions.items() if p.quantity > 0}
-        if len(_held) >= self.max_positions:
-            self._notify_if_locked_out_of_hot_sector(_held)
+        if len(_held) >= self.max_positions - 1:
+            if len(_held) >= self.max_positions:
+                self._notify_if_locked_out_of_hot_sector(_held)
             self._maybe_rotate(ticks)
 
         logger.debug("_run_portfolio_step: candidate_codes=%d regime_ok=%s",
@@ -1644,6 +1711,19 @@ class EventEngine:
         return qty
 
     def _handle_sell(self, sig: Signal, pos: Position) -> None:
+        # ---- A 股 T+1 约束（2026-09-14 修复）----
+        # 当日买入的仓位当日不可卖出，否则会生成实盘不可能成交的「同日 round-trip」
+        # （如 2026-09-08 300394 于 10:21:14 买入、10:21:17 即被「趋势破位」卖出）。
+        # 所有卖出路径（破位/止损/日线兜底/轮动换出/regime 强平）都经此处，单点拦截。
+        if self.t1_restriction and is_t1_locked(pos.open_date, date.today()):
+            logger.warning(
+                "[T+1] 拦截当日卖出 %s：买入于 %s（T+1 当日不可卖，锁定至下一交易日）",
+                pos.code, pos.open_date)
+            system_notice(
+                "WARNING", "交易",
+                f"[T+1 拦截] {pos.code} 于 {pos.open_date:%Y-%m-%d %H:%M} 买入，"
+                f"当日不可卖出（锁定至下一交易日）；跳过理由={getattr(sig, 'reason', '')}")
+            return
         qty = pos.quantity
         price = sig.price or pos.last_price
         _reason = getattr(sig, "reason", "") or ""

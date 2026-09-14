@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import sys
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -91,6 +91,8 @@ def test_live_buy_and_sell_tagged_live():
         eng._handle_buy(sig, _FakeTick(100.0, "中际旭创"), {"300308.SZ": 100.0})
         assert cap["orders"] == ["live"], "live 买入下单应标记 mode=live"
         pos = eng._positions["300308.SZ"]
+        # 持仓设为上一交易日买入：A 股 T+1 下当日买入不可卖，卖出标记验证须用可读仓
+        pos.open_date = datetime.now() - timedelta(days=1)
         sig2 = Signal(ts=datetime.now(), code="300308.SZ", name="中际旭创",
                       side="SELL", price=110.0, reason="test")
         eng._handle_sell(sig2, pos)
@@ -109,6 +111,8 @@ def test_paper_buy_and_sell_tagged_paper():
         assert cap["orders"] == ["paper"], "paper 买入下单应标记 mode=paper"
         assert cap["fills"] == ["paper"], "paper 买入成交应标记 mode=paper"
         pos = eng._positions["300308.SZ"]
+        # 持仓设为上一交易日买入：A 股 T+1 下当日买入不可卖，卖出标记验证须用可读仓
+        pos.open_date = datetime.now() - timedelta(days=1)
         sig2 = Signal(ts=datetime.now(), code="300308.SZ", name="中际旭创",
                       side="SELL", price=110.0, reason="test")
         eng._handle_sell(sig2, pos)
