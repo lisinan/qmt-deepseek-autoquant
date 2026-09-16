@@ -34,6 +34,7 @@ import html
 import json
 import re
 import sys
+import os
 from collections import defaultdict
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -70,6 +71,23 @@ BASELINE = BASE_DIR / "logs" / "verify_live_quality.json"
 _TA_PAT = re.compile(r"总资产=([\d,]+\.?\d*)")
 _CASH_PAT = re.compile(r"现金=([\d,]+\.?\d*)")
 _HALT_PAT = re.compile(r"触发熔断:\s*([^（]+)")
+
+# 脏样本截止日：该日之前的成交视为「修复前脏样本」（2026-08-25 多进程时代遗留，
+# memory 已记不作收益基准），复盘盈亏/持仓重放时默认剔除，避免污染已实现盈亏
+# 与成本基础。可用环境变量 REVIEW_DIRTY_CUTOFF 覆盖（格式 YYYY-MM-DD）。
+DIRTY_SAMPLE_CUTOFF = (os.environ.get("REVIEW_DIRTY_CUTOFF") or "2026-09-01")
+
+
+def _clean_fills(fills: list) -> list:
+    """剔除脏样本日期之前的成交（默认 < 2026-09-01，即排除 2026-08-25 多进程遗留）。
+
+    SAFE：纯数据过滤，不改交易/风控逻辑，仅作用于复盘重建，不影响引擎运行。
+    默认窗口回溯 trend_max_hold_days(120) 天，会把 08-25 脏样本拉进重放；该过滤
+    确保脏样本既不污染成本基础、也不与真实建仓腿 FIFO 错配。
+    截止日可在调用时由环境变量 REVIEW_DIRTY_CUTOFF 覆盖（格式 YYYY-MM-DD）。
+    """
+    cut = os.environ.get("REVIEW_DIRTY_CUTOFF") or DIRTY_SAMPLE_CUTOFF
+    return [f for f in fills if str(f.get("ts") or "").split("T")[0] >= cut]
 
 
 def E(v) -> str:
@@ -146,14 +164,21 @@ def _rows_since(c: sqlite3.Connection, table: str, target: str,
         return []
 
 
-def _state_positions(c: sqlite3.Connection) -> dict:
-    """从 engine_state 读持仓（paper 模式的**权威账本**）。无则返回 {}。
+def _state_positions(c: sqlite3.Connection):
+    """从 engine_state 读持仓（paper 模式的**权威账本**）。
 
-    比 fills 重放可靠：它是引擎自己落盘的当前账本，不受历史会话污染。
+    返回语义（区分「无引擎行」与「引擎落盘空仓」两类情况，避免误回退）：
+      - None  → engine_state 无 id=1 行（引擎从未落盘）→ 调用方应回退 fills 重放
+      - {}    → 引擎已落盘但当前空仓（如收盘清仓）→ 权威空仓，*不得*回退 fills
+      - {...} → 引擎当前持仓（code -> {qty, avg}）
+
+    比 fills 重放可靠：它是引擎自己落盘的当前账本，不受历史会话/测试桩污染。
     """
     try:
         row = c.execute("SELECT positions FROM engine_state WHERE id=1").fetchone()
-        if not row or not row["positions"]:
+        if row is None:
+            return None
+        if not row["positions"]:
             return {}
         out = {}
         for p in (json.loads(row["positions"]) or []):
@@ -161,6 +186,94 @@ def _state_positions(c: sqlite3.Connection) -> dict:
             if q > 0:
                 out[p["code"]] = {"qty": q, "avg": float(p.get("avg_cost") or 0.0)}
         return out
+    except Exception:
+        return None
+
+
+def _state_account(c: sqlite3.Connection) -> dict:
+    """从 engine_state 读账户级权威指标（真实当日盈亏 / 开盘资产 / 峰值 / 现金）。
+
+    这是引擎自己落盘的真实账户态。**必须作为「账户真实表现」基准**——
+    只用 equity_snapshots 的日内涨跌会漏掉隔夜重估亏损（例如 9-16 隔夜缺口
+    -16.4%，日内口径却只显示 -0.25%），导致复盘虚假健康。
+    """
+    try:
+        row = c.execute(
+            "SELECT daily_pnl, day_open_asset, cash, peak_asset, trade_date "
+            "FROM engine_state WHERE id=1"
+        ).fetchone()
+        if not row:
+            return {}
+        return {
+            "daily_pnl": (float(row["daily_pnl"]) if row["daily_pnl"] is not None else None),
+            "day_open_asset": (float(row["day_open_asset"]) if row["day_open_asset"] is not None else None),
+            "cash": (float(row["cash"]) if row["cash"] is not None else None),
+            "peak_asset": (float(row["peak_asset"]) if row["peak_asset"] is not None else None),
+            "trade_date": row["trade_date"],
+        }
+    except Exception:
+        return {}
+
+
+def _load_account_range(c: sqlite3.Connection, days: int = 20) -> dict:
+    """从 equity_snapshots(paper) 计算账户区间真实收益，供复盘如实呈现账户表现。
+
+    返回：首/末交易日与资产、全样本区间收益%、最近 days 个交易日区间收益%。
+    这是账户真实盈亏曲线，不受日内口径掩盖隔夜重估亏损的影响。
+    """
+    try:
+        rows = [dict(r) for r in c.execute(
+            "SELECT ts, total_asset FROM equity_snapshots WHERE mode='paper' ORDER BY ts"
+        ).fetchall()]
+        if len(rows) < 2:
+            return {}
+        from collections import defaultdict
+        daily = defaultdict(list)
+        for r in rows:
+            daily[r["ts"][:10]].append(float(r["total_asset"]))
+        days_sorted = sorted(daily)
+        first_d, first_v = days_sorted[0], daily[days_sorted[0]][0]
+        last_d, last_v = days_sorted[-1], daily[days_sorted[-1]][-1]
+        range_pct = (last_v / first_v - 1) * 100 if first_v > 0 else 0.0
+        recent = days_sorted[-days:] if len(days_sorted) >= days else days_sorted
+        rec_first, rec_last = daily[recent[0]][0], daily[recent[-1]][-1]
+        recent_pct = (rec_last / rec_first - 1) * 100 if rec_first > 0 else 0.0
+        return {
+            "first_date": first_d, "first_asset": round(first_v, 2),
+            "last_date": last_d, "last_asset": round(last_v, 2),
+            "range_pct": round(range_pct, 2),
+            "recent_days": len(recent), "recent_pct": round(recent_pct, 2),
+        }
+    except Exception:
+        return {}
+
+
+def _account_daily(c: sqlite3.Connection, target: str) -> dict:
+    """账户真实当日收益（跨日口径，equity_snapshots）：target 日末值 vs 前一交易日末值。
+
+    比 engine_state.daily_pnl 更透明（同源 equity_snapshots），且**含隔夜重估亏损**——
+    这是「账户真实当日盈亏」的可靠口径，用于「准确」维度与报告，避免被日内涨跌掩盖
+    （例如 9-16 日内 -0.25%，但跨日前一日末→当日末 = -16.4%，缺口即隔夜跳空/持仓重估）。
+    """
+    try:
+        prev_rows = [dict(r) for r in c.execute(
+            "SELECT total_asset FROM equity_snapshots WHERE mode='paper' AND ts < ? "
+            "ORDER BY ts DESC LIMIT 1", (target + "T",)
+        ).fetchall()]
+        prev = float(prev_rows[0]["total_asset"]) if prev_rows else None
+        cur_rows = [dict(r) for r in c.execute(
+            "SELECT total_asset FROM equity_snapshots WHERE mode='paper' AND ts >= ? AND ts < ? "
+            "ORDER BY ts DESC LIMIT 1", (target + "T", target + "T23:59:59.999999")
+        ).fetchall()]
+        eod = float(cur_rows[0]["total_asset"]) if cur_rows else None
+        if prev and eod:
+            return {
+                "prev_asset": round(prev, 2),
+                "eod_asset": round(eod, 2),
+                "daily_pnl": round(eod - prev, 2),
+                "daily_ret_pct": round((eod / prev - 1) * 100, 2),
+            }
+        return {}
     except Exception:
         return {}
 
@@ -492,6 +605,20 @@ def _in_trading_window(ts: str) -> bool:
         return 9 <= dt.hour < 15
 
 
+def _halt_minute(ts: str):
+    """归一化时间戳为分钟级 datetime（兼容 snapshot 的 'T' 与 notice 的空格格式）。
+
+    用于「同一熔断事件」双源去重比对。无法解析返回 None。
+    """
+    t = (ts or "").replace("T", " ").replace("Z", "").strip()
+    if len(t) >= 16:
+        t = t[:16]
+    try:
+        return datetime.fromisoformat(t)
+    except Exception:
+        return None
+
+
 def _analyze_risk(snaps: list, notices: list) -> dict:
     halted_events = []
     reasons_counter = defaultdict(int)
@@ -499,7 +626,10 @@ def _analyze_risk(snaps: list, notices: list) -> dict:
     consec_max = 0
     last_daily_pnl = None
     excluded = 0
-    # 源1：risk_snapshots
+    # 已记入的快照熔断事件键：(reason, 分钟级 datetime)。
+    # 供 notice 源去重——避免「同一熔断被 snapshot 上升沿 + notice 各记一次」的双源重复计数。
+    snapshot_halt_keys = []
+    # 源1：risk_snapshots（权威源）
     for s in snaps:
         try:
             p = json.loads(s["payload_json"])
@@ -512,16 +642,19 @@ def _analyze_risk(snaps: list, notices: list) -> dict:
             continue
         reason = p.get("halt_reason", "") or "unknown"
         if halted and not prev_halted:
+            # 仅在「上升沿」记一次：触发熔断后引擎会持续以 halted=true 落盘快照，
+            # 那些后续快照是同一个持续事件，绝不能逐个累加（否则 54 个快照会被算成 54 次）。
             halted_events.append({"ts": s["ts"], "reason": reason, "src": "snapshot"})
             reasons_counter[reason] += 1
-        elif halted:
-            reasons_counter[reason] += 1
+            snapshot_halt_keys.append((reason, _halt_minute(s["ts"])))
+        # 注意：halted 且 prev_halted 的后续快照不再计入（同一持续事件）。
         prev_halted = halted
         consec_max = max(consec_max, int(p.get("consecutive_losses", 0) or 0))
         ddp = p.get("daily_pnl")
         if ddp is not None:
             last_daily_pnl = float(ddp)
-    # 源2：notices（tag=风控），避免快照未捕获的熔断被漏记
+    # 源2：notices（tag=风控），仅补充快照源「漏记」的熔断，避免双源重复计数。
+    # 去重规则：同 reason 且时间差 ≤ 2 分钟 → 判定为与已记 snapshot 熔断同一事件，跳过。
     for n in notices:
         if n.get("tag") != "风控":
             continue
@@ -533,6 +666,15 @@ def _analyze_risk(snaps: list, notices: list) -> dict:
             continue
         m = _HALT_PAT.search(msg)
         reason = (m.group(1).strip() if m else "unknown")
+        ntime = _halt_minute(n.get("ts", ""))
+        dup = False
+        for rk, sk in snapshot_halt_keys:
+            if (rk == reason and sk is not None and ntime is not None
+                    and abs((ntime - sk).total_seconds()) <= 120):
+                dup = True
+                break
+        if dup:
+            continue
         halted_events.append({"ts": n.get("ts", ""), "reason": reason, "src": "notice"})
         reasons_counter[reason] += 1
     halted_events.sort(key=lambda x: x["ts"])
@@ -740,6 +882,9 @@ def _optimization_insights(rep: dict, notices: list,
     eq_points = int(equity["points"]) if equity else 0
     eod_pos_n = len(pnl.get("eod_positions", {}) or {})
     max_positions = int(STRATEGY_PARAMS.get("max_positions", 5) or 5)
+    # 持仓读数若已被「数据一致性告警」标为不可信（旧 paper 会话/测试桩污染，
+    # 与当日末权益快照对不上），则不可据此扣安全分或判定真实超限，避免误判。
+    position_untrusted = bool(rep.get("position_warning"))
     slip = _slippage_buy(fills, signals)
     adverse_slip = slip if (slip is not None and slip > 0) else 0.0
 
@@ -770,13 +915,23 @@ def _optimization_insights(rep: dict, notices: list,
             safety -= 10
     if max_consec >= 3:
         safety -= 12
-    if eod_pos_n > max_positions:
+    if eod_pos_n > max_positions and not position_untrusted:
         safety -= 20
     safety = max(0, min(100, safety))
+
+    # 账户真实当日收益率（引擎权威账本，含隔夜重估）——「准确」维度必须反映账户真实盈亏，
+    # 否则会出现「当日 -0.25% 看似健康、账户却真实亏 -18.9 万」的虚假健康，误导迭代方向。
+    acct_ret = rep.get("account_ret_pct")
+    acct_pnl = rep.get("account_pnl")
+    acct_d = rep.get("account_daily") or {}
+    acct_intraday_ret = (rep.get("eod") or {}).get("total_return_pct")
 
     accuracy = 100
     if adverse_slip > 0.05:
         accuracy -= min(30, adverse_slip * 60)
+    if acct_ret is not None and acct_ret < 0:
+        # 账户真实亏损 → 准确维度必须反映「账户在亏钱」，与亏损幅度挂钩
+        accuracy -= min(45, (-acct_ret) * 4)   # 亏5%→-20；亏11%→-44
     if signals_n > 0 and fills_n == 0 and eod_pos_n < max_positions:
         accuracy -= 10
     accuracy = max(0, min(100, accuracy))
@@ -837,12 +992,29 @@ def _optimization_insights(rep: dict, notices: list,
             f"当日最大连亏 {max_consec} 次",
             "连亏熔断冷却 1 日应已恢复；若频繁触发查信号质量而非放宽阈值",
             "settings halt_recover_days")
+    if acct_ret is not None and acct_ret <= -5:
+        add("准确", "P0" if acct_ret <= -10 else "P1", "err",
+            f"账户真实当日亏损 {acct_ret:+.2f}%（跨日口径）",
+            f"equity_snapshots 前一日末→当日末：{acct_d.get('prev_asset', 0):,.0f}→"
+            f"{acct_d.get('eod_asset', 0):,.0f}，亏 {acct_pnl:,.2f}；"
+            f"复盘日内口径仅 {acct_intraday_ret:+.2f}%（漏隔夜重估）",
+            "账户真实在亏钱：趋势策略在下跌市连续止损/隔夜重估。属收益特征非缺陷；"
+            "优先查执行滑点与数据源，勿改策略参数（参数高原已证无调参空间）",
+            "equity_snapshots；core/risk_manager.py")
     if eod_pos_n > max_positions:
-        add("安全", "P0", "err",
-            f"EOD 净持仓 {eod_pos_n} > max_positions={max_positions}",
-            f"引擎权威账本持仓 {eod_pos_n} 只",
-            f"现金夹紧上限应限制为 {max_positions} 只等效敞口；若超限查建仓并发闸门",
-            "settings max_positions；engine 现金夹紧")
+        if position_untrusted:
+            add("安全", "P2", "info",
+                f"EOD 净持仓读数 {eod_pos_n} 与权益快照不一致（疑似旧会话污染，已置数据告警）",
+                f"持仓只数对不上：engine_state 记 {eod_pos_n} 只，但当日末权益快照为全现金"
+                f"（0 只）；数据一致性告警已置位，不计入真实超限，需 prune-db 复核",
+                "不计入真实超限；建议 python main.py --prune-db N 清理旧数据后重跑复核",
+                "settings max_positions；main.py --prune-db")
+        else:
+            add("安全", "P0", "err",
+                f"EOD 净持仓 {eod_pos_n} > max_positions={max_positions}",
+                f"引擎权威账本持仓 {eod_pos_n} 只",
+                f"现金夹紧上限应限制为 {max_positions} 只等效敞口；若超限查建仓并发闸门",
+                "settings max_positions；engine 现金夹紧")
     if budget_n:
         add("安全", "P2", "info",
             f"仍出现 {budget_n} 次每日风险预算 WARNING",
@@ -1003,6 +1175,37 @@ def _render_html(target: str, rep: dict) -> str:
         for t in trades
     ) or '<tr><td colspan="10" style="color:#888">当日无平仓（无 round-trip 交易）</td></tr>'
 
+    # 账户真实收益卡（引擎权威账本，含隔夜重估）——让复盘如实呈现账户真实表现，
+    # 不再被「日内权益涨跌 -0.25%」掩盖隔夜重估亏损（如 9-16 隔夜缺口 -16.4%）。
+    acct = rep.get("account_state") or {}
+    acct_rng = rep.get("account_range") or {}
+    _ap = rep.get("account_pnl")
+    _ar = rep.get("account_ret_pct")
+    _ap_disp = f"{_ap:,.2f}" if _ap is not None else "—"
+    _ar_disp = f"{_ar:+.2f}%" if _ar is not None else "—"
+    _ar_cls = 'neg' if (_ap or 0) >= 0 else 'pos'   # 盈利红 / 亏损绿（中国习惯）
+    _rng_pct = acct_rng.get("range_pct")
+    _rec_pct = acct_rng.get("recent_pct")
+    _rng_disp = f"{_rng_pct:+.2f}%" if _rng_pct is not None else "—"
+    _rec_disp = f"{_rec_pct:+.2f}%" if _rec_pct is not None else "—"
+    _rng_cls = 'neg' if (_rng_pct or 0) >= 0 else 'pos'
+    account_block = (
+        f"<div class='card' style='background:#fff5f5;border-left:5px solid #c62828'>"
+        f"<h2 style='border-left:none;padding-left:0;color:#b71c1c'>💰 账户真实收益（引擎权威账本 · 含隔夜重估）</h2>"
+        f"<div class='kpis'>"
+        f"<div class='kpi'><div class='v {_ar_cls}'>{_ar_disp}</div><div class='l'>账户真实当日收益率</div></div>"
+        f"<div class='kpi'><div class='v {_ar_cls}'>{_ap_disp}</div><div class='l'>账户真实当日盈亏(¥)</div></div>"
+        f"<div class='kpi'><div class='v {_rng_cls}'>{_rng_disp}</div>"
+        f"<div class='l'>区间收益({acct_rng.get('first_date','?')}→{acct_rng.get('last_date','?')})</div></div>"
+        f"<div class='kpi'><div class='v {_rng_cls}'>{_rec_disp}</div>"
+        f"<div class='l'>近{acct_rng.get('recent_days','?')}日收益</div></div>"
+        f"</div>"
+        f"<p style='font-size:12px;color:#888;margin-top:8px'>基准：engine_state（引擎落盘账本）。"
+        f"右侧「⑥ 当日收益率」用 equity_snapshots 日内口径（{eod.get('total_return_pct', 0):+.2f}%）会漏隔夜跳空；"
+        f"此处用引擎 daily_pnl（含隔夜重估）的真实账户盈亏，二者差异即隔夜跳空/持仓重估亏损。</p>"
+        f"</div>"
+    )
+
     # 执行模式记录卡（paper→live 切换核实）
     def _mode_summary(mc: dict) -> str:
         if not mc:
@@ -1086,6 +1289,7 @@ def _render_html(target: str, rep: dict) -> str:
 
     pos_cls = 'neg' if pnl['realized_total'] >= 0 else 'pos'
     eod_cls = 'neg' if eod['total_return_pct'] >= 0 else 'pos'
+    tot_cls = 'neg' if rep.get('total_pnl', 0.0) >= 0 else 'pos'
 
     html = f"""<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -1121,6 +1325,7 @@ code {{ background:#eef2f7; padding:1px 5px; border-radius:4px; }}
   <div class="kpi"><div class="v">{sig_n}</div><div class="l">信号笔数</div></div>
   <div class="kpi"><div class="v {pos_cls}">{pnl['realized_total']:,.2f}</div><div class="l">已实现盈亏(¥)</div></div>
   <div class="kpi"><div class="v {eod_cls}">{eod['unrealized']:,.2f}</div><div class="l">未实现盈亏(¥)</div></div>
+  <div class="kpi"><div class="v {tot_cls}">{rep.get('total_pnl', 0.0):,.2f}</div><div class="l">组合总盈亏(已实现+未平盯市)(¥)</div></div>
   <div class="kpi"><div class="v">{risk['halt_count']}</div><div class="l">风控熔断次数</div></div>
   <div class="kpi"><div class="v">{risk['max_consecutive_losses']}</div><div class="l">最大连亏</div></div>
 </div></div>
@@ -1136,6 +1341,9 @@ code {{ background:#eef2f7; padding:1px 5px; border-radius:4px; }}
 <p style="font-size:13px;color:#6b7280">EOD 总资产 <b>{eod['total_asset']:,.2f}</b> ｜ 现金 <b>{eod['cash']:,.2f}</b> ｜
 持仓市值 <b>{eod['market_value']:,.2f}</b> ｜ 未实现盈亏 <b>{eod['unrealized']:,.2f}</b> ｜
 当日收益(总资产) <b class="{eod_cls}">{eod['total_return_pct']:+.2f}%</b></p>
+<p style="font-size:13px;color:#374151">组合总盈亏(已实现 + 未平盯市) <b class="{tot_cls}">{rep.get('total_pnl', 0.0):,.2f}</b> ｜
+已实现(引擎累计 daily_pnl) <b>{rep.get('realized_eff', 0.0):,.2f}</b> ｜ 未实现(盯市) <b>{eod['unrealized']:,.2f}</b></p>
+<p style="font-size:12px;color:#888">口径：已实现优先取引擎 RiskManager 累计 daily_pnl（risk_snapshots，逐笔 SELL 时累加，准确）；fills 重放结果仅作回退。未平盯市 = 权益快照市值 − engine_state 成本。已默认剔除 {DIRTY_SAMPLE_CUTOFF} 之前的脏样本成交（修复前多进程遗留，不作收益基准）。</p>
 </div>
 
 <div class="card"><h2>② 信号明细（BUY）</h2>
@@ -1155,6 +1363,8 @@ code {{ background:#eef2f7; padding:1px 5px; border-radius:4px; }}
 </div>
 
 <div class="card"><h2>⑥ 权益曲线 / 当日盈亏 / 日内最大回撤</h2>{eq_block}</div>
+
+{account_block}
 
 <div class="card"><h2>⑦ 逐笔交易明细（FIFO 配对，建仓腿回溯至全史）</h2>
 <p style="font-size:12px;color:#888">配对基于目标日及之前的全部成交（共 {rep.get('fills_history_n', '?')} 笔），
@@ -1228,10 +1438,10 @@ def main():
     target = args.date or _latest_trade_date(c)
     print(f"[复盘] 目标交易日: {target}")
 
-    fills = _rows(c, "fills", target)
+    fills = _clean_fills(_rows(c, "fills", target))
     # 回溯窗内的成交：FIFO 配对与持仓成本重放必须从建仓腿起算，否则跘日
     # round-trip（本策略 trend_max_hold_days=120，几乎全部属此）会被整笔漏掉。
-    fills_all = _rows_since(c, "fills", target, args.lookback_days)
+    fills_all = _clean_fills(_rows_since(c, "fills", target, args.lookback_days))
     sig_n = _count(c, "signals", target)
     signals = _rows(c, "signals", target)
     orders = _rows(c, "orders", target)
@@ -1242,6 +1452,9 @@ def main():
     eq_series, eq_source = _load_equity_series(c, target, notices)
     state_pos = _state_positions(c)
     snap_pos_n = _last_snapshot_positions_count(c, target)
+    state_acct = _state_account(c)
+    acct_daily = _account_daily(c, target)
+    acct_range = _load_account_range(c)
     c.close()
 
     pnl = _replay_fills(fills_all, target=target)
@@ -1252,9 +1465,12 @@ def main():
     # 优先用 engine_state（引擎落盘的权威账本）；否则用重放结果，但与当日权益
     # 快照的 positions_count 对账，**不一致就显式告警**——而不是默默输出一个
     # 像「未实现盈亏 -794 万」那样无意义的数字。
+    # 【修复 2026-09-16】state_pos 返回语义区分 None/{}：引擎行存在时（含空仓 {}）
+    # 一律以 engine_state 为权威，*不再回退* fills 重放——否则收盘清仓(positions=[])
+    # 会被误报为若干只残留持仓。
     pos_source = "fills重放"
     pos_warn = None
-    if state_pos:
+    if state_pos is not None:
         pnl["eod_positions"] = {k: v["qty"] for k, v in state_pos.items()}
         pnl["eod_avg"] = {k: v["avg"] for k, v in state_pos.items()}
         pnl["cost_basis"] = round(
@@ -1286,6 +1502,11 @@ def main():
         eod_cash = 0.0
     market_value = round(eod_total - eod_cash, 2)
     unrealized = round(market_value - pnl["cost_basis"], 2)
+    # 账户真实当日收益率/盈亏：用 equity_snapshots 跨日口径（含隔夜重估，透明可靠），
+    # 作为「账户真实表现」基准，而非只用 equity 日内涨跌（会漏隔夜缺口）。
+    acct_d = acct_daily or {}
+    account_ret_pct = acct_d.get("daily_ret_pct")
+    _acct_pnl = acct_d.get("daily_pnl")
     total_return_pct = equity["daily_return_pct"] if equity else 0.0
 
     eod = {
@@ -1295,6 +1516,15 @@ def main():
         "unrealized": unrealized,
         "total_return_pct": round(total_return_pct, 2),
     }
+
+    # 组合总盈亏 = 已实现 + 未平盯市（mark-to-market）。
+    # 已实现优先取引擎 RiskManager 累计的 daily_pnl（risk_snapshots，逐笔 SELL 时累加，
+    # 准确反映目标日真实已实现）；fills 重放结果(realized_total)仅作回退（建仓腿缺失
+    # 时会失真）。未平盯市 = 权益快照市值 − engine_state 成本（已在上面算好）。
+    realized_eff = risk.get("last_daily_pnl")
+    if realized_eff is None:
+        realized_eff = pnl["realized_total"]
+    total_pnl = round((realized_eff or 0.0) + eod["unrealized"], 2)
 
     # best-effort 名称解析：本地动态候选池(JSON) + 全市场(Tushare, 离线则跳过)。
     # 使历史复盘里 name=code 的旧记录也能显示中文名。
@@ -1328,12 +1558,19 @@ def main():
         "mode_counts": dict(mode_counts),
         "order_mode_counts": dict(order_mode_counts),
         "pnl": pnl,
+        "realized_eff": realized_eff,
+        "total_pnl": total_pnl,
         "trades": trades,
         "risk": risk,
         "equity": equity,
         "equity_source": eq_source,
         "equity_series": [{"ts": s[0], "total_asset": s[1], "cash": s[2]} for s in eq_series],
         "eod": eod,
+        "account_state": state_acct,
+        "account_daily": acct_daily,
+        "account_range": acct_range,
+        "account_ret_pct": account_ret_pct,
+        "account_pnl": _acct_pnl,
         "compare": cmp_,
         "buy_signals": buy_sigs,
         "ai_list": ai_list,

@@ -44,6 +44,10 @@ class RiskManager:
         self._peak_asset: float = 0.0
         self._daily_trade_count: int = 0
         self._halt_day: date = date.today()   # 回撤熔断触发日（用于冷却自动恢复）
+        # 【2026-09-16 优化】日内硬止损+强平标志。当日账户相对开盘资产亏损达
+        #   daily_stop_flatten_pct 时置位，引擎据此强平全部可卖持仓（不只停牌）。
+        self._flatten_requested: bool = False
+        self._day_open_asset: float = 0.0
 
     # ---------- 每日重置 ----------
 
@@ -54,12 +58,18 @@ class RiskManager:
             self._daily_pnl = 0.0
             self._daily_trade_count = 0
             # 日切不重置连续亏损与 peak_asset
+            # 日内强平标志随新交易日复位（开盘资产口径会重新校准）
+            self._flatten_requested = False
+            self._day_open_asset = 0.0
 
     # ---------- 资金 ----------
 
-    def on_asset_update(self, total_asset: float) -> None:
+    def on_asset_update(self, total_asset: float,
+                        day_open_asset: float = 0.0) -> None:
         if total_asset <= 0:
             return
+        if day_open_asset and day_open_asset > 0:
+            self._day_open_asset = day_open_asset
         today = date.today()
         with self._lock:
             # 全部 halt 的「冷却自动恢复」（2026-08-30 统一断路器修正）：
@@ -69,6 +79,24 @@ class RiskManager:
             # 现在：任何 halt 冷却 N 个自然日后自动解除并重置风险基线
             # （max_drawdown 用 dd_recover_days；其余用 halt_recover_days），成为真「断路器」。
             self._maybe_recover(today, total_asset)
+            # ---- 日内硬止损+强平（2026-09-16 新增）----
+            # 此前 daily_loss_limit 只「暂停新开仓」，老仓完整吃了隔夜/盘中跌幅。
+            # 这里用**开盘资产口径**（含隔夜重估）判断当日真实亏损：达
+            #   daily_stop_flatten_pct 即置 flatten_requested 并停牌，引擎据此强平全部可卖持仓。
+            if self._day_open_asset > 0:
+                dlp = (total_asset - self._day_open_asset) / self._day_open_asset
+                if dlp <= self.p.get("daily_stop_flatten_pct", -0.06):
+                    if not self._flatten_requested:
+                        logger.warning("RiskManager 日内硬止损触发: 当日亏损 %.2f%%",
+                                      dlp * 100)
+                        system_notice(
+                            "ERROR", "风控",
+                            f"日内硬止损: 当日账户亏损 {dlp*100:+.2f}%（相对开盘）"
+                            f"已达强平阈值 {self.p.get('daily_stop_flatten_pct', -0.06)*100:.0f}%，"
+                            f"强平全部可卖持仓并暂停新开仓")
+                    self._flatten_requested = True
+                    if not self._halted:
+                        self._halt(reason=f"daily_stop {dlp*100:.2f}%")
             if total_asset > self._peak_asset:
                 self._peak_asset = total_asset
                 return
@@ -178,6 +206,7 @@ class RiskManager:
             self._halt_reason = ""
             self._consec_loss = 0
             self._daily_pnl = 0.0
+            self._flatten_requested = False
             if total_asset and total_asset > 0:
                 self._peak_asset = total_asset   # 重置基线，避免解除后立即再熔断
             logger.info("RiskManager 熔断自动恢复（冷却 %s 日，重置风险基线）", held)
@@ -193,6 +222,7 @@ class RiskManager:
         self._halt_reason = ""
         self._consec_loss = 0
         self._daily_pnl = 0.0
+        self._flatten_requested = False
         logger.info("RiskManager 恢复: %s", reason)
         system_notice("SUCCESS", "风控", f"熔断手动恢复: {reason}")
 
@@ -211,6 +241,11 @@ class RiskManager:
     @property
     def is_halted(self) -> bool:
         return self._halted
+
+    @property
+    def flatten_requested(self) -> bool:
+        """日内硬止损强平请求（引擎据此平掉全部可卖持仓）。"""
+        return self._flatten_requested
 
     @property
     def daily_pnl(self) -> float:

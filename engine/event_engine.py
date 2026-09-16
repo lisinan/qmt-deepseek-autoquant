@@ -294,6 +294,8 @@ class EventEngine:
             self._day_open_asset = self.storage.first_equity_today()
         except Exception:
             self._day_open_asset = None
+        # 日内硬止损强平当日执行标记（每交易日最多触发一次，防每轮重复提交）
+        self._daily_flatten_done: bool = False
         # 拒单日志去重：code -> 上次记录过的拒绝原因 / 时间戳
         self._last_reject: Dict[str, str] = {}
         self._last_reject_ts: Dict[str, float] = {}
@@ -661,6 +663,7 @@ class EventEngine:
             self._trade_date = today
             self._daily_trade_count = 0
             self._day_open_asset = None  # 新交易日重新基线
+            self._daily_flatten_done = False  # 新交易日允许再次日内强平
             logger.info("日内交易计数跨日重置: daily_trade_count=0 (date=%s)", today)
 
     def _warmup_bars(self, codes: List[str], download: bool = None,
@@ -868,6 +871,9 @@ class EventEngine:
             qmt_broker.set_on_disconnect(
                 lambda: self._broker_reconnector.notify_disconnect()
                 if self._broker_reconnector else None)
+            # 【2026-09-16 优化】交易连接重建后恢复行情订阅 + 持仓同步，避免
+            #   「断连 27 次」后行情端订阅失效、数据/下单路径不同步。
+            qmt_broker.set_on_reconnected(self._on_broker_reconnected)
             self._broker_reconnector.start()
 
         # 自检模式（--ticks N）绕过时段守卫：允许任何时间跑固定轮数验证。
@@ -1228,7 +1234,29 @@ class EventEngine:
         # 首次观测到总资产即作为今日日内盈亏基线（若 init 时未从 equity 快照取到）
         if self._day_open_asset is None:
             self._day_open_asset = total_asset
-        self.risk.on_asset_update(total_asset)
+        self.risk.on_asset_update(total_asset, self._day_open_asset or total_asset)
+
+        # 4.4) 日内硬止损强平（2026-09-16 新增）：risk 判定当日亏损达
+        #   daily_stop_flatten_pct 后置 flatten_requested，这里平掉全部可卖持仓。
+        #   每只经 _handle_sell 单点拦截（T+1 仍生效；force=True 绕过建仓保护期）。
+        #   当日仅执行一次（_daily_flatten_done），避免每轮重复提交。
+        if self.risk.flatten_requested and not self._daily_flatten_done:
+            self._daily_flatten_done = True
+            _flat_n = 0
+            for _code, _pos in list(self._positions.items()):
+                if _pos.quantity <= 0:
+                    continue
+                self._handle_sell(Signal(
+                    ts=datetime.now(), code=_code, name=_pos.name,
+                    side="SELL", price=_pos.last_price or _pos.avg_cost,
+                    reason="daily_hard_stop_flatten"), _pos, force=True)
+                _flat_n += 1
+            if _flat_n:
+                logger.warning("日内硬止损强平：已提交 %d 只可卖持仓平仓", _flat_n)
+                system_notice(
+                    "ERROR", "交易",
+                    f"日内硬止损强平：当日账户亏损达阈值，已提交 {_flat_n} 只可卖持仓平仓"
+                    f"（T+1 锁定的当日新仓于次交易日自动处理）")
 
         # 6.5) 持久化权益快照（节流 ~60s）——供盘后复盘重建权益曲线 / 当日收益 /
         # 日内最大回撤，避免复盘只能依赖解析自由文本心跳（格式易变、易丢）。
@@ -1746,7 +1774,7 @@ class EventEngine:
         return qty
 
     def _handle_sell(self, sig: Signal, pos: Position,
-                     now: Optional[datetime] = None) -> None:
+                     now: Optional[datetime] = None, force: bool = False) -> None:
         # ---- A 股 T+1 约束（2026-09-14 修复）----
         # 当日买入的仓位当日不可卖出，否则会生成实盘不可能成交的「同日 round-trip」
         # （如 2026-09-08 300394 于 10:21:14 买入、10:21:17 即被「趋势破位」卖出）。
@@ -1763,7 +1791,8 @@ class EventEngine:
         # ---- 建仓保护期（2026-09-14，叠加于 T+1）----
         # 首个可卖交易日开盘后 ENTRY_PROTECT_MINUTES 分钟内不退出，避免轮动换入候选
         # 被分钟级波动「换入即误伤」。与 T+1 同理，所有卖出路径经此处单点拦截。
-        if (self.entry_protect_minutes > 0
+        # force=True（日内硬止损强平）时**绕过**本保护期——硬止损优先级高于防误伤。
+        if (not force and self.entry_protect_minutes > 0
                 and is_in_entry_protection(pos.open_date, self.entry_protect_minutes, now)):
             logger.warning(
                 "[保护期] 拦截卖出 %s：买入于 %s，首个可卖日早盘保护窗内（%d 分钟）",
@@ -1990,6 +2019,29 @@ class EventEngine:
             })
         except Exception as e:
             logger.debug("保存引擎状态失败: %s", e)
+
+    def _on_broker_reconnected(self) -> None:
+        """交易连接（重）建立后的恢复钩子（2026-09-16 新增）。
+
+        行情(xtdata)与交易(XtQuantTrader)是两个独立连接：交易端断连恢复**不会**
+        自动重建行情端订阅，历史上导致「断连 27 次」后行情订阅失效、数据/下单路径
+        不同步。此处重发行情订阅 + 立即重同步真实持仓，使整条交易路径恢复一致。
+        """
+        try:
+            codes = list(UNIVERSE.keys())
+            if self.dynamic_universe is not None:
+                dyn = self.dynamic_universe.active_codes
+                codes = list(dict.fromkeys(codes + dyn))
+            qmt_client.subscribe(codes)
+            if self.exec_mode == "live":
+                self._sync_broker_positions()
+            system_notice(
+                "SUCCESS", "系统",
+                f"券商重连成功：已重发行情订阅({len(codes)} 只)并同步持仓，"
+                f"数据/下单路径恢复一致。")
+            logger.info("券商重连恢复：重订阅 %d 只行情", len(codes))
+        except Exception as e:
+            logger.warning("券商重连恢复钩子异常(忽略): %s", e)
 
     def _sync_broker_positions(self) -> None:
         """live 模式：每轮以 broker 为权威源，把本地账本与真实持仓/资产对齐。

@@ -258,16 +258,42 @@ class _SafeRotatingFileHandler(RotatingFileHandler):
 
 def _pid_alive(pid: int) -> bool:
     """判断 pid 是否存活。Windows 上**绝不能**用 os.kill(pid, 0)——CPython
-    在 Windows 会把它翻译成 TerminateProcess，等于把目标进程杀掉。"""
+    在 Windows 会把它翻译成 TerminateProcess，等于把目标进程杀掉。
+
+    2026-09-16 故障修复（重要）：
+      原实现仅凭 OpenProcess(SYNCHRONIZE) 能否拿到句柄判定存活。但进程被强杀
+      （taskkill /F）后，只要有第三方仍持有其句柄，Windows 的进程对象不会立即
+      销毁，OpenProcess 对**已退出**的进程照样返回有效句柄 → 误判存活。
+      后果极其严重：单实例锁永久拒绝新实例，守护陷入「反复尝试启动、永远起不来」
+      的全站停摆（当日实测 miniQMT 在线但引擎反复 engine_started=True 却不在线）。
+      现改用 OpenProcess + GetExitCodeProcess：只有退出码仍为 STILL_ACTIVE(259)
+      才算存活；已退出进程返回真实退出码（非 259）→ 判为已死，锁自动释放。
+    """
     if pid <= 0:
         return False
     if os.name == "nt":
-        SYNCHRONIZE = 0x00100000
-        h = ctypes.windll.kernel32.OpenProcess(SYNCHRONIZE, False, pid)
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        STILL_ACTIVE = 259
+        k32 = ctypes.windll.kernel32
+        # 显式声明签名：Win64 句柄为 64 位，默认 c_int 会截断（可能把有效句柄
+        # 截成 0，反而误判为「已死」——需双向都处理正确）。
+        k32.OpenProcess.argtypes = [ctypes.c_ulong, ctypes.c_bool,
+                                    ctypes.c_ulong]
+        k32.OpenProcess.restype = ctypes.c_void_p
+        k32.GetExitCodeProcess.argtypes = [ctypes.c_void_p,
+                                           ctypes.POINTER(ctypes.c_ulong)]
+        k32.GetExitCodeProcess.restype = ctypes.c_bool
+        k32.CloseHandle.argtypes = [ctypes.c_void_p]
+        h = k32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
         if not h:
             return False
-        ctypes.windll.kernel32.CloseHandle(h)
-        return True
+        try:
+            code = ctypes.c_ulong()
+            if not k32.GetExitCodeProcess(h, ctypes.byref(code)):
+                return False
+            return code.value == STILL_ACTIVE
+        finally:
+            k32.CloseHandle(h)
     try:
         os.kill(pid, 0)
         return True

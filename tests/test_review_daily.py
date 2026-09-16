@@ -172,3 +172,128 @@ def test_analyze_risk_snapshot_filters_afterhours():
     res = R._analyze_risk(snaps, [])
     assert res["halt_count"] == 1, res
     assert res["excluded_halt_count"] == 1, res
+
+
+def test_analyze_risk_same_event_snapshot_and_notice_dedup():
+    # 真实 Bug 回归：引擎 09:15:38 触发一次熔断后持续 halted 一整天。
+    # snapshot 上升沿 + notice 各记一次会被算成 2 次 —— 必须是 1 次。
+    snaps = [
+        {"ts": "2026-09-16T09:15:38.407699",
+         "payload_json": json.dumps(
+             {"halted": True, "halt_reason": "consec_loss=5", "consecutive_losses": 5})},
+        {"ts": "2026-09-16T10:00:01.785358",
+         "payload_json": json.dumps(
+             {"halted": True, "halt_reason": "consec_loss=5", "consecutive_losses": 8})},
+    ]
+    # notice 时间戳用空格格式（notices.log 实际格式），与 snapshot 的 T 格式不同，
+    # 去重必须能归一化二者。
+    notices = [{"tag": "风控",
+                "msg": "触发熔断: consec_loss=5（已暂停新开仓，冷却 1 日后自动恢复或手动 resume）",
+                "ts": "2026-09-16 09:15:38"}]
+    res = R._analyze_risk(snaps, notices)
+    assert res["halt_count"] == 1, res          # ← 修复点：双源重复计数
+    assert res["halt_reasons"].get("consec_loss=5") == 1, res  # ← 修复点：不被 54 个快照累加
+
+
+def test_analyze_risk_persisted_halted_not_double_counted():
+    # 54 个持续 halted 快照（同一事件）只能算 1 次，reasons_counter 也只能是 1。
+    snaps = [{"ts": f"2026-09-16T09:15:38.{i:06d}",
+              "payload_json": json.dumps(
+                  {"halted": True, "halt_reason": "consec_loss=5", "consecutive_losses": 5})}
+             for i in range(54)]
+    res = R._analyze_risk(snaps, [])
+    assert res["halt_count"] == 1, res
+    assert res["halt_reasons"] == {"consec_loss=5": 1}, res
+    # 连亏峰值仍正确透传（不依赖计数逻辑）
+    assert res["max_consecutive_losses"] == 5, res
+
+
+def test_clean_fills_excludes_dirty_sample():
+    # 默认截止 2026-09-01：2026-08-25 多进程遗留脏样本必须被剔除，
+    # 09-02 起的真实成交保留。
+    fills = [
+        {"ts": "2026-08-25T10:14:01", "code": "X", "side": "BUY",
+         "quantity": 100, "price": 1.0, "amount": 100.0},
+        {"ts": "2026-09-02T10:14:01", "code": "Y", "side": "BUY",
+         "quantity": 100, "price": 10.0, "amount": 1000.0},
+        {"ts": "2026-09-15T14:00:00", "code": "Y", "side": "SELL",
+         "quantity": 100, "price": 11.0, "amount": 1100.0},
+    ]
+    cleaned = R._clean_fills(fills)
+    assert len(cleaned) == 2, cleaned
+    assert all(str(f["ts"]).split("T")[0] >= "2026-09-01" for f in cleaned), cleaned
+    # 环境变量可覆盖截止日
+    import os as _os
+    _os.environ["REVIEW_DIRTY_CUTOFF"] = "2026-09-10"
+    try:
+        cleaned2 = R._clean_fills(fills)
+        assert len(cleaned2) == 1 and cleaned2[0]["ts"].startswith("2026-09-15"), cleaned2
+    finally:
+        _os.environ.pop("REVIEW_DIRTY_CUTOFF", None)
+
+
+def test_state_positions_semantics():
+    # 2026-09-16 修复：state_pos 返回语义必须区分「无引擎行」与「引擎落盘空仓」，
+    # 否则收盘清仓(positions=[]) 会被误报为若干只残留持仓。
+    import sqlite3 as _sq
+    def _mem():
+        c = _sq.connect(":memory:")
+        c.row_factory = _sq.Row
+        return c
+    # 场景1：无 engine_state 行 → None（调用方回退 fills 重放）
+    c1 = _mem()
+    assert R._state_positions(c1) is None
+    # 场景2：空仓（positions 为空数组）→ {}（权威空仓，*不得*回退 fills）
+    c2 = _mem()
+    c2.execute("CREATE TABLE engine_state(id INTEGER PRIMARY KEY, positions TEXT)")
+    c2.execute("INSERT INTO engine_state(id,positions) VALUES(1,'[]')")
+    assert R._state_positions(c2) == {}, "收盘空仓必须返回 {} 而非回退 fills"
+    # 场景3：有持仓 → dict（code -> {qty, avg}）
+    c3 = _mem()
+    c3.execute("CREATE TABLE engine_state(id INTEGER PRIMARY KEY, positions TEXT)")
+    c3.execute("INSERT INTO engine_state(id,positions) VALUES("
+               "1,'[{\"code\":\"300308.SZ\",\"quantity\":100,\"avg_cost\":50.0}]')")
+    sp = R._state_positions(c3)
+    assert sp == {"300308.SZ": {"qty": 100, "avg": 50.0}}, sp
+
+
+def test_account_daily_crossday():
+    # 账户真实当日收益必须含隔夜重估（跨日口径），而非只看日内涨跌。
+    # 模拟 9-16：前一日末 961286 → 当日末 803680 = -16.4%（隔夜缺口）。
+    import sqlite3 as _sq
+    c = _sq.connect(":memory:")
+    c.row_factory = _sq.Row
+    c.execute("CREATE TABLE equity_snapshots(ts TEXT, total_asset REAL, mode TEXT)")
+    c.execute("INSERT INTO equity_snapshots VALUES('2026-09-15T15:04:52','961286.0','paper')")
+    c.execute("INSERT INTO equity_snapshots VALUES('2026-09-16T09:30:00','805667.0','paper')")
+    c.execute("INSERT INTO equity_snapshots VALUES('2026-09-16T15:04:42','803680.18','paper')")
+    d = R._account_daily(c, "2026-09-16")
+    assert d["prev_asset"] == 961286.0, d
+    assert d["eod_asset"] == 803680.18, d
+    assert abs(d["daily_ret_pct"] - (-16.4)) < 0.1, d   # 含隔夜重估
+    assert abs(d["daily_pnl"] - (-157605.82)) < 1.0, d
+
+
+def test_optimization_accuracy_lowered_by_real_account_loss():
+    # 2026-09-16 修复：账户真实在亏钱时，「准确」维度必须下降并给出 P0 finding，
+    # 不能再虚假 100 分（旧逻辑只看滑点/信号零成交）。
+    rep = {
+        "position_warning": None,
+        "account_ret_pct": -16.4,
+        "account_pnl": -157605.82,
+        "account_daily": {"prev_asset": 961286.0, "eod_asset": 803680.18,
+                          "daily_pnl": -157605.82, "daily_ret_pct": -16.4},
+        "eod": {"total_return_pct": -0.25},
+        "account_state": {},
+        "risk": {"halt_count": 1, "halt_reasons": {"consec_loss=5": 1},
+                 "max_consecutive_losses": 9, "last_daily_pnl": -188766},
+        "equity": {"intraday_max_dd_pct": -0.87, "points": 262, "daily_return_pct": -0.25},
+        "pnl": {"eod_positions": {}, "realized_total": -189441.52},
+        "mode_counts": {}, "order_mode_counts": {},
+    }
+    opt = R._optimization_insights(rep, [], [], [])
+    assert opt["scores"]["准确"] < 100, opt["scores"]          # 必须拉低
+    assert opt["scores"]["准确"] <= 55, opt["scores"]          # 亏16.4%→约55
+    found = [f for f in opt["findings"] if f["axis"] == "准确" and f["priority"] == "P0"]
+    assert found, opt["findings"]
+    assert "账户真实当日亏损" in found[0]["title"], found[0]

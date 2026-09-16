@@ -93,6 +93,7 @@ class QMTBroker:
         self._cfg = _load_config()
         self._subscribed: Dict[str, object] = {}
         self._on_disconnect = None
+        self._on_reconnected = None
         self._disconnect_cb_registered = False
 
     # ---------- 连接 ----------
@@ -126,6 +127,7 @@ class QMTBroker:
             self._register_disconnect_cb(self._trader)
         # 4) 真正 connect（锁外，避免阻塞期间回调重入死锁）
         with self._lock:
+            was_connected = self._connected
             self._connected = False
         try:
             rc = self._trader.connect()
@@ -144,6 +146,15 @@ class QMTBroker:
                     logger.info("XtQuantTrader.connect rc=-1（已连接/重复 connect，按已连处理）"
                                 " (path=%s, session=%s)",
                                 self._cfg["userdata_path"], self._cfg["session_id"])
+                # 【2026-09-16 优化】交易连接（重）建立后，通知上层恢复行情订阅与持仓同步。
+                # 行情(xtdata)与交易(XtQuantTrader)是两个独立连接：交易端断连恢复不会
+                # 自动重建行情端订阅，易导致「断连 27 次」后数据/下单路径不同步。
+                # 仅当本次是从「未连」状态恢复（非幂等重复 connect）时才回调，避免每轮刷。
+                if not was_connected and self._on_reconnected:
+                    try:
+                        self._on_reconnected()
+                    except Exception as e:
+                        logger.debug("on_reconnected 回调异常(忽略): %s", e)
                 return True
             logger.warning("XtQuantTrader.connect rc=%s", rc)
             self._connected = False
@@ -168,6 +179,10 @@ class QMTBroker:
 
     def set_on_disconnect(self, cb) -> None:
         self._on_disconnect = cb
+
+    def set_on_reconnected(self, cb) -> None:
+        """交易连接（重）建立后回调：上层据此恢复行情订阅 + 持仓同步。"""
+        self._on_reconnected = cb
 
     def disconnect(self) -> None:
         with self._lock:

@@ -167,3 +167,37 @@ def test_drawdown_halt_recovers_after_dd_recover_days():
     r._maybe_recover(date.today(), total_asset=90000)
     assert not r.is_halted
     assert r.consecutive_losses == 0
+
+
+def test_daily_hard_stop_flatten_triggers():
+    """2026-09-16 优化：当日账户亏损（相对开盘）达 daily_stop_flatten_pct
+    即置 flatten_requested 并停牌，引擎据此强平全部可卖持仓。"""
+    r = RiskManager({"daily_stop_flatten_pct": -0.06})
+    # 开盘 100000，跌到 93000（-7% <= -6%）→ 应触发强平+停牌
+    r.on_asset_update(93000, day_open_asset=100000)
+    assert r.flatten_requested, "当日 -7% 应触发日内硬止损强平"
+    assert r.is_halted, "日内硬止损应同时暂停新开仓"
+
+
+def test_daily_hard_stop_no_trigger_in_normal_drawdown():
+    """正常波动（-3%）不应触发强平，避免被趋势股日内噪音误伤。"""
+    r = RiskManager({"daily_stop_flatten_pct": -0.06})
+    r.on_asset_update(97000, day_open_asset=100000)   # -3%
+    assert not r.flatten_requested
+    assert not r.is_halted
+
+
+def test_daily_hard_stop_flatten_reset_on_resume():
+    """手动 resume 应同时清除 flatten_requested（恢复后不再强平）。"""
+    r = RiskManager({"daily_stop_flatten_pct": -0.06})
+    r.on_asset_update(93000, day_open_asset=100000)
+    assert r.flatten_requested
+    r.resume("manual")
+    assert not r.flatten_requested
+    assert not r.is_halted
+
+
+def test_daily_hard_stop_threshold_default():
+    """默认阈值存在且为 -0.06（与 settings.RISK_PARAMS 对齐）。"""
+    r = RiskManager()
+    assert r.p.get("daily_stop_flatten_pct") == -0.06

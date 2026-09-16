@@ -105,9 +105,10 @@ class _XtdClient:
     mode = "xtdata"
 
     # push 缓存最大容忍陈旧度（秒）。超过则视为失效，降级走快照兰己。
-    # 60s 的依据：主循环间隔 REFRESH_INTERVAL=3s，正常推送远密于此；
-    # 而连续 20 轮拿不到新 tick 已足以说明该标的推送不正常。
-    PUSH_STALE_SEC = 60.0
+    # 【2026-09-16 优化】由 60s 收紧到 30s：主循环间隔 REFRESH_INTERVAL=3s，
+    #   正常推送远密于此；30s（约 10 轮无新 tick）足以判定推送异常，又不过度敏感。
+    #   更早丢弃陈旧价 → 不在过期报价上做止损/开仓决策，提升数据来源准确性。
+    PUSH_STALE_SEC = 30.0
 
     def __init__(self):
         from xtquant import xtdata

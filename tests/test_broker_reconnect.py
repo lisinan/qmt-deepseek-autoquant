@@ -117,8 +117,26 @@ def test_auto_reconnector_idles_when_connected():
     assert b.is_connected is True
 
 
+def test_on_reconnected_fires_on_transition_from_disconnected():
+    """2026-09-16 优化：交易连接从「未连」恢复后触发 on_reconnected 钩子，
+    上层据此重发行情订阅 + 持仓同步（修复断连后数据/下单路径不同步）。"""
+    b = QMTBroker()
+    assert b.connect() is True          # 首次连接（was_connected=False → 触发）
+    fired = []
+    b.set_on_reconnected(lambda: fired.append(1))
+    # 幂等重复 connect（was_connected=True）→ 不应再触发
+    assert b.connect() is True
+    assert fired == [], "幂等 connect 不应重复触发 on_reconnected"
+    # 模拟断线 → 再次连接（was_connected=False → 触发）
+    b._trader.cb.on_disconnected()
+    assert b.is_connected is False
+    assert b.connect() is True
+    assert fired == [1], "断线恢复后应触发 on_reconnected 一次"
+
+
 if __name__ == "__main__":
     test_connect_creates_single_trader_and_reuses_on_force()
     test_disconnect_callback_marks_off_and_invokes_hook()
     test_auto_reconnector_idles_when_connected()
+    test_on_reconnected_fires_on_transition_from_disconnected()
     print("ALL BROKER RECONNECT TESTS PASSED")
