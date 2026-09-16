@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-page-node-id="XxlfBXCqA4Xzhxn37YWqWq">
+<head data-page-node-id="BXOLG46320kvJltGjz9ETl">
+<meta charset="UTF-8" data-page-node-id="qxC8qgxSwLTfFWhnOvzcAd">
+<meta name="viewport" content="width=device-width, initial-scale=1.0" data-page-node-id="nG7BSvA1yZBDPfOJhJMXbh">
+<title>板块轮动 · 当前持仓换出优先级核对</title>
+<style>
+  :root{
+    --bg:#f5f7fa; --card:#ffffff; --ink:#1f2933; --sub:#5b6b7b;
+    --line:#e3e8ef; --teal:#0d9488; --red:#dc2626; --amber:#d97706; --green:#059669;
+  }
+  body{margin:0;font-family:-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;
+       background:var(--bg);color:var(--ink);padding:28px;line-height:1.6;}
+  .wrap{max-width:920px;margin:0 auto;}
+  h1{font-size:22px;margin:0 0 4px;}
+  .meta{color:var(--sub);font-size:13px;margin-bottom:18px;}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;
+        padding:18px 20px;margin-bottom:16px;box-shadow:0 1px 3px rgba(16,24,40,.04);}
+  .lead{font-size:14px;color:var(--sub);}
+  .lead b{color:var(--ink);}
+  table{width:100%;border-collapse:collapse;font-size:14px;margin-top:6px;}
+  th,td{padding:10px 8px;text-align:right;border-bottom:1px solid var(--line);}
+  th{color:var(--sub);font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.03em;}
+  td.l,th.l{text-align:left;}
+  .rank-badge{display:inline-block;width:22px;height:22px;line-height:22px;text-align:center;
+              border-radius:50%;font-size:12px;font-weight:700;color:#fff;}
+  .r1{background:var(--red);} .r2{background:var(--amber);} .r3{background:#ca8a04;}
+  .r4{background:var(--teal);} .r5{background:var(--green);}
+  .score-bar{height:8px;border-radius:5px;background:linear-gradient(90deg,#dc2626,#f59e0b,#10b981);}
+  .score-cell{position:relative;min-width:90px;}
+  .score-val{font-weight:700;font-size:15px;}
+  .neg{color:var(--green);} .pos{color:var(--red);}  /* 涨红跌绿 中国习惯 */
+  .weak{color:var(--red);font-weight:700;}
+  .note{font-size:13px;color:var(--sub);background:#fffbeb;border:1px solid #fde68a;
+        border-radius:10px;padding:12px 14px;margin-top:14px;}
+  .rule{font-size:13px;background:#ecfeff;border:1px solid #a5f3fc;border-radius:10px;
+        padding:12px 14px;margin-top:14px;}
+  .factor{font-size:11px;color:var(--sub);font-family:ui-monospace,Menlo,monospace;}
+  code{background:#eef2f6;padding:1px 6px;border-radius:5px;font-size:12px;}
+  .key{color:var(--teal);font-weight:700;}
+</style>
+</head>
+<body data-page-node-id="9u8wTmdN7lnojM9t0gqApr">
+<div class="wrap" data-page-node-id="gPiXSBYfxhciwn77GoCVWa">
+  <h1 data-page-node-id="sK5B9lttdvGcfuCIUteaTH">板块轮动 · 当前持仓「换出优先级」核对</h1>
+  <div class="meta" data-page-node-id="s1h2QDsKCdJugAIC0GBiX5">数据基线：storage/qmt.db engine_state(id=1, trade_date 2026-09-07) 的 5 只持仓 ｜ 评分口径：DailyContext._compute 6 因子日线评分（与 live/回测严格同口径）｜ 数据源：tushare pro.daily 真实日线</div>
+
+  <div class="card" data-page-node-id="qPZofciAB6iwjSfZyt9p0n">
+    <p class="lead" data-page-node-id="RwB5XoycIseWEwzJtPHL6k">轮动机制在<b data-page-node-id="wYfajOHleJmqiPeeBxpOAE">满仓</b>时介入，把「最弱持仓」先卖、再买「热板块候选」。换出顺序<b data-page-node-id="ewQCSHMOR05Eh5yKgedxrG">完全由日线 6 因子评分（features.score）决定，与浮动盈亏无关</b>。下表按 score 升序排列 —— 越靠上越先被换出。</p>
+    <table data-page-node-id="0BIZwy7G4rLOulxIooIs9A">
+      <thead data-page-node-id="sdMcWJjz0qsOPfmtuLUlcd">
+        <tr data-page-node-id="msanbHtNNTEj6DclJvS2D5"><th class="l" data-page-node-id="cd4IaMxOlXYOXRdJAOXzZz">#</th><th class="l" data-page-node-id="LqpHpNlrD9k7XG7ufg9iWk">代码 / 名称</th><th class="l" data-page-node-id="6hmigMlVLmksQNVbG65JDs">日线评分</th>
+            <th data-page-node-id="N4EUFDqd8SNk9f2P72O2GH">浮动盈亏</th><th data-page-node-id="wm5SwEa5D6aN0IN7D42pJZ">bias</th><th data-page-node-id="EUxMeTihfl2X753qf2NmiW">60日动量</th><th class="l" data-page-node-id="cEOquxmDN3gyBsXA84ix2t">6 因子分解</th></tr>
+      </thead>
+      <tbody data-page-node-id="cThBdJy7AQEMDGlLmGkvsT">
+        <tr data-page-node-id="TtL0eZVmpZuuVtJUYcxeqP">
+          <td class="l" data-page-node-id="xE3e0zm9zOXuBacBIuTEqU"><span class="rank-badge r1" data-page-node-id="EHnyRSzQ4B76bbDtHbunmv">1</span></td>
+          <td class="l" data-page-node-id="Fttawg37kABovDGkRAEd9e"><b data-page-node-id="8EEyfRcK7AmBhmlQ0fZPSN">688082.SH</b> 盛美上海</td>
+          <td class="l score-cell" data-page-node-id="cet6Zaimcp19CXht66sSH3"><span class="score-val weak" data-page-node-id="wpWYMTZDF775e2AAHtQYlc">3.70</span>
+              <div class="score-bar" style="width:74%" data-page-node-id="DCPAEZvdXoNhasMM0cM6z9"></div></td>
+          <td class="neg" data-page-node-id="H2HeQ3REfdHIAvqcPwmQyG">−0.04%</td><td data-page-node-id="hRNbwX488Pko4T1o1WxqF9">−1.00</td><td data-page-node-id="cVZ45i8TZ7JgMAbDVRZsOi">−7.6%</td>
+          <td class="l factor" data-page-node-id="5es3DCmut3hiv4eCXrZuyK">trend 0.0 · mom 0.0 · over 1.5 · vol 0.0 · pos 0.2 · vwap 2.0</td>
+        </tr>
+        <tr data-page-node-id="Ef24w743qPMmAf3TPuKSHh">
+          <td class="l" data-page-node-id="wftaB6LiWsxXg4qJ5PEkRB"><span class="rank-badge r1" data-page-node-id="ZtRDPFOdCB8JYpFYTqNBxw">1</span></td>
+          <td class="l" data-page-node-id="acE6buskmgRJZ7eq0caDdc"><b data-page-node-id="ukWopSNhfCVBbpCBSZiNHG">301165.SZ</b> 锐捷网络</td>
+          <td class="l score-cell" data-page-node-id="9lzYKedOJfz5CSlZTRUqYw"><span class="score-val weak" data-page-node-id="tBlIw6eTTM04ryS3pUvbEK">3.70</span>
+              <div class="score-bar" style="width:74%" data-page-node-id="zZb9jOeU0bqpsso9K4HN26"></div></td>
+          <td class="neg" data-page-node-id="Zqz1uDiK4pBZxhA1xBXKOS">−6.57%</td><td data-page-node-id="145O74FutemMw1LUHN4JDe">+0.30</td><td data-page-node-id="9nBeA94LYDACTQdYcx5Sn5">+100.0%</td>
+          <td class="l factor" data-page-node-id="Y2RSdgtBo2Z4aDMP3odCD6">trend 0.0 · mom 0.0 · over 1.5 · vol 0.0 · pos 0.2 · vwap 2.0</td>
+        </tr>
+        <tr data-page-node-id="8QXjYLAhTKVwdwnvOEHN30">
+          <td class="l" data-page-node-id="6wtEfJ6whVSwDXxt1yDV1P"><span class="rank-badge r3" data-page-node-id="4ohTUOwDLtgNYwE7fDFbid">3</span></td>
+          <td class="l" data-page-node-id="ovK9ndBtuBmwCbqEMgnora"><b data-page-node-id="ZktWmTMUwd44hYuBDE98PA">688072.SH</b> 翱捷科技</td>
+          <td class="l score-cell" data-page-node-id="SF6IWOHk82PNiqDC9FeD2c"><span class="score-val weak" data-page-node-id="efzDrb94eaVVqFhSTJY8pv">3.78</span>
+              <div class="score-bar" style="width:75%" data-page-node-id="34138v14k01CKdExU5xY46"></div></td>
+          <td class="neg" data-page-node-id="DMLNWTE8Rz7rCvw7zLMytP">−1.22%</td><td data-page-node-id="JHZ8Hg1eYFShJvMyIqUr92">−1.00</td><td data-page-node-id="WmsYqaWlGfd5pzdlnX50iy">+3.8%</td>
+          <td class="l factor" data-page-node-id="xyM3J5rT1n2DWrVndbJZrG">trend 0.0 · mom 0.0 · over 1.0 · vol 0.5 · pos 0.28 · vwap 2.0</td>
+        </tr>
+        <tr data-page-node-id="gIwVIFpBxd5WUEjMKN3Jlr">
+          <td class="l" data-page-node-id="Vs8AZrmUYb00eA6DOJoElL"><span class="rank-badge r4" data-page-node-id="UHVM4TxYqqJ8JPdkqBwiDm">4</span></td>
+          <td class="l" data-page-node-id="dMwzcxJoXTZqCXXFeSMwAp"><b data-page-node-id="CSY1xqzUqcQOJpjUwlNM7Z">002415.SZ</b> 海康威视</td>
+          <td class="l score-cell" data-page-node-id="4cGLtUrSUPSpdbzugCwi34"><span class="score-val" data-page-node-id="k5HI2nk2LIjJjQ43Gd8CT9">4.42</span>
+              <div class="score-bar" style="width:88%" data-page-node-id="7yb87DL5XnFjTgGBXxkeiv"></div></td>
+          <td class="neg" data-page-node-id="eLr79oRHcvZjv5EWFBcVbj">−2.73%</td><td data-page-node-id="uQn04FGqprJ13lxAtGDTj9">+0.30</td><td data-page-node-id="VkVrmm3y0FkzuGTHNdHA7R">+15.3%</td>
+          <td class="l factor" data-page-node-id="cykmLfV5fOVsWWbpc2HdKu">trend 1.0 · mom 0.0 · over 1.0 · vol 0.0 · pos 0.42 · vwap 2.0</td>
+        </tr>
+        <tr data-page-node-id="mwx5jqPQCWQWMkjfxZ7lKf">
+          <td class="l" data-page-node-id="1G0uPH8TJxpIFlI64L4tNW"><span class="rank-badge r5" data-page-node-id="z77lJuDCBiFGBsgMaxo66A">5</span></td>
+          <td class="l" data-page-node-id="qkvdsi3ukNFqrlGJwsg7uh"><b data-page-node-id="n9s6a94HD42WYAA2rnT7D0">688120.SH</b> 华海清科</td>
+          <td class="l score-cell" data-page-node-id="OvELWvCjFHswlbaCyN1NeO"><span class="score-val" data-page-node-id="jbvoYIJhupUfss7bDXiBXV">4.60</span>
+              <div class="score-bar" style="width:92%" data-page-node-id="D97KmXqmSiRTJkTEui7utG"></div></td>
+          <td class="neg" data-page-node-id="Q9CJPrDoQTg8NsAv6TfgL3">−5.65%</td><td data-page-node-id="GTJo6couyLtflheA9PFZ8B">−1.00</td><td data-page-node-id="4JZJC8jEDCgPJywvHxDbyd">+33.8%</td>
+          <td class="l factor" data-page-node-id="zuEXdDidfOD446Zo9X7NAb">trend 0.0 · mom 0.0 · over 1.5 · vol 1.0 · pos 0.1 · vwap 2.0</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <div class="note" data-page-node-id="bM7Gbpqwy7PM5xzW7swVFF">
+      <b data-page-node-id="PnTfrlwx83sb5zHSKQuvtS">关键反直觉点（务必注意）：</b>换出顺序 <b data-page-node-id="WVhZ5zSzCfGJe7tEbTpyDN">不是</b>「谁亏得多先卖」。
+      <span class="key" data-page-node-id="O8SSusztLi9O4VaEgplEgY">688120 华海清科</span> 当前浮亏最深（−5.65%），但 60 日动量 +33.8%、日线评分最高（4.60），是持仓里<b data-page-node-id="miayyCq8X2QIHnO4EDF2Np">最强</b>的一只 —— 它会<b data-page-node-id="wrm6s89nRHxaF0DfFhEYvI">最后</b>被换出。
+      反之 <span class="key" data-page-node-id="6QNmhsgM6L8y93ggUGQ2KY">301165 锐捷网络</span> 60 日动量 +100%（曾冲到 148 后回落至 112），但趋势已破位、评分垫底（3.70），被引擎判定为最弱。
+    </div>
+
+    <div class="rule" data-page-node-id="VJtdqVA5aGDJrkGHMZKo21">
+      <b data-page-node-id="6lhkEnMQ6tBDQgjWg5c73X">换出规则（engine/event_engine.py · _maybe_rotate）：</b><br data-page-node-id="3FiKGcu5HRXVaFMVyK47AD">
+      ① 仅当组合满仓（持仓数 ≥ <code data-page-node-id="xHRDX1uirftNZhbNEUv0Jg">max_positions=5</code>）才介入；有空槽时由普通入场逻辑处理。<br data-page-node-id="YRYEDPv4CcBdcEkJgBniN6">
+      ② 每轮取「最弱持仓」（score 最低者）与「热板块候选」比差：候选 ∈ <code data-page-node-id="H7smmH2B5xSTKfgzpW7MV7">LLM rerank top5 ∪ 板块推荐池 top15</code>。<br data-page-node-id="fjt5t2QnTOGahGkZXk6ZOy">
+      ③ 候选当日涨幅 <code data-page-node-id="ToFl81r2WNAA5nth13Py7D">≥ rotation_intraday_breakout_pct(1.5%)</code> ＝日内突破 → 评分差门槛降至 <code data-page-node-id="gUx0jSYULDCGB2FRwbaHmL">rotation_min_score_gap_hot(0.0)</code>；否则需候选 score − 最弱 ≥ <code data-page-node-id="MUZ8WDMNXsiWaRmKgwe8D6">rotation_min_score_gap(2.0)</code>。<br data-page-node-id="LmuszpdaNJCzuPEWamE971">
+      ④ 单次评估最多换 <code data-page-node-id="Fl2d3F4s9LWqTQIMwAEzK4">rotation_max_swaps_per_eval(3)</code> 只；全局冷却 <code data-page-node-id="mErscDN8lucfOYErcd4QdZ">rotation_cooldown_sec(1800s)</code>。<br data-page-node-id="pMoCex8C2lwutWhdiGeESd">
+      <b data-page-node-id="kaXf4YA4AqqY445fEYGAIF">结论：</b>只要出现「光模块等热板块候选 + 日内突破」，引擎会优先把 <b data-page-node-id="QOqv8H3Woio33mMxAn3FID">688082 / 301165（并列最弱 3.70）</b>卖出换入；随后是 <b data-page-node-id="TFrOEBMFk2DceI8RolHoxE">688072(3.78) → 002415(4.42) → 688120(4.60)</b>。
+    </div>
+  </div>
+
+  <div class="card" data-page-node-id="OHaX0ICmfl7bOUXp2WdA0B">
+    <p class="lead" data-page-node-id="sOqKBnFNhEb8bq38qBx243"><b data-page-node-id="J6GIjW5Htsg3ZBNwm1GWS6">落地前提提醒：</b>上述顺序依赖 <code data-page-node-id="p3Cj7hll3HcqclTWUE3eZD">enable_rotation=True</code> 的<b data-page-node-id="bexeGuIh57K2aI4tTIBNUl">重设计后</b>代码（已推送 57a6954）。若桌面 live 引擎仍在跑轮换功能上线<b data-page-node-id="C4usNyEmmh3shLKAYasDkC">之前</b>的旧进程，须 <code data-page-node-id="yN6j0jKET1C0ZUnULBfYB6">--stop</code> 后 <code data-page-node-id="RKqf2JKbZklL3U8yzmAwlk">--web</code> 重启才能加载新行为。此外轮动只在「有热板块候选可换入」时触发；无候选时保持满仓持有不动。</p>
+  </div>
+</div>
+</body>
+</html>

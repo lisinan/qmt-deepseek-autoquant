@@ -34,3 +34,5 @@ logs/engine.pid
 logs/STOP_ENGINE
 _backup/
 logs/*.bak
+# 运行时 PID 锁（守护/引擎），非源码
+.guardian.pid

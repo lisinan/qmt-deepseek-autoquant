@@ -206,6 +206,55 @@ def test_rotation_batch_multiple_swaps():
     assert len(eng._sells) == 3, eng._sells
 
 
+def test_rotation_4of5_fills_empty_slot():
+    # 4/5（差一仓）+ 热板块候选 300308.SZ 日内突破 → 补强空槽
+    # （纯买入、不卖 existing；组合回到 5/5 且第 5 仓是确认热度标的）
+    held = ["688072.SH", "688120.SH", "002415.SZ", "688082.SH"]  # 4 仓
+    scores = {"688072.SH": 3.0, "688120.SH": 2.0, "002415.SZ": 4.0,
+              "688082.SH": 1.0, "300308.SZ": 9.0}
+    eng = _make_engine(scores, held, hot_codes=["300308.SZ"])
+    EventEngine._maybe_rotate(
+        eng, _ticks(["300308.SZ"], {"300308.SZ": 3.0}))
+    # 不卖现有持仓；买入 300308.SZ 补空槽
+    assert eng._sells == [], eng._sells
+    assert eng._buys == [("300308.SZ", 9.0)], eng._buys
+
+
+def test_rotation_4of5_no_candidate_skips():
+    # 4/5 但无任何候选 tick（行情缺失）→ 不补、不卖
+    held = ["688072.SH", "688120.SH", "002415.SZ", "688082.SH"]
+    scores = {"688072.SH": 3.0, "688120.SH": 2.0, "002415.SZ": 4.0,
+              "688082.SH": 1.0, "300308.SZ": 9.0}
+    eng = _make_engine(scores, held, hot_codes=["300308.SZ"])
+    EventEngine._maybe_rotate(eng, _ticks([]))
+    assert eng._sells == []
+    assert eng._buys == []
+
+
+def test_rotation_4of5_knob_off_skips():
+    # rotation_fill_empty_slot=False → 4/5 不补强，回滚到仅满仓才轮换的旧行为
+    held = ["688072.SH", "688120.SH", "002415.SZ", "688082.SH"]
+    scores = {"688072.SH": 3.0, "688120.SH": 2.0, "002415.SZ": 4.0,
+              "688082.SH": 1.0, "300308.SZ": 9.0}
+    eng = _make_engine(scores, held, hot_codes=["300308.SZ"])
+    eng.rotation_fill_empty_slot = False
+    EventEngine._maybe_rotate(
+        eng, _ticks(["300308.SZ"], {"300308.SZ": 3.0}))
+    assert eng._sells == []
+    assert eng._buys == []
+
+
+def test_rotation_4of5_weak_hot_no_breakout_skips():
+    # 候选在热板块但日线 HOLD 且非日内突破 → 不补（避免换入弱热名）
+    held = ["688072.SH", "688120.SH", "002415.SZ", "688082.SH"]
+    scores = {"688072.SH": 3.0, "688120.SH": 2.0, "002415.SZ": 4.0,
+              "688082.SH": 1.0, "300308.SZ": 0.5}  # 候选热但日线 HOLD
+    eng = _make_engine(scores, held, hot_codes=["300308.SZ"])
+    EventEngine._maybe_rotate(eng, _ticks(["300308.SZ"]))  # change_pct 默认 0
+    assert eng._sells == []
+    assert eng._buys == []
+
+
 if __name__ == "__main__":
     import pytest
     raise SystemExit(pytest.main([__file__, "-q"]))

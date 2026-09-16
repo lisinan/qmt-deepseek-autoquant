@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>qmtIDE-deepseek · Paper 模式验证报告 (2026-09-15)</title>
+<style>
+  :root{--bg:#f5f7fa;--card:#fff;--ink:#1f2937;--muted:#6b7280;--line:#e5e7eb;
+        --ok:#16a34a;--warn:#d97706;--info:#2563eb;--bad:#dc2626;}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.6 -apple-system,"Segoe UI",Roboto,"Microsoft YaHei",sans-serif;}
+  .wrap{max-width:960px;margin:24px auto;padding:0 16px;}
+  header{background:linear-gradient(135deg,#0f766e,#0d9488);color:#fff;border-radius:14px;padding:22px 26px;box-shadow:0 6px 20px rgba(13,148,136,.25);}
+  header h1{margin:0 0 4px;font-size:22px;}
+  header .sub{opacity:.92;font-size:13px;}
+  .badge{display:inline-block;background:rgba(255,255,255,.18);border:1px solid rgba(255,255,255,.35);padding:2px 10px;border-radius:999px;font-size:12px;margin-right:8px;}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin:18px 0;}
+  .kpi{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 16px;}
+  .kpi .k{font-size:12px;color:var(--muted);}
+  .kpi .v{font-size:20px;font-weight:700;margin-top:4px;}
+  section{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:18px 20px;margin:14px 0;}
+  h2{font-size:17px;margin:0 0 12px;display:flex;align-items:center;gap:8px;}
+  h2 .dot{width:8px;height:8px;border-radius:50%;background:var(--info);}
+  table{width:100%;border-collapse:collapse;font-size:14px;}
+  th,td{text-align:left;padding:9px 10px;border-bottom:1px solid var(--line);}
+  th{color:var(--muted);font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.03em;}
+  td.st{font-weight:700;}
+  .s-ok{color:var(--ok);} .s-warn{color:var(--warn);} .s-info{color:var(--info);} .s-bad{color:var(--bad);}
+  .note{font-size:13px;color:var(--muted);margin-top:8px;}
+  .checklist li{margin:6px 0;}
+  code{background:#eef2f7;padding:1px 6px;border-radius:5px;font-size:13px;}
+  .foot{font-size:12px;color:var(--muted);text-align:center;margin:18px 0;}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>qmtIDE-deepseek · Paper 模式验证报告</h1>
+    <div class="sub">生成时间 2026-09-15 21:33 · 执行模式 <span class="badge">PAPER 模拟盘</span><span class="badge">conda env qmt</span><span class="badge">EXIT 0 / 无错误</span></div>
+  </header>
+
+  <div class="grid">
+    <div class="kpi"><div class="k">执行模式</div><div class="v s-ok">paper</div></div>
+    <div class="kpi"><div class="k">回归测试</div><div class="v s-ok">185 / 0</div></div>
+    <div class="kpi"><div class="k">行情通道</div><div class="v s-ok">xtdata ✓</div></div>
+    <div class="kpi"><div class="k">总资产</div><div class="v">¥961,286</div></div>
+    <div class="kpi"><div class="k">持仓数</div><div class="v">5 / 5</div></div>
+    <div class="kpi"><div class="k">熔断器</div><div class="v s-ok">未触发</div></div>
+  </div>
+
+  <section>
+    <h2><span class="dot"></span>一、执行模式核查（安全闸门）</h2>
+    <table>
+      <tr><th>项</th><th>值</th><th>状态</th><th>说明</th></tr>
+      <tr><td>EXECUTION_MODE (settings.py:357)</td><td>paper</td><td class="st s-ok">PASS</td><td>无 .env 覆盖，确定性处于模拟盘</td></tr>
+      <tr><td>--mode 覆盖</td><td>未指定</td><td class="st s-ok">PASS</td><td>未启用 live，符合「人工确认后再切」</td></tr>
+      <tr><td>STRATEGY_MODE</td><td>single</td><td class="st s-info">INFO</td><td>引擎默认单标的模式（组合选股在回测侧验证）</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2><span class="dot"></span>二、引擎实例化快照（main.py --snapshot）</h2>
+    <table>
+      <tr><th>校验项</th><th>实测</th><th>状态</th><th>判定</th></tr>
+      <tr><td>进程退出码</td><td>0</td><td class="st s-ok">PASS</td><td>完整初始化路径无异常</td></tr>
+      <tr><td>stderr</td><td>仅 xtquant 弃用告警</td><td class="st s-ok">PASS</td><td>无害（pkg_resources deprecation）</td></tr>
+      <tr><td>xtdata 行情连接</td><td>连接成功 21:33:01</td><td class="st s-ok">PASS</td><td>data_mode=xtdata，行情可达</td></tr>
+      <tr><td>交易通道 broker</td><td>disconnected</td><td class="st s-info">INFO</td><td>paper 模拟盘不接实盘下单通道，符合预期</td></tr>
+      <tr><td>AI 分析层</td><td>DeepSeekClient 启用</td><td class="st s-ok">PASS</td><td>analyst_enabled=true</td></tr>
+      <tr><td>LLM reranker</td><td>enabled=true</td><td class="st s-ok">PASS</td><td>缓存命中/调用就绪</td></tr>
+      <tr><td>动态候选池</td><td>enabled, 活跃 30</td><td class="st s-ok">PASS</td><td>通信设备/半导体/IT设备 覆盖</td></tr>
+      <tr><td>regime 闸门</td><td>off / ok=true</td><td class="st s-ok">PASS</td><td>与基线配置一致</td></tr>
+      <tr><td>持仓账本</td><td>5 只（engine_state）</td><td class="st s-ok">PASS</td><td>海康威视/301165/中微公司/北方华创/天孚通信</td></tr>
+      <tr><td>风险状态</td><td>halted=false</td><td class="st s-ok">PASS</td><td>连亏4→position_scale=0.6（自动降仓生效）</td></tr>
+      <tr><td>会话守卫</td><td>post_close / 非交易时段</td><td class="st s-info">INFO</td><td>SESSION_GUARD 盘后跳过交易，正常</td></tr>
+    </table>
+    <p class="note">snapshot 含 4 行 xtquant 连接日志前缀（已跳过解析），其后为合法 JSON，全部字段解析正常。</p>
+  </section>
+
+  <section>
+    <h2><span class="dot"></span>三、回归测试（tests/run_all.py）</h2>
+    <table>
+      <tr><th>指标</th><th>结果</th></tr>
+      <tr><td>通过 / 失败</td><td class="st s-ok">PASSED 185 / FAILED 0（20.3s）</td></tr>
+      <tr><td>关键回归</td><td>test_rotation(9) · test_broker_reconnect(152) · test_daily_context_consistency · test_review_daily 等全部包含</td></tr>
+      <tr><td>守护脚本影响</td><td class="st s-ok">零回归（新增 guardian/health_check 不触及被测模块）</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2><span class="dot"></span>四、Paper 验证结论</h2>
+    <p><b>项目在 paper（模拟盘）模式下完整、健康、可运行</b>：行情通道连通、AI/LLM 层启用、动态宇宙加载、5 仓账本恢复、无熔断、回归全绿。当前全部为<strong>工程层与观测层</strong>正常，未涉及任何策略参数改动（安全闸门贯穿）。</p>
+  </section>
+
+  <section>
+    <h2><span class="dot"></span>五、切换到 Live 的前置清单（待你人工确认）</h2>
+    <ol class="checklist">
+      <li>确认 <code>trading_config.json</code> 已配置真实 miniQMT 账号，且 miniQMT 客户端可登录。</li>
+      <li>将执行模式切换为 live：<code>python main.py --mode live</code>，或在 <code>.env</code> 设置 <code>EXECUTION_MODE=live</code>。</li>
+      <li>确认交易通道连接：启动 miniQMT 后 <code>broker_connected</code> 应变为 <code>true</code>（paper 下为 disconnected 属正常）。</li>
+      <li>live 首次启动加 <code>--init-positions</code>，从 broker 同步真实持仓（live 以 broker 为权威源）。</li>
+      <li>建议先在 paper 累积足够样本，再切 live；切 live 后由 <code>scripts/guardian.py</code> 守护 7×24 自启。</li>
+      <li>live 下断路器（−0.25/5日、连亏/日亏冷却1日）仍自动恢复；首周盯盘观察实盘滑点与成交质量。</li>
+    </ol>
+    <p class="note">⚠️ 上述切换需你明确确认后由我执行；当前未经确认，项目保持 paper 模式，未改动任何生产配置。</p>
+  </section>
+
+  <div class="foot">qmtIDE-deepseek 自进化执行机制（SEEM）· VERIFY 阶段 · 本报告仅记录 paper 模式验证，不改参数</div>
+</div>
+</body>
+</html>

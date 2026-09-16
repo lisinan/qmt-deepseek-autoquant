@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>连亏信号质量排查 · 2026-09-15</title>
+<style>
+  :root{ --bg:#f7f8fa; --card:#fff; --ink:#1f2933; --sub:#6b7280; --line:#e5e7eb;
+         --accent:#0f9d8b; --red:#d64545; --amber:#d98a00; --green:#0f9d8b; --blue:#2563eb; }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font-family:-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;line-height:1.6}
+  .wrap{max-width:960px;margin:0 auto;padding:28px 20px 60px}
+  h1{font-size:24px;margin:0 0 4px}
+  h2{font-size:18px;margin:34px 0 10px;padding-left:10px;border-left:4px solid var(--accent)}
+  .meta{color:var(--sub);font-size:13px;margin-bottom:18px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:18px 20px;margin:14px 0;box-shadow:0 1px 2px rgba(0,0,0,.03)}
+  .kpis{display:flex;flex-wrap:wrap;gap:12px;margin:6px 0 4px}
+  .kpi{flex:1 1 160px;background:#f0fdfb;border:1px solid #cdeee8;border-radius:10px;padding:12px 14px}
+  .kpi .v{font-size:22px;font-weight:700;color:var(--accent)}
+  .kpi .l{font-size:12px;color:var(--sub);margin-top:2px}
+  table{width:100%;border-collapse:collapse;font-size:13.5px;margin-top:6px}
+  th,td{border:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top}
+  th{background:#f1f5f9;font-weight:600}
+  .loss{color:var(--red);font-weight:600}
+  .win{color:var(--green);font-weight:600}
+  .tag{display:inline-block;font-size:11px;padding:1px 7px;border-radius:999px;font-weight:600}
+  .t-safe{background:#e7f6f2;color:#0b7a6b}
+  .t-forb{background:#fdeaea;color:#b3261e}
+  .t-legacy{background:#fff4e0;color:#9a6400}
+  .t-post{background:#e7f0ff;color:#1d4ed8}
+  .t-noise{background:#eef2f5;color:#52606d}
+  code{background:#eef2f5;padding:1px 5px;border-radius:4px;font-size:12.5px}
+  .verdict{background:#eafaf6;border:1px solid #b6e6da;border-radius:10px;padding:14px 16px;font-size:14.5px}
+  .verdict b{color:#0b7a6b}
+  ul{margin:6px 0 6px 2px;padding-left:18px}
+  li{margin:5px 0}
+  .foot{color:var(--sub);font-size:12px;margin-top:30px;border-top:1px solid var(--line);padding-top:12px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>连亏信号质量排查报告</h1>
+  <div class="meta">qmtIDE-deepseek · 消费 OPTIMIZATION_BACKLOG 2026-09-15「连亏 4 次」发现 · 生成于 2026-09-15 17:52 · 仅分析+提案，未改动任何生产配置</div>
+
+  <div class="verdict">
+    <b>结论：本次「连亏 4 次」不是信号质量退化，而是趋势骑行策略的正常止损噪声 + 一笔 2026-09-02 P0 补丁前的遗留弱入口径老仓止损。</b>
+    断路器工作正常（连亏到 3 已正确降仓、到 4 仍未达 5 故未暂停，<code>halt_recover_days</code> 从未触发）。<b>不建议放宽任何断路器阈值。</b>
+  </div>
+
+  <div class="kpis">
+    <div class="kpi"><div class="v">4</div><div class="l">当日最大连亏（09-08→09-15 累计）</div></div>
+    <div class="kpi"><div class="v">−6,892</div><div class="l">4 笔连亏总实现亏损（元）</div></div>
+    <div class="kpi"><div class="v">5.07</div><div class="l">3 笔隔夜亏损建仓信号均分（高=正常）</div></div>
+    <div class="kpi"><div class="v">未触发</div><div class="l">halt（需连亏≥5）；降仓已生效</div></div>
+  </div>
+
+  <h2>1 · 总盈亏分析（已实现盈亏全貌）</h2>
+  <div class="card">
+    <div class="kpis">
+      <div class="kpi"><div class="v">−6,892</div><div class="l">干净样本总已实现盈亏（4 笔）</div></div>
+      <div class="kpi"><div class="v">0%</div><div class="l">干净样本胜率（4 笔全止损）</div></div>
+      <div class="kpi"><div class="v">3,237,038</div><div class="l">当前未平持仓总成本（21 lot，待盯市）</div></div>
+      <div class="kpi"><div class="v">−25,901</div><div class="l">全样本总盈亏（含 08-25 脏样本，见下）</div></div>
+    </div>
+
+    <p><b>数据口径警告（重要）：</b><code>storage/qmt.db</code> 的「已实现盈亏」<b>当前不能作为绩效基准</b>。原因有二：</p>
+    <ul>
+      <li><b>脏样本主导：</b>全部 129 笔成交中 <b>125 笔是 2026-08-25 修复前脏样本</b>（658602 信号 / 8658 熔断，memory 已记不作收益基准），其 −25,901 盈亏与真实策略无关。</li>
+      <li><b>批次未走完：</b>剔除脏样本后仅剩 <b>4 笔</b>（09-02 建仓批次中 688120/688072/688082 止损 + 300394 T+0），而该批次另 <b>2 只仍持仓未平</b>（成本 3,237,038）。即已实现盈亏是「中途部分平仓」的片段，赢家（若有）尚未兑现。</li>
+    </ul>
+    <p>因此：本库<b>已实现盈亏不可直接解读为策略收益</b>。策略期望的权威参照仍是回测基线 <b>+339.9% / Sharpe 1.69</b>（全样本 + 7 折 walk-forward 7/7 正收益）。连亏 4 笔的 −6,892 属该批次正常尾部方差，<b>不构成收益退化证据</b>。</p>
+
+    <h3 style="margin:14px 0 6px">分口径聚合（round-trip PnL，加权均价复算）</h3>
+    <table>
+      <tr><th>口径</th><th>笔数</th><th>总盈亏</th><th>胜/负/平</th><th>胜率</th><th>盈亏比</th><th>均盈</th><th>均亏</th><th>每笔期望</th></tr>
+      <tr><td>全样本（含 08-25 脏）</td><td>129</td><td class="loss">−25,901</td><td>14/83/32</td><td>10.9%</td><td>0.01</td><td>26</td><td>−316</td><td>−201</td></tr>
+      <tr><td><b>干净样本（剔 08-25）</b></td><td>4</td><td class="loss">−6,892</td><td>0/4/0</td><td>0.0%</td><td>—</td><td>0</td><td>−1,723</td><td>−1,723</td></tr>
+      <tr><td>修复前（entry&lt;09-02）</td><td>1</td><td class="loss">−2,507</td><td>0/1/0</td><td>0.0%</td><td>—</td><td>0</td><td>−2,507</td><td>−2,507</td></tr>
+      <tr><td>修复后（entry≥09-02）</td><td>3</td><td class="loss">−4,385</td><td>0/3/0</td><td>0.0%</td><td>—</td><td>0</td><td>−1,462</td><td>−1,462</td></tr>
+      <tr><td>连亏 4 笔（688120/300394/688072/688082）</td><td>4</td><td class="loss">−6,892</td><td>0/4/0</td><td>0.0%</td><td>—</td><td>0</td><td>−1,723</td><td>−1,723</td></tr>
+    </table>
+    <p style="color:var(--sub)">注：干净样本 4 笔即连亏 4 笔，占干净样本总盈亏 100%——印证「当前已实现盈亏完全由这批止损构成」，与未平持仓共同决定本批次最终盈亏。</p>
+
+    <h3 style="margin:14px 0 6px">干净样本累计已实现盈亏曲线</h3>
+    <svg viewBox="0 0 680 200" width="100%" style="max-width:680px;background:#fbfdfe;border:1px solid var(--line);border-radius:8px">
+      <line x1="70" y1="100" x2="650" y2="100" stroke="#cbd5e1" stroke-width="1"/>
+      <text x="44" y="104" font-size="12" fill="#6b7280">0</text>
+      <text x="44" y="40" font-size="12" fill="#9aa5b1">−6.9k</text>
+      <line x1="70" y1="30" x2="650" y2="30" stroke="#eef2f5" stroke-dasharray="3 3"/>
+      <!-- 09-08 daily bar -2543 (scale: 6892 -> 70px) -->
+      <rect x="200" y="100" width="90" height="25.8" fill="#d64545" opacity="0.85"/>
+      <text x="200" y="94" font-size="12" fill="#d64545" font-weight="600">−2,543</text>
+      <text x="214" y="148" font-size="12" fill="#6b7280">09-08</text>
+      <!-- 09-15 daily bar -4349 -->
+      <rect x="440" y="100" width="90" height="44.2" fill="#d64545" opacity="0.85"/>
+      <text x="440" y="94" font-size="12" fill="#d64545" font-weight="600">−4,349</text>
+      <text x="454" y="166" font-size="12" fill="#6b7280">09-15</text>
+      <!-- cumulative polyline -->
+      <polyline points="70,100 245,125.8 485,170" fill="none" stroke="#0f9d8b" stroke-width="2.5"/>
+      <circle cx="245" cy="125.8" r="4" fill="#0f9d8b"/>
+      <circle cx="485" cy="170" r="4" fill="#0f9d8b"/>
+      <text x="252" y="120" font-size="12" fill="#0b7a6b">累计 −2,543</text>
+      <text x="492" y="166" font-size="12" fill="#0b7a6b">累计 −6,892</text>
+    </svg>
+
+    <h3 style="margin:14px 0 6px">给「总盈亏」的正确打开方式（SAFE 建议）</h3>
+    <ul>
+      <li><span class="tag t-safe">SAFE</span> <b>review_daily 接入「总盈亏 = 已实现 + 未平盯市」：</b>从 xtdata/tushare 取未平持仓最新价算未实现盈亏，合并为组合总盈亏（含当日/累计），并<b>默认剔除 08-25 脏样本日期</b>。否则单看已实现盈亏会系统性低估（赢家未平仓）。</li>
+      <li><span class="tag t-safe">SAFE</span> <b>脏样本隔离：</b>盘后统计应排除 <code>trade_date &lt; 2026-09-01</code> 或显式标记脏区间，避免历史脏数据污染收益/风控 KPI（已在 test_batch 注释中预警）。</li>
+    </ul>
+  </div>
+
+  <h2>2 · 连亏是怎么计数的</h2>
+  <div class="card">
+    <p>计数逻辑在 <code>risk/manager.py:on_fill</code>：一笔 <b>SELL 且 realized PnL &lt; 0</b> 时 <code>_consec_loss += 1</code>；赢则归零；<code>reset_daily()</code> <b>不清零</b>，故连亏可跨日累计。</p>
+    <ul>
+      <li><code>max_consecutive_losses = 3</code> → 触发<b>降仓</b>（position_scale 阶梯下调，不暂停）。</li>
+      <li><code>max_consecutive_losses_halt = 5</code> → 触发<b>暂停开仓</b>（halt）。</li>
+      <li><code>halt_recover_days = 1</code> → 暂停后冷却 1 日自动恢复（2026-08-30 补丁，真「断路器」）。</li>
+    </ul>
+    <p>即：连亏是「连续止损的笔数」，本身不区分隔夜持仓止损与同日 T+0 微亏。</p>
+  </div>
+
+  <h2>3 · 真实连亏序列还原（剔除 2026-08-25 脏样本）</h2>
+  <div class="card">
+    <p class="meta">说明：<code>storage/qmt.db</code> 中 2026-08-25 有 30 连亏，但属「修复前脏样本」（658602 信号 / 8658 熔断，memory 已记不作收益基准），本分析剔除。</p>
+    <p>真实达到 4 连亏的序列（按成交时间倒推，round-trip PnL 用加权均价复算）：</p>
+    <table>
+      <tr><th>#</th><th>退出日期</th><th>代码</th><th>实现盈亏</th><th>持仓天数</th><th>建仓信号分</th><th>建仓口径</th><th>性质</th></tr>
+      <tr>
+        <td>1</td><td>2026-09-08</td><td>688120.SH 华海清科</td>
+        <td class="loss">−2,507</td><td>7d</td><td>4.61</td>
+        <td><code>[no-daily] momentum+2.0</code></td>
+        <td><span class="tag t-legacy">修复前弱入口径</span><br>09-01 建，纯动量无日线确认</td>
+      </tr>
+      <tr>
+        <td>2</td><td>2026-09-08</td><td>300394.SZ 天孚通信</td>
+        <td class="loss">−36</td><td>0d</td><td>n/a</td>
+        <td>同日回转</td>
+        <td><span class="tag t-noise">T+0 噪声</span></td>
+      </tr>
+      <tr>
+        <td>3</td><td>2026-09-15</td><td>688072.SH 盛美上海</td>
+        <td class="loss">−3,593</td><td>13d</td><td>6.00</td>
+        <td><code>[bias=0.30 trend_up=False]</code> momentum+2.0; oversold+1.0; vwap+2.0</td>
+        <td><span class="tag t-post">修复后日线路径</span><br>09-02 建，bias 闸门(0.3≥0.2)通过</td>
+      </tr>
+      <tr>
+        <td>4</td><td>2026-09-15</td><td>688082.SH 盛科通信</td>
+        <td class="loss">−756</td><td>13d</td><td>4.60</td>
+        <td><code>[bias=0.30 trend_up=False]</code> trend+1.0; momentum+2.0; oversold+1.0</td>
+        <td><span class="tag t-post">修复后日线路径</span><br>09-02 建，bias 闸门通过</td>
+      </tr>
+    </table>
+    <p style="margin-top:10px">合计 <span class="loss">−6,892 元</span>。其中最大两笔（688120、688072）占 −6,100（<b>89%</b>）。</p>
+  </div>
+
+  <h2>4 · 信号质量评估</h2>
+  <div class="card">
+    <ul>
+      <li><b>3 笔隔夜亏损的建仓信号均分 = 5.07</b>（4.61 / 6.00 / 4.60），均 ≥ 买入阈值 4.0，且通过了 <code>bias≥0.2</code> 日线闸门。结论：这些是<b>合法动量/超卖入场</b>，并非低分劣信号——只是后续趋势破位被止损，是趋势策略（MDD≈−20%）的<b>正常成本</b>。</li>
+      <li><b>最大亏损 688120（−2,507，占 36%）是 2026-09-01 的 <code>[no-daily]</code> 纯动量建仓</b>——正是 2026-09-02 P0 补丁（<code>require_daily_data=True</code>）已封堵的弱入口径。它是一笔<b>修复前遗留老仓</b>在 09-08 止损出清，新单已不再出现该口径。</li>
+      <li><b>300394（−36）是同日 T+0 微亏</b>，对连亏计数器与隔夜风险是不同性质的噪声，不应与隔夜止损同权重计数（见建议 P4）。</li>
+      <li>回测基线 +339.9% / Sharpe 1.69 证实该策略正期望；连亏是样本内必然出现的尾部，<b>不代表信号退化</b>。</li>
+    </ul>
+  </div>
+
+  <h2>5 · 断路器行为评估</h2>
+  <div class="card">
+    <ul>
+      <li>连亏到 <b>3</b>（09-15 10:40 出 688072）→ <code>position_scale</code> 已下调（降仓保护生效）。</li>
+      <li>连亏到 <b>4</b> &lt; 5 → <b>未触发 halt</b>，<code>halt_recover_days</code> 冷却窗口<b>从未进入</b>。</li>
+      <li>即：系统正确「降仓而不误杀」，连亏只是 de-risk 信号，不是故障。原 backlog 标注「连亏熔断冷却 1 日应已恢复」的前提（熔断已触发）其实未成立——<b>本次连亏并未熔断</b>。</li>
+    </ul>
+  </div>
+
+  <h2>6 · 系统与参数优化建议</h2>
+
+  <h3 style="margin:6px 0 8px">系统级（SAFE · 可落地，不改交易行为/阈值）</h3>
+  <div class="card">
+    <ul>
+      <li><span class="tag t-safe">SAFE</span> <b>S1 成交补 exit_reason：</b>在 <code>fills</code> 表加 <code>exit_reason</code> 列，引擎 SELL 时写入「止损 / 趋势破位 / 轮动换仓 / 日线兜底 / T+0」。纯观测性，未来可自动区分「好信号被噪声止损」与「坏入口」。<br><span style="color:var(--sub)">涉及：storage/db.py（加列）+ engine/event_engine.py（SELL 写入）</span></li>
+      <li><span class="tag t-safe">SAFE</span> <b>S2 review_daily 新增「连亏退出建仓信号均分」KPI：</b>把本报告手动分析自动化。均分 ≥4 → 判定正常噪声（不升 P1）；均分 &lt;3 → 判定真实信号退化（升 P1 并附查入场闸门建议）。直接消除「误把正常连亏标 P1」的漏报。<br><span style="color:var(--sub)">涉及：strategy/review_daily.py</span></li>
+      <li><span class="tag t-safe">SAFE</span> <b>S3 复用诊断脚本：</b><code>scripts/diag_consec_loss.py</code> 已写好（复算 round-trip PnL + 连亏序列 + 建仓信号还原），可接入盘后自动化作为信号质量例行检查。</li>
+    </ul>
+  </div>
+
+  <h3 style="margin:6px 0 8px">参数级（FORBIDDEN · 待用户确认，本任务未改）</h3>
+  <div class="card">
+    <ul>
+      <li><span class="tag t-forb">FORBIDDEN</span> <b>P1 <code>halt_recover_days</code>：保持 1。</b>本次熔断从未触发（连亏仅到 4&lt;5），无放宽理由。</li>
+      <li><span class="tag t-forb">FORBIDDEN</span> <b>P2 <code>max_consecutive_losses</code>(3) / <code>max_consecutive_losses_halt</code>(5)：保持。</b>连亏到 3 已正确降仓、到 5 才暂停，设计合理；改动会削弱保护或过度降仓。</li>
+      <li><span class="tag t-forb">FORBIDDEN</span> <b>P3 <code>require_daily_data</code>：确认保持 True（已是）。</b>它已阻断 <code>[no-daily]</code> 弱入口径；本次最大亏损 688120 即修复前遗留，新单已不再发生，无需新增参数。</li>
+      <li><span class="tag t-forb">FORBIDDEN</span> <b>P4（可选，不推荐）T+0 微亏分桶：</b>将「同日回转盈亏」与「隔夜持仓盈亏」分桶计数，避免 −36 噪声推高连亏计数器。属风险逻辑改动（非纯阈值），需确认 + 回归测试。</li>
+    </ul>
+  </div>
+
+  <div class="foot">
+    数据来源：storage/qmt.db（fills / signals）· 计数逻辑 risk/manager.py:130-158 · 建仓闸门 strategy/trend_strategy.py:67-115 ·
+    生产铁律：regime_mode=off、max_drawdown_pct=−0.25、dd_recover_days=5、max_positions=5、exit_mode=trend+波动率目标、risk_per_trade=0.02、EXECUTION_MODE=paper、halt_recover_days=1（均未变动）。
+  </div>
+</div>
+</body>
+</html>
