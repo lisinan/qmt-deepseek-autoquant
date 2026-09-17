@@ -264,6 +264,11 @@ class EventEngine:
         # 建仓保护期（2026-09-14，叠加于 T+1）：首个可卖交易日开盘后 N 分钟内不退出，
         # 避免轮动换入候选被分钟级波动误伤。N<=0 关闭（settings.ENTRY_PROTECT_MINUTES）。
         self.entry_protect_minutes = int(ENTRY_PROTECT_MINUTES)
+        # 卖出拦截提示去重缓存（2026-09-17 降噪）：同一持仓同一拦截类型每日仅提示一次，
+        # 避免 T+1 / 建仓保护期拦截对单只持仓逐 tick 重复刷 notices.log（实测单日可达数千条）。
+        # key=(code, open_date, type) -> 已提示日期；跨日自动清理。移除本缓存即恢复逐次全量提示。
+        self._sell_block_notice_cache: dict = {}
+        self._sell_block_notice_day: str = ""
         self.analyst = analyst or AIAnalyst()
         self.sector_scorer = SectorScorer() if enable_sector_scorer else None
         self.dynamic_universe = DynamicUniverse() if enable_dynamic_universe else None
@@ -1773,6 +1778,22 @@ class EventEngine:
             return affordable
         return qty
 
+    def _should_emit_block_notice(self, pos: Position, block_type: str) -> bool:
+        """卖出拦截提示去重：同一持仓同一拦截类型当日只发一次 notices 告警。
+
+        返回 True 表示本次应发出（首次或跨日首现），False 表示当日已提示过应跳过。
+        最小可逆：删除本方法与两处调用即可恢复逐 tick 全量提示，不影响任何交易拦截逻辑。
+        """
+        today = date.today().strftime("%Y-%m-%d")
+        if self._sell_block_notice_day != today:
+            self._sell_block_notice_cache.clear()
+            self._sell_block_notice_day = today
+        key = f"{pos.code}|{pos.open_date:%Y-%m-%d %H:%M}|{block_type}"
+        if self._sell_block_notice_cache.get(key) == today:
+            return False
+        self._sell_block_notice_cache[key] = today
+        return True
+
     def _handle_sell(self, sig: Signal, pos: Position,
                      now: Optional[datetime] = None, force: bool = False) -> None:
         # ---- A 股 T+1 约束（2026-09-14 修复）----
@@ -1783,10 +1804,11 @@ class EventEngine:
             logger.warning(
                 "[T+1] 拦截当日卖出 %s：买入于 %s（T+1 当日不可卖，锁定至下一交易日）",
                 pos.code, pos.open_date)
-            system_notice(
-                "WARNING", "交易",
-                f"[T+1 拦截] {pos.code} 于 {pos.open_date:%Y-%m-%d %H:%M} 买入，"
-                f"当日不可卖出（锁定至下一交易日）；跳过理由={getattr(sig, 'reason', '')}")
+            if self._should_emit_block_notice(pos, "T1"):
+                system_notice(
+                    "WARNING", "交易",
+                    f"[T+1 拦截] {pos.code} 于 {pos.open_date:%Y-%m-%d %H:%M} 买入，"
+                    f"当日不可卖出（锁定至下一交易日）；跳过理由={getattr(sig, 'reason', '')}")
             return
         # ---- 建仓保护期（2026-09-14，叠加于 T+1）----
         # 首个可卖交易日开盘后 ENTRY_PROTECT_MINUTES 分钟内不退出，避免轮动换入候选
@@ -1797,11 +1819,12 @@ class EventEngine:
             logger.warning(
                 "[保护期] 拦截卖出 %s：买入于 %s，首个可卖日早盘保护窗内（%d 分钟）",
                 pos.code, pos.open_date, self.entry_protect_minutes)
-            system_notice(
-                "WARNING", "交易",
-                f"[保护期拦截] {pos.code} 于 {pos.open_date:%Y-%m-%d %H:%M} 买入，"
-                f"首个可卖日开盘后 {self.entry_protect_minutes} 分钟内不退出"
-                f"（防分钟级误伤）；跳过理由={getattr(sig, 'reason', '')}")
+            if self._should_emit_block_notice(pos, "PROT"):
+                system_notice(
+                    "WARNING", "交易",
+                    f"[保护期拦截] {pos.code} 于 {pos.open_date:%Y-%m-%d %H:%M} 买入，"
+                    f"首个可卖日开盘后 {self.entry_protect_minutes} 分钟内不退出"
+                    f"（防分钟级误伤）；跳过理由={getattr(sig, 'reason', '')}")
             return
         qty = pos.quantity
         price = sig.price or pos.last_price

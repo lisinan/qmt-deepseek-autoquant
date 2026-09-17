@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta, time as dtime
 from types import SimpleNamespace
+from functools import partial
 
 from engine.event_engine import EventEngine, is_t1_locked, is_in_entry_protection
 from core.market_calendar import is_trading_day
@@ -47,6 +48,12 @@ def _make_sell_engine(t1: bool = True) -> SimpleNamespace:
     eng._cash = 1_000_000.0
     eng._daily_trade_count = 0
     eng._total_asset = lambda: 1_000_000.0
+    # 卖出拦截提示去重缓存（2026-09-17 降噪）：与真实引擎 __init__ 对齐
+    eng._sell_block_notice_cache = {}
+    eng._sell_block_notice_day = ""
+    # 绑定真实去重辅助方法（普通实例方法，用 partial 预绑定 self=eng）
+    eng._should_emit_block_notice = partial(
+        EventEngine._should_emit_block_notice, eng)
     # paper 分支副作用：on_fill / save_order / save_fill 全部置为无操作
     eng.risk = SimpleNamespace(on_fill=lambda *a, **k: None)
     eng.storage = SimpleNamespace(
@@ -203,3 +210,46 @@ def test_handle_sell_protection_disabled_when_zero():
 if __name__ == "__main__":
     import pytest
     raise SystemExit(pytest.main([__file__, "-q"]))
+
+
+# ============================================================
+# 卖出拦截提示去重降噪（2026-09-17 新增回归）
+# ============================================================
+# 背景：_handle_sell 对每个被 T+1 / 建仓保护期锁定的持仓，每 tick 重复向
+# notices.log 写一条逐字相同的 WARNING 告警（实测单日可达数千条），淹没真告警。
+# 去重逻辑：同一持仓同一拦截类型当日只提示一次，跨日自动重发。本组测试锁定该行为。
+from unittest.mock import patch as _patch
+
+
+def test_block_notice_deduped_within_same_day():
+    # 同一引擎实例、同一被锁持仓、同日连续多次卖出尝试：notices 告警只发 1 次（非 N 次）。
+    eng = _make_sell_engine(t1=True)
+    pos = Position(code="300394.SZ", name="天孚通信", quantity=300,
+                   avg_cost=271.12, last_price=271.0,
+                   open_date=datetime.now())  # 当日买入，T+1 锁定
+    sig = Signal(ts=datetime.now(), code="300394.SZ", side="SELL",
+                 price=271.0, reason="趋势破位离场")
+    with _patch("engine.event_engine.system_notice") as spy:
+        for _ in range(5):  # 模拟逐 tick 评估同只被锁持仓
+            EventEngine._handle_sell(eng, sig, pos)
+        # 拦截本身不变：仓位始终未卖出
+        assert pos.quantity == 300
+        # 去重核心断言：告警只发 1 次，而非 5 次
+        assert spy.call_count == 1, f"拦截告警应去重为 1 次，实际 {spy.call_count}"
+        args = spy.call_args
+        assert args.args[0] == "WARNING"
+        assert "T+1 拦截" in args.args[2]
+
+
+def test_should_emit_block_notice_dedup_and_cross_day():
+    # 直测去重辅助：同日同类型跳过、不同类型仍发、跨日缓存清空并重发。
+    eng = _make_sell_engine()
+    today = date.today().strftime("%Y-%m-%d")
+    pos = Position(code="300394.SZ", open_date=datetime(2026, 9, 17, 10, 0), quantity=1)
+    eng._sell_block_notice_day = today
+    eng._sell_block_notice_cache = {f"300394.SZ|2026-09-17 10:00|T1": today}
+    assert eng._should_emit_block_notice(pos, "T1") is False   # 同日同类型去重
+    assert eng._should_emit_block_notice(pos, "PROT") is True  # 不同类型仍发
+    eng._sell_block_notice_day = "2000-01-01"                  # 跨日
+    assert eng._should_emit_block_notice(pos, "T1") is True    # 缓存清空并重发
+

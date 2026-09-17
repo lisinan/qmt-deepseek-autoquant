@@ -45,3 +45,9 @@
 - [P1/稳定/err] 当日 1 条 ERROR/异常 ｜ 证据：系统提示中 ERROR/Traceback 共 1 条 ｜ 建议：查 logs/quant_system.log 与当日 traceback，优先修根因（DLL/网络/数据可得性），避免主循环异常累积 ｜ 定位：engine/event_engine.py 主循环异常隔离；core/notices.py
 
 > **【修正 2026-09-16 盘后】复盘计算逻辑 bug 已修复（strategy/review_daily.py · _analyze_risk）**：上方 `halt_count=2`、`consec_loss=5×55`、安全 18 为**误判**。根因——同一熔断（09:15:38 因连亏累计达 consec_loss=5 触发，引擎持续 halted 至收盘）被 snapshot 上升沿与 notice 双源各记一次（=2），且 54 个持续 halted 快照被逐个累加进 reasons_counter（=55）。修正后正确值：**halt_count=1、halt_reasons={consec_loss=5:1}、安全 63、综合 74**；当日真实熔断仅 1 次，属可冷却恢复断路器（连亏/日亏冷却 1 日），次日应已 resume。另：EOD 净持仓 9 因「数据一致性告警」（engine_state 9 只 vs 当日末权益快照全现金 0 只，旧 paper 会话/测试桩污染）不可信，已从 P0 降级为 P2 观察，不计入真实超限。回归 tests/test_review_daily.py 新增 2 例（全量 187/0 通过）。
+
+> **【重跑更新 2026-09-17 15:36】**：本次 OBSERVE 自动化重跑（目标交易日仍为 2026-09-16，09-17 无新增成交）产出最新修正评分与发现。当前四维评分（稳定 35 / 安全 63 / 准确 55 / 高效 75 ｜ 综合 57）。较 09-16 首次记录的关键变化：稳定 60→35（当日 notices 现检出 12 条 ERROR/Traceback，主循环异常隔离需查根因）、准确 55（账户跨日真实亏损已纳入维度，首次记录时仍为 100 属口径未真实化）、安全 63 与 halt_count=1 维持（可冷却恢复断路器，连亏/日亏冷却 1 日，次日应已 resume）。
+>
+> - [P0/安全/err] 触发 1 次熔断 ｜ 证据：原因分布 consec_loss=5×1；最大连亏 9 ｜ 建议：确认冷却窗口（连亏/日亏 1 日、回撤 5 日）后已自动 resume；若为误触复查阈值 ｜ 定位：core/risk_manager.py；settings max_drawdown_pct/dd_recover_days
+> - [P0/准确/err] 账户真实当日亏损 -16.40%（跨日口径） ｜ 证据：961,286→803,680，亏 -157,605.82；复盘日内口径仅 -0.25%（漏隔夜重估） ｜ 建议：趋势策略下跌市连续止损/隔夜重估，属收益特征非缺陷；优先查执行滑点与数据源，勿改策略参数 ｜ 定位：equity_snapshots；core/risk_manager.py
+> - [P1/稳定/err] 当日 12 条 ERROR/异常 ｜ 证据：系统提示 ERROR/Traceback 共 12 条 ｜ 建议：查 logs/quant_system.log 与当日 traceback，优先修根因（DLL/网络/数据可得性） ｜ 定位：engine/event_engine.py 主循环异常隔离；core/notices.py
