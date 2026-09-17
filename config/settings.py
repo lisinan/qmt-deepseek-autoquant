@@ -253,7 +253,16 @@ STRATEGY_PARAMS = {
     # 启用后，候选池只保留 60 日动量前 N 名（且动量必须为正）。
     "momentum_rank": True,
     "momentum_lookback": 60,        # 动量回看天数
-    "momentum_top_n": 6,            # 只交易动量前 N 名
+    # 【2026-09-17 EVOLVE 自动进化落地】momentum_top_n: 6 → 3
+    #   证据（strategy/_evolve_wf.py，25 只 AI 宇宙 × 713 根日线 2022-12→2026-08，
+    #        4 套互不重叠 walk-forward 折划分 60x9 / 75x7 / 90x6 / 120x4）：
+    #     IS  ret +265.63%→+268.59%, Sharpe 1.27→1.35, MDD -34.29%→-24.00%
+    #     OOS 均值 Sharpe 增量：+0.343 / +0.094 / +0.283 / +0.144（均值 +0.216）
+    #     OOS 均值 MDD -19.74%→-13.86%；最差单折 -8.2%；IS/OOS Sharpe 差 13.1%
+    #   机理：本宇宙 alpha 集中于最强动量头部。前 6 名中第 4~6 名是「动量尾巴」
+    #     ——收益贡献低却承担同等尾部风险；只取前 3 名后收益不降反升、MDD 显著缩小。
+    #   可逆：改回 6 即恢复旧行为，零代码改动。
+    "momentum_top_n": 3,            # 只交易动量前 N 名
     "down_day_exit_pct": -99.0,     # 单日暴跌清仓阈值（-99 表示关闭）
 
     # ---- 市场环境过滤（regime filter）----
