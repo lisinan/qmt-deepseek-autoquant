@@ -11,6 +11,11 @@
 用法：
     python strategy/_evolve_wf.py --mode grid --param reentry_cooldown --values 3,5,8,10,15,20
     python strategy/_evolve_wf.py --mode compare
+
+【2026-09-18 易踩坑】``--values`` 传**负值**列表时必须用等号连写，不能用空格：
+    python strategy/_evolve_wf.py --mode grid --param hard_stop_pct --values=-0.12,-0.15,-0.18
+  否则 argparse 会把 "-0.12,-0.15,..." 当成另一个选项名，报
+  "argument --values: expected one argument" 而让人误以为回测数据出错。
 """
 from __future__ import annotations
 
@@ -60,13 +65,20 @@ def slice_by_index(data: dict, lo: int, hi: int) -> dict:
 
 
 def base_cfg() -> BacktestConfig:
-    """当前生产配置（与已验证基线同口径）。"""
+    """当前生产配置（与已验证基线同口径）。
+
+    【2026-09-18 口径修正】原 base_cfg 停留在 momentum_top_n=6 / risk_per_trade=0.02，
+    与 config/settings.py 的当前生产值（top_n=3 / risk_per_trade=0.012）不一致，
+    会导致「增量 dSh」相对错误基线计算——上一轮 C1_topn3 已落盘，若不修基线，
+    本轮 top_n=3 的收益会被重复计入增量。
+    现按 P0 = 真实生产配置对齐，后续所有增量一律相对此基线。
+    """
     return BacktestConfig(
         use_gate=True, cost_pct=0.0015, vol_sizing=True,
         exit_mode="trend", trend_exit_ma=60, hard_stop_pct=-0.18,
         trend_max_hold_days=120,
-        momentum_rank=True, momentum_top_n=6, momentum_lookback=60,
-        risk_per_trade=0.02, fixed_amount=300000.0,
+        momentum_rank=True, momentum_top_n=3, momentum_lookback=60,
+        risk_per_trade=0.012, fixed_amount=300000.0,
         down_day_exit_pct=-9.0, max_positions=5,
         buy_score_threshold=4.0, min_signals=3,
         atr_stop_mult=2.0, tp_atr_mult=4.0,
