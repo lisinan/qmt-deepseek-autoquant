@@ -268,9 +268,15 @@ def test_single_mode_evaluates_sectors():
     }
     qc.qmt_client.get_ticks = lambda codes: fake
     prev_ts = _patch_tushare()
+    # 观察篮（manual_entry_codes）为生产配置，默认会绕过闸门建仓；
+    # 本用例只验证「单模式下自动生成推荐池」，需清空清单隔离，用完恢复。
+    from config import settings as _st
+    _saved_codes = _st.STRATEGY_PARAMS.get("manual_entry_codes")
+    _st.STRATEGY_PARAMS["manual_entry_codes"] = []
     try:
         eng._run_once(["300308.SZ", "300502.SZ"])
     finally:
+        _st.STRATEGY_PARAMS["manual_entry_codes"] = _saved_codes
         qc.qmt_client.get_ticks = orig
         _restore_tushare(prev_ts)
     recs = eng.latest_recommendations()

@@ -269,6 +269,16 @@ class EventEngine:
         # key=(code, open_date, type) -> 已提示日期；跨日自动清理。移除本缓存即恢复逐次全量提示。
         self._sell_block_notice_cache: dict = {}
         self._sell_block_notice_day: str = ""
+        # ---- 观察篮（manual entry）状态【2026-09-18】----
+        # _manual_positions：当前由观察篮建仓、且仍在持有的代码集合。
+        #   每轮用「实际持仓」做交集修剪，故被卖掉（硬止损 / 日内强平 / 手工卖出）
+        #   后自动移出，无需在 _handle_sell 各处埋点。
+        # _manual_sold_today：当日被卖出的观察篮代码 —— 当日不再自动补回，
+        #   否则「日内 -6% 强平 → 观察篮立即补仓」会形成买入/平仓空转。
+        #   跨自然日自动清空。
+        self._manual_positions: set = set()
+        self._manual_sold_today: set = set()
+        self._manual_sold_date: str = ""
         self.analyst = analyst or AIAnalyst()
         self.sector_scorer = SectorScorer() if enable_sector_scorer else None
         self.dynamic_universe = DynamicUniverse() if enable_dynamic_universe else None
@@ -1282,7 +1292,7 @@ class EventEngine:
                 # 盲区）。无 tick 且非 regime 强平时，改用日线 close 作价格代理重算
                 # on_exit，使退出条件仍周期性触发；regime 强平维持原语义（仅在有 tick
                 # 时按实时价提交），故无 tick + regime_block 时跳过。
-                if not regime_block:
+                if not regime_block and not self._is_manual_exempt(code):
                     self._daily_fallback_exit(code, pos)
                 continue
             if regime_block:
@@ -1290,6 +1300,20 @@ class EventEngine:
                     ts=datetime.now(), code=code, name=pos.name,
                     side="SELL", price=ticks[code].price,
                     reason="regime_force_exit"), pos)
+                continue
+            if self._is_manual_exempt(code):
+                # 观察篮仓位：只保留 -18% 硬止损（灾难保护），豁免趋势破位/超时/
+                # 单日暴跌退出。原因：这些标的多在 MA60 下方，若照常跑 on_exit，
+                # 建仓后下一轮就会被「趋势破位离场」卖出 → 买入/卖出空转。
+                px = float(getattr(ticks[code], "price", 0) or 0)
+                cost = float(getattr(pos, "avg_cost", 0) or 0)
+                hard = abs(float(STRATEGY_PARAMS.get("hard_stop_pct", -0.18)))
+                if px > 0 and cost > 0 and (px - cost) / cost <= -hard:
+                    self._handle_sell(Signal(
+                        ts=datetime.now(), code=code, name=pos.name,
+                        side="SELL", price=px,
+                        reason=f"观察篮硬止损 {(px - cost) / cost * 100:.2f}%"),
+                        pos)
                 continue
             bars = list(self._bars.get(code, []))
             if len(bars) < 5:
@@ -1408,6 +1432,69 @@ class EventEngine:
             logger.debug("regime 计算失败，保守放行: %s", e)
         return True
 
+    def _is_manual_exempt(self, code: str) -> bool:
+        """该持仓是否属于「观察篮且豁免趋势类退出」。
+
+        只有同时满足两点才豁免：① 确实由观察篮建仓且仍持有；
+        ② STRATEGY_PARAMS.manual_entry_exit_exempt 为 True（可随时关回）。
+        关闭豁免或清空观察篮清单，退出逻辑即完全回到已验证的原行为。
+        """
+        return (code in self._manual_positions
+                and bool(STRATEGY_PARAMS.get("manual_entry_exit_exempt", True)))
+
+    def _manual_entry_step(self, ticks: Dict[str, Tick],
+                           current_prices: Dict[str, float]) -> None:
+        """观察篮建仓【2026-09-18】：绕过入场闸门买入 STRATEGY_PARAMS.manual_entry_codes。
+
+        为什么需要它：2026-09-16 强平后宇宙内全部 trend_up=False，日线闸门整体关闭，
+        paper 账户连续两日 100% 现金、零成交 —— 无持仓可评估，自进化闭环失去度量对象。
+        用户据此明确要求「买入 LLM 排序前五，有持仓才能更好评估」（明确为 paper 单）。
+
+        绕过什么：动量闸门（momentum_top_n）/ 日线闸门（trend_up or bias）/ 评分阈值。
+        **不绕过什么**：_handle_buy 全程照旧 —— 风控熔断、日内次数上限、现金夹紧、
+        max_positions、max_position_amount 均生效，只放行「信号闸门」而非「资金闸门」。
+
+        清单每次热读 STRATEGY_PARAMS，改清单无需重启；置空列表即完全恢复策略原行为。
+        """
+        codes = STRATEGY_PARAMS.get("manual_entry_codes") or []
+        if not codes:
+            return
+
+        # 跨日清空「当日已卖」集合
+        today = datetime.now().strftime("%Y-%m-%d")
+        if self._manual_sold_date != today:
+            self._manual_sold_date = today
+            self._manual_sold_today = set()
+
+        held = {c for c, p in self._positions.items() if p.quantity > 0}
+        # 上一轮在观察篮里、现已不在持仓中 → 视为已被卖出，当日不再自动补回
+        for c in (self._manual_positions - held):
+            self._manual_sold_today.add(c)
+        self._manual_positions &= held
+
+        for code in codes:
+            if code in held or code in self._manual_sold_today:
+                continue
+            tick = ticks.get(code)
+            if tick is None:
+                continue
+            price = float(getattr(tick, "price", 0) or 0)
+            if price <= 0:
+                continue
+            sig = Signal(ts=datetime.now(), code=code,
+                         name=get_stock_name(code), side="BUY",
+                         score=0.0, price=price,
+                         reason="manual_entry(观察篮·绕过信号闸门)")
+            self._handle_buy(sig, tick, current_prices)
+            if code in {c for c, p in self._positions.items() if p.quantity > 0}:
+                self._manual_positions.add(code)
+                held.add(code)
+                logger.info("观察篮建仓成功 %s @ %.3f", code, price)
+                system_notice(
+                    "INFO", "交易",
+                    f"观察篮建仓 {code} {get_stock_name(code)} @{price:.3f}"
+                    f"（paper，绕过信号闸门，风控/现金夹紧照旧）")
+
     def _run_single_step(self, ticks: Dict[str, Tick]) -> None:
         """单标的模式的入场决策（【2026-09-02 #E】已切换为日线路径）。
 
@@ -1426,6 +1513,8 @@ class EventEngine:
 
         held_codes = {c for c, p in self._positions.items() if p.quantity > 0}
         current_prices = {c: t.price for c, t in ticks.items()}
+        # 观察篮：先于信号闸门建仓（独立于动量/日线闸门与评分阈值）
+        self._manual_entry_step(ticks, current_prices)
         # 候选 = 静态 + 动态
         candidate_codes = set(STOCK_CODES)
         if self.dynamic_universe is not None:

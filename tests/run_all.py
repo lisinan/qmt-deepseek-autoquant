@@ -60,7 +60,8 @@ def _collect_tests():
             "tests.test_batch_e_daily_decision",
             "tests.test_daily_context_consistency",
             "tests.test_broker_reconnect",
-            "tests.test_daily_fallback_exit"]
+            "tests.test_daily_fallback_exit",
+            "tests.test_manual_entry"]
     tests = []
     import_errors = []
     for m in mods:

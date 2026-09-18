@@ -170,22 +170,30 @@ def test_entry_decision_throttled_in_single_mode():
         name = "X"
     ticks = {"300308.SZ": _T()}
 
-    # 第一次：触发（节流初值 0）
-    eng._last_entry_decision_ts = 0.0
-    eng._run_single_step(ticks)
-    n1 = call_count[0]
-    assert n1 >= 1, "第一次应至少调一次"
+    # 观察篮（manual_entry_codes）是生产配置，默认会绕过闸门建仓；
+    # 本用例只验证「入场决策节流」，需先清空清单隔离该行为，用完恢复。
+    from config import settings as _st
+    _saved = _st.STRATEGY_PARAMS.get("manual_entry_codes")
+    _st.STRATEGY_PARAMS["manual_entry_codes"] = []
+    try:
+        # 第一次：触发（节流初值 0）
+        eng._last_entry_decision_ts = 0.0
+        eng._run_single_step(ticks)
+        n1 = call_count[0]
+        assert n1 >= 1, "第一次应至少调一次"
 
-    # 立即再调（同一节流窗口内）：不应再调
-    eng._run_single_step(ticks)
-    n2 = call_count[0]
-    assert n2 == n1, f"节流窗口内重复调用应被拦住，count {n1} → {n2}"
+        # 立即再调（同一节流窗口内）：不应再调
+        eng._run_single_step(ticks)
+        n2 = call_count[0]
+        assert n2 == n1, f"节流窗口内重复调用应被拦住，count {n1} → {n2}"
 
-    # 等待过节流窗口后再调
-    eng._last_entry_decision_ts -= EE.EventEngine.ENTRY_DECISION_INTERVAL_SEC + 1
-    eng._run_single_step(ticks)
-    n3 = call_count[0]
-    assert n3 > n2, f"节流窗口过后应允许再调，count {n2} → {n3}"
+        # 等待过节流窗口后再调
+        eng._last_entry_decision_ts -= EE.EventEngine.ENTRY_DECISION_INTERVAL_SEC + 1
+        eng._run_single_step(ticks)
+        n3 = call_count[0]
+        assert n3 > n2, f"节流窗口过后应允许再调，count {n2} → {n3}"
+    finally:
+        _st.STRATEGY_PARAMS["manual_entry_codes"] = _saved
 
 
 # =========== ④ DailyFeatures 必须有与 backtest 同口径的 score
