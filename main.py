@@ -301,6 +301,40 @@ def _pid_alive(pid: int) -> bool:
         return False
 
 
+def _pid_is_python_instance(pid: int) -> bool:
+    """校验 pid 对应的进程是否为本项目的 python 引擎进程。
+
+    单实例锁原始实现只查 pid 存活、不校验进程身份：旧 web 异常退出留下
+    残留 engine.pid，而该 pid 被一个长期存活的**无关进程**（如 AMD 驱动
+    amdow.exe）复用时，会被误判成「已有实例」从而永久拒绝新启动
+    （2026-09-19 实测：残留 pid=14000 被 amdow.exe 复用，重启 web 即打不开）。
+    用 QueryFullProcessImageName 取 exe 路径，非 python 进程直接视为锁失效放行。
+    """
+    if os.name != "nt":
+        return True  # 非 Windows 不拦截（原逻辑由 _pid_alive 的 os.kill 判定）
+    PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+    k32 = ctypes.windll.kernel32
+    k32.OpenProcess.argtypes = [ctypes.c_ulong, ctypes.c_bool, ctypes.c_ulong]
+    k32.OpenProcess.restype = ctypes.c_void_p
+    k32.QueryFullProcessImageNameW.argtypes = [
+        ctypes.c_void_p, ctypes.c_uint, ctypes.c_wchar_p,
+        ctypes.POINTER(ctypes.c_ulong),
+    ]
+    k32.QueryFullProcessImageNameW.restype = ctypes.c_bool
+    k32.CloseHandle.argtypes = [ctypes.c_void_p]
+    h = k32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    if not h:
+        return False
+    try:
+        buf = ctypes.create_unicode_buffer(1024)
+        size = ctypes.c_ulong(1024)
+        if not k32.QueryFullProcessImageNameW(h, 0, buf, ctypes.byref(size)):
+            return False
+        return "python" in buf.value.lower()
+    finally:
+        k32.CloseHandle(h)
+
+
 def _acquire_singleton(force: bool = False) -> bool:
     """单实例互斥。
 
@@ -313,7 +347,10 @@ def _acquire_singleton(force: bool = False) -> bool:
     try:
         if PID_FILE.exists():
             old = int((PID_FILE.read_text(encoding="utf-8").strip() or "0"))
-            if old and old != os.getpid() and _pid_alive(old):
+            # 仅当「存活 且 确为 python 引擎进程」才视为真实例；pid 被无关进程
+            # （amdow.exe 等）复用时视作锁失效放行，避免残留 pid 永久拒绝新启动。
+            if old and old != os.getpid() and _pid_alive(old) \
+                    and _pid_is_python_instance(old):
                 if not force:
                     print(f"[singleton] 已有引擎在运行 (pid={old})。"
                           f"如需强制启动加 --force；停止请用 python main.py --stop",

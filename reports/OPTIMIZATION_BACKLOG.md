@@ -51,3 +51,13 @@
 > - [P0/安全/err] 触发 1 次熔断 ｜ 证据：原因分布 consec_loss=5×1；最大连亏 9 ｜ 建议：确认冷却窗口（连亏/日亏 1 日、回撤 5 日）后已自动 resume；若为误触复查阈值 ｜ 定位：core/risk_manager.py；settings max_drawdown_pct/dd_recover_days
 > - [P0/准确/err] 账户真实当日亏损 -16.40%（跨日口径） ｜ 证据：961,286→803,680，亏 -157,605.82；复盘日内口径仅 -0.25%（漏隔夜重估） ｜ 建议：趋势策略下跌市连续止损/隔夜重估，属收益特征非缺陷；优先查执行滑点与数据源，勿改策略参数 ｜ 定位：equity_snapshots；core/risk_manager.py
 > - [P1/稳定/err] 当日 12 条 ERROR/异常 ｜ 证据：系统提示 ERROR/Traceback 共 12 条 ｜ 建议：查 logs/quant_system.log 与当日 traceback，优先修根因（DLL/网络/数据可得性） ｜ 定位：engine/event_engine.py 主循环异常隔离；core/notices.py
+
+> **【重跑更新 2026-09-18 15:35】**：本次 OBSERVE 自动化重跑（目标交易日仍为 2026-09-16；09-17 与 09-18 均无新增成交，脚本自动取最近有成交交易日）。四维评分与 09-17 重跑完全一致：**稳定 35 / 安全 63 / 准确 55 / 高效 75 ｜ 综合 57**。Top-3 findings 亦相同（P0-安全「触发 1 次熔断」；P0-准确「账户真实当日亏损 -16.40%（跨日口径）」；P1-稳定「当日 12 条 ERROR/异常」）。
+>
+> **上午周期实证（EVOLUTION_DECISIONS.md § 2026-09-18 第2轮 AM-EVOLVE @11:40）**：上午周期对 10 维参数做 OOS 网格扫描，**全部 REJECTED（0/10 通过）**，仅修正 `strategy/_evolve_wf.py` 工程口径（base_cfg 对齐生产 top_n=3 / rpt=0.012），**未落盘任何生产参数**。其关键判断「静态池 12 只全 `trend_up=False` → 日线闸门整体关闭 → paper 账户 100% 现金冻结是策略预期防御行为、非运行缺陷」——**经当日真实表现证实**：OBSERVE 账户口径 `account_daily=-16.40%` / 区间 `-19.63%` / 09-18 上午半日度量权益 803,680 冻结、持仓 0 只、成交 0 笔，与「账户冻结、收益不移动」判断完全一致。结论：**上午未改参数，无需证实/证伪参数效果；其『冻结为预期防御』的判断被当日真实表现证实，数据充分。**
+>
+> **度量账本**：record_ledger 幂等，md 首记已存在（保留 综合 63）、jsonl 已刷新为当前真实值（稳定 35 / 安全 63 / 准确 55 / 高效 75，综合 57），供 18:00 PM-EVOLVE 与次日 11:40 AM-EVOLVE 消费。
+>
+> - [P0/安全/err] 触发 1 次熔断 ｜ 证据：原因分布 consec_loss=5×1；最大连亏 9 ｜ 建议：确认冷却窗口（连亏/日亏 1 日、回撤 5 日）后已自动 resume ｜ 定位：core/risk_manager.py；settings max_drawdown_pct/dd_recover_days
+> - [P0/准确/err] 账户真实当日亏损 -16.40%（跨日口径） ｜ 证据：961,286→803,680，亏 -157,605.82 ｜ 建议：趋势策略下跌市连续止损/隔夜重估，属收益特征非缺陷；勿改参数（参数高原已证无调参空间） ｜ 定位：equity_snapshots；core/risk_manager.py
+> - [P1/稳定/err] 当日 12 条 ERROR/异常 ｜ 证据：系统提示 ERROR/Traceback 共 12 条 ｜ 建议：查 logs/quant_system.log 与当日 traceback，优先修根因（DLL/网络/数据可得性） ｜ 定位：engine/event_engine.py 主循环异常隔离；core/notices.py

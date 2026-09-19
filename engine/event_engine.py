@@ -229,6 +229,20 @@ class EventEngine:
         # 市场环境过滤（regime filter）——回测验证唯一稳健的结构性改进。
         # 解决原策略"永远满仓"的暴露问题：市场转弱时不再新开仓并强制清仓。
         self.regime_mode = STRATEGY_PARAMS.get("regime_mode", "off")
+        # 北向资金协同闸门（全新正交轴，2026-09-19 落盘）：引擎启动时预热北向序列
+        self.northbound_mode = STRATEGY_PARAMS.get("northbound_mode", "off")
+        self.nb_lookback = int(STRATEGY_PARAMS.get("nb_lookback", 20))
+        self.nb_series = {}
+        self.nb_dates = []
+        if self.northbound_mode != "off":
+            try:
+                from data.northbound_cache import preload_northbound
+                self.nb_series = preload_northbound()
+                self.nb_dates = sorted(self.nb_series.keys())
+                logger.info("北向序列已加载: %d 日", len(self.nb_series))
+            except Exception as e:
+                logger.warning("北向数据加载失败，北向闸门失效(降级为无北向): %s", e)
+                self.nb_series = {}
         self.regime_index = STRATEGY_PARAMS.get(
             "regime_index", MARKET_INDEX_CODE)
         self.regime_ma = int(STRATEGY_PARAMS.get("regime_ma", 60))
@@ -1067,6 +1081,7 @@ class EventEngine:
                 "ok": self._regime_ok(),
                 "force_exit": self.regime_force_exit,
             },
+            "northbound": self._nb_state(),
             "cash": round(self._cash, 2),
             "positions": {
                 code: {
@@ -1411,6 +1426,36 @@ class EventEngine:
             sorted(candidate_codes), top_n, lookback))
         return top & candidate_codes
 
+    def _nb_state(self) -> dict:
+        """北向资金轴状态（只读）：闸门决策与 Web 展示共用同一真相源。
+
+        与 ``_regime_ok`` 内的北向分支等价：滚动 ``nb_lookback`` 日累计净买入
+        < 0 视为「外资系统性撤离」，gate 模式下不放行新开仓。
+        """
+        mode = self.northbound_mode
+        lookback = self.nb_lookback
+        out = {
+            "mode": mode,
+            "lookback": lookback,
+            "loaded": bool(self.nb_series),
+            "days": len(self.nb_series),
+            "end_date": self.nb_dates[-1] if self.nb_dates else None,
+            "rolling_sum": None,
+            "latest": None,
+            "blocked": False,
+        }
+        if not self.nb_series:
+            return out
+        _today = datetime.now().strftime("%Y%m%d")
+        keys = [d for d in self.nb_dates if d <= _today]
+        win = keys[-lookback:] if lookback > 0 else []
+        if win:
+            out["rolling_sum"] = round(
+                sum(self.nb_series.get(d, 0.0) for d in win), 2)
+            out["latest"] = round(self.nb_series.get(win[-1], 0.0), 2)
+            out["blocked"] = bool(mode == "gate" and out["rolling_sum"] < 0)
+        return out
+
     def _regime_ok(self) -> bool:
         """市场环境是否允许交易（与回测 regime_ok 一致）。
 
@@ -1419,6 +1464,11 @@ class EventEngine:
         - "breadth"：>= thresh 比例个股站上各自 MA(regime_ma) 才放行
         无日线数据时保守放行（避免 warmup 冻结）。
         """
+        # 北向协同闸门（全新正交轴，2026-09-19 落盘）：与 regime 正交、独立生效
+        # （regime 关闭时也运行），不拦截观察篮（观察篮走 _handle_buy 不经此闸门）。
+        # 滚动 nb_lookback 日累计净买入<0 → 不开新仓，对冲外资系统性撤离/隔夜跳空。
+        if self._nb_state().get("blocked"):
+            return False
         if self.regime_mode == "off" or self.daily is None:
             return True
         try:

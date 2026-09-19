@@ -478,6 +478,19 @@ class BacktestConfig:
     moneyflow_window: int = 5       # gate/rank 用的近 N 日主力净流窗口
     moneyflow_min_amount: float = 0.0   # gate：近 N 日净流阈值(元)，默认>0(净流入)
     moneyflow_weight: float = 0.30  # rank：主力净流在双因子里的权重(0~1)
+    # ---- 北向资金(沪深港通净买入)市场级择时（全新正交数据轴，研究用）----
+    # 与 moneyflow（个股级主力净流，已证伪噪声大）不同：北向是**市场级**外资
+    # 资金面单一序列，与价格动量正交。本宇宙 alpha 收敛于价格动量+趋势骑行，
+    # 所有「价格/指数择时叠加层」(regime/tailhedge/移动止损)已被证伪；但北向是
+    # 「资金面」而非「价格」，是未试过的正交轴。最适合做组合层择时（对冲隔夜
+    # 跳空/外资系统性撤离），而非选股排名。
+    #   "off"  = 不使用（原行为）
+    #   "gate" = 协同闸门：北向滚动 nb_lookback 日累计净买入<0 时该日不开新仓
+    #            （已有持仓照常走离场逻辑）。机理：外资系统性撤离期防御，不接飞刀。
+    # 默认关闭：须经 IS/OOS + 多折 walk-forward 严格验证（OOS alpha 为正且稳健）
+    # 后才并入生产。数据来自 data/northbound_cache（本地磁盘缓存，零网络重复消耗）。
+    northbound_mode: str = "off"    # "off" | "gate"
+    nb_lookback: int = 20           # gate 用的北向滚动窗口（交易日）
     # ---- 业绩预告上修（盈利修正，全新基本面数据轴，研究用）----
     # 与 moneyflow（资金流，对价格动量仅弱相关ρ≈0.36）不同：这是**公司自身披露的
     # 前瞻盈利指引上修**（同一报告期、后一次指引高于前一次），属"盈利动量 / 预告
@@ -544,7 +557,8 @@ def _vec_slope(series: List[float], lookback: int = 5) -> List[Optional[float]]:
 
 def run_backtest(codes: List[str], cfg: BacktestConfig,
                  count: int = 260, preloaded: dict = None,
-                 mf_data: dict = None, er_data: dict = None) -> dict:
+                 mf_data: dict = None, er_data: dict = None,
+                 nb_data: dict = None) -> dict:
     """日线组合回测（正确事件时序版）。
 
     事件时序（每个交易日 i）：
@@ -616,6 +630,17 @@ def run_backtest(codes: List[str], cfg: BacktestConfig,
             arr = [float(raw.get(dt, {}).get("net_mf_amount"))
                    if raw.get(dt) else None for dt in dates]
             mf_net[code] = arr
+
+    # ---- 北向资金(沪深港通净买入)市场级对齐（全新正交轴）----
+    # 与 moneyflow（个股级）不同：北向是单一市场级序列 {trade_date: north_money}。
+    # northbound_mode != off 时才加载；nb_data 来自外部预取（回测复用，零重复网络）。
+    # 缺失交易日（缓存覆盖不足时）视为中性（不触发 gate），不阻断交易。
+    nb_series: Dict[str, float] = {}
+    if cfg.northbound_mode != "off":
+        if nb_data is None:
+            from data.northbound_cache import preload_northbound
+            nb_data = preload_northbound(dates[0], dates[-1])
+        nb_series = {str(d): float(v) for d, v in nb_data.items()}
 
     # ---- 业绩预告上修（盈利修正，全新基本面数据轴）对齐到统一交易日轴 ----
     # earnrev_mode != off 时才加载；er_data 来自外部预取（回测复用，零重复网络）。
@@ -823,6 +848,23 @@ def run_backtest(codes: List[str], cfg: BacktestConfig,
         regime_ok = [not d for d in tail_defensive]
     else:
         regime_ok = [True] * n
+
+    # ---- 北向资金协同闸门（全新正交轴，研究用）----
+    # 北向滚动 nb_lookback 日累计净买入<0 → 该日不开新仓（已有持仓照常离场）。
+    # 机理：外资系统性撤离期防御，对冲隔夜跳空/接飞刀；与价格趋势闸门正交。
+    # 缺失交易日（nb_series 无该日）→ 视为净流中性，不触发 gate。
+    if cfg.northbound_mode == "gate" and nb_series:
+        nb_roll = [0.0] * n
+        for _i in range(n):
+            _s = 0.0
+            _lo = max(0, _i - cfg.nb_lookback + 1)
+            for _k in range(_lo, _i + 1):
+                _v = nb_series.get(dates[_k])
+                if _v is not None:
+                    _s += _v
+            nb_roll[_i] = _s
+        regime_ok = [a and (nb_roll[_k] >= 0.0)
+                     for _k, a in enumerate(regime_ok)]
 
     equity = 1_000_000.0
     cash = equity
@@ -1044,7 +1086,28 @@ def run_backtest(codes: List[str], cfg: BacktestConfig,
                         val = raw
                     moms.append((val, code))
                 moms.sort(reverse=True)
-                allowed = set(c for _, c in moms[:cfg.momentum_top_n])
+                if cfg.moneyflow_mode == "rank" and mf_net:
+                    # 新数据轴：在动量候选池内按 (价格动量分, 主力净流分) 混合重排，
+                    # 再取前 N —— 让资金流强势但动量略弱的名字也能入选，突破纯动量候选集。
+                    # 注：line 1107 的「scored 重排」仅在已截断池内调序、无法改变入选集合，
+                    # 故真正的融合必须在此处（候选生成）完成。moneyflow_mode=off 时完全不改路径。
+                    fv = {}
+                    for _val, code in moms:
+                        arr = mf_net.get(code)
+                        lo = max(0, i - int(cfg.moneyflow_window))
+                        seg = [x for x in (arr[lo:i + 1] if arr else []) if x is not None]
+                        fv[code] = sum(seg) if seg else 0.0
+                    by_flow = sorted(moms, key=lambda t: fv[t[1]], reverse=True)
+                    flow_rank = {c: r for r, (_, c) in enumerate(by_flow)}
+                    score_rank = {c: r for r, (_, c) in enumerate(moms)}
+                    wt = max(0.0, min(1.0, float(cfg.moneyflow_weight)))
+                    blended = sorted(
+                        moms,
+                        key=lambda t: wt * flow_rank[t[1]] + (1.0 - wt) * score_rank[t[1]],
+                    )
+                    allowed = set(c for _, c in blended[:cfg.momentum_top_n])
+                else:
+                    allowed = set(c for _, c in moms[:cfg.momentum_top_n])
                 mom_val = {c: v for v, c in moms}
             scored = []
             for code, d in panel.items():

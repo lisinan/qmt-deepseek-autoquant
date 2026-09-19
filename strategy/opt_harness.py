@@ -109,13 +109,24 @@ FIXED_WARMUP = 130   # 所有配置统一预热，保证 IS/OOS 交易窗口可�
 
 
 def base_cfg() -> BacktestConfig:
-    """当前生产配置（settings.STRATEGY_PARAMS 对应）。"""
+    """当前生产配置（settings.STRATEGY_PARAMS 对应）。
+
+    【2026-09-19 SYNTHESIZE 口径对齐】原 base_cfg 停留在 momentum_top_n=6 /
+    risk_per_trade=0.02，与 09-18 已落盘生产值（top_n=3 / rpt=0.012）不一致。
+    本函数被 `strategy/_verify_live_quality.py` 用作「权威全量复验」基线，
+    不修正会导致 `_verify_live_quality.py` 报告的「当前状态」相对错误基线，
+    与 `_evolve_wf.py` 决策基线（09-18 已对齐）口径背离。
+    现按 P0 = 真实生产配置对齐，与 `_evolve_wf.py::base_cfg` 同口径。
+    （fixed_amount 保持 300000 与 _evolve_wf 一致；生产 max_position_amount=180000
+     的 30万→18万 收益代价约 -12.5pt 已在 09-18 记录，属已知口径差，不改基线以免
+     与 09-18 WF 证据不可比。）
+    """
     return BacktestConfig(
         use_gate=True, cost_pct=0.0015, vol_sizing=True,
         exit_mode="trend", trend_exit_ma=60, hard_stop_pct=-0.18,
         trend_max_hold_days=120,
-        momentum_rank=True, momentum_top_n=6, momentum_lookback=60,
-        risk_per_trade=0.02, fixed_amount=300000.0,
+        momentum_rank=True, momentum_top_n=3, momentum_lookback=60,
+        risk_per_trade=0.012, fixed_amount=300000.0,
         down_day_exit_pct=-9.0, max_positions=5,  # 2026-08-27 并入：IS/OOS+多折双验证优于8
         buy_score_threshold=4.0, min_signals=3,
         atr_stop_mult=2.0, tp_atr_mult=4.0,

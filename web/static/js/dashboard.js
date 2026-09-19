@@ -132,6 +132,20 @@
     $('risk-consec').textContent = r.consecutive_losses;
     $('risk-scale').textContent = fmt(r.position_scale, 2);
     $('risk-trades').textContent = r.daily_trade_count;
+
+    // 北向资金轴（正交闸门，2026-09-19 落盘）：展示 mode/滚动净买入/是否拦截
+    var nb = snap.northbound || {};
+    $('nb-mode').textContent = 'mode: ' + (nb.mode || 'off');
+    $('nb-blocked').textContent = nb.blocked ? '拦截新开仓' : '放行';
+    $('nb-blocked').className = nb.blocked ? 'halted' : 'ok';
+    $('nb-box').className = 'risk-box ' + (nb.blocked ? 'alert' : 'safe');
+    // 原值单位为万元，前端换算成「亿元」便于阅读
+    $('nb-rolling').textContent = (nb.rolling_sum != null)
+      ? fmt(nb.rolling_sum / 10000, 2) : '--';
+    $('nb-latest').textContent = (nb.latest != null)
+      ? fmt(nb.latest / 10000, 2) : '--';
+    $('nb-meta').textContent = (nb.lookback || '-') + '日 / 覆盖 '
+      + (nb.days || 0) + '日' + (nb.end_date ? (' 至 ' + nb.end_date) : '');
   }
 
   function renderTicks(ticks) {
