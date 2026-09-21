@@ -364,6 +364,60 @@ class EventEngine:
         # 保证连续多日 Paper 测试在每次项目重启后记录依然延续。live 以 broker 为权威源。
         if self.exec_mode == "paper":
             self._restore_engine_state()
+            self._apply_pending_reset()
+
+    def _apply_pending_reset(self) -> None:
+        """应用待处理的 paper 账本复位（一次性、幂等）。
+
+        【2026-09-21】存在 ``storage/.reset_paper.flag`` 时，把**内存中**的现金、
+        持仓、风控基线复位到初始资金，写回 DB 后删除标志。
+
+        为什么需要它：引擎每 60s 把内存状态写回 ``engine_state``，直接在库里改
+        会被覆盖。用「启动期一次性标志」复位，就不用强求「先停引擎再改库」的时序，
+        无论何时重启都能确保复位生效一次。
+        """
+        flag = Path(LOG_DIR).parent / "storage" / ".reset_paper.flag"
+        if not flag.exists():
+            return
+        import json as _json
+        try:
+            cfg = _json.loads(flag.read_text(encoding="utf-8") or "{}")
+            capital = float(cfg.get("capital") or INITIAL_CASH)
+            start = str(cfg.get("start_date") or "")
+        except Exception as e:
+            logger.warning("复位标志解析失败，忽略: %s", e)
+            flag.unlink(missing_ok=True)
+            return
+        self._cash = capital
+        self._positions = {}
+        self._peak_equity = capital
+        self._day_open_asset = capital
+        self._daily_trade_count = 0
+        self.risk.reset_all(capital)
+        if start:
+            try:
+                self._trade_date = date.fromisoformat(start)
+            except Exception:
+                pass
+        # 清掉复位前的脏快照：脚本归档清空后、引擎若仍在运行会继续写入旧资产值，
+        # 不清会在新周期曲线上留下「80 万 → 100 万」的假暴涨。
+        try:
+            self.storage.clear_equity_before(f"{start or date.today().isoformat()}T00:00:00")
+        except Exception as e:
+            logger.debug("清理复位前快照失败: %s", e)
+        try:
+            self._save_engine_state()
+            self.storage.save_equity_snapshot(
+                self._total_asset() or capital, self._cash,
+                self._market_value(), len(self._positions), 0.0)
+        except Exception as e:
+            logger.warning("复位后落盘失败: %s", e)
+        flag.unlink(missing_ok=True)
+        logger.warning("paper 账本已复位：现金 %.2f、零持仓、风控/回撤基线清零"
+                       "（新周期起始交易日 %s）", capital, start or date.today())
+        system_notice("SUCCESS", "风控",
+                      f"paper 账本已复位：初始资金 {capital:,.0f}，"
+                      f"从 {start or date.today()} 重新计量")
 
     # ============================================================ 公开
 

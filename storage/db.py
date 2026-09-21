@@ -365,6 +365,24 @@ class Storage:
                 logger.warning("save_engine_state 失败: %s", e)
                 return 0
 
+    def clear_equity_before(self, iso_ts: str) -> int:
+        """删除指定时刻之前的 paper 权益快照（账本复位时用）。
+
+        复位脚本归档清空后，若引擎仍在运行会继续写入旧资产值的快照，
+        重启复位后序列里就会出现「80 万 → 100 万」的假暴涨。这里在复位
+        生效时再清一次，保证新周期曲线从初始资金干净起算。
+        """
+        with self._lock:
+            try:
+                c = self._conn_get()
+                cur = c.execute(
+                    "DELETE FROM equity_snapshots WHERE mode='paper' AND ts < ?",
+                    (iso_ts,))
+                return cur.rowcount or 0
+            except Exception as e:
+                logger.warning("clear_equity_before 失败: %s", e)
+                return 0
+
     def load_engine_state(self) -> Optional[dict]:
         """读取最近一次持久化的引擎状态（id=1）。无记录返回 None。"""
         with self._lock:

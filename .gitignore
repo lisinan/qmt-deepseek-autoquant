@@ -3,6 +3,8 @@ trading_config.json
 storage/*.db
 storage/*.db-wal
 storage/*.db-shm
+# 账本复位的一次性标志（运行时产物）
+storage/.reset_paper.flag
 logs/*.log
 logs/*.log.*
 # 密钥：.env 含 API key，绝不提交；.env.example 是安全模板可提交

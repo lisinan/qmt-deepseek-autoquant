@@ -320,6 +320,26 @@ class RiskManager:
 
     # ---------- 手动恢复 ----------
 
+    def reset_all(self, capital: float = 0.0) -> None:
+        """账本复位（2026-09-21）：把风控基线整体清零，回到初始可交易状态。
+
+        用于「金额初始化 100 万、从新交易日重新计量」的场景。与 `_heal_zombie`
+        的区别：这里连 `peak_asset` 也一并重置（回撤从 0 起算），因为计量周期
+        本身就是全新的。
+        """
+        self._halted = False
+        self._halt_reason = ""
+        self._daily_pnl = 0.0
+        self._daily_trade_count = 0
+        self._consec_loss = 0
+        self._consec_loss_date = None
+        self._flatten_requested = False
+        self._today = date.today()
+        if capital > 0:
+            self._peak_asset = capital
+            self._day_open_asset = capital
+        logger.warning("RiskManager 账本复位：风控基线全部清零，回撤从 0 起算")
+
     def resume(self, reason: str = "manual") -> None:
         self._halted = False
         self._halt_reason = ""
