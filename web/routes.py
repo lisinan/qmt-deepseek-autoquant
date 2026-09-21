@@ -329,6 +329,11 @@ def api_stream():
                 if fills:
                     last_fill_id = max(last_fill_id,
                                        max(int(f.get("id") or 0) for f in fills))
+                # 【2026-09-21】信号新鲜度：new_signals 只在有新增时非空，前端无法
+                # 据此判断「信号源是否已停摆」。这里始终回传库中最新一条信号的时间，
+                # 供页面显示「距最新信号 N 分钟」，避免把几天前的信号当成实时信号。
+                latest = storage.get_signals(limit=1)
+                last_signal_ts = (latest[0].get("ts") if latest else None)
                 # 注：原实现在这里把 payload 字典**构建了两遁**（第一个立即被第二个
                 # 覆盖），纯属浪费。已合并为一次。
                 payload = {
@@ -338,6 +343,7 @@ def api_stream():
                     "bars": e.latest_bars(),
                     "new_signals": sigs,
                     "new_fills": fills,
+                    "last_signal_ts": last_signal_ts,
                     "sector_heat": e.latest_sector_heat(),
                     "recommendations": e.latest_recommendations(),
                     "llm_rerank": e.latest_llm_rerank(),

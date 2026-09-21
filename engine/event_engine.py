@@ -1638,6 +1638,7 @@ class EventEngine:
         if not regime_ok:
             logger.debug("regime 门关闭，跳过单标的入场")
 
+        best = None   # 本轮最高分候选（可观测性用）
         for code in candidate_codes:
             if code in held_codes:
                 continue
@@ -1651,6 +1652,8 @@ class EventEngine:
             feat = self.daily.features(code) if self.daily else None
             sig = self.strategy.on_daily_features(code, code, feat)
             self._save_signal(sig)
+            if best is None or sig.score > best[1]:
+                best = (code, sig.score, sig.reason or "")
             if sig.side != "BUY":
                 continue
             # 成交价用最新 tick（分钟线上的实时价）。若无 tick 则跳过（保护性）。
@@ -1658,6 +1661,29 @@ class EventEngine:
             if tick is None:
                 continue
             self._handle_buy(sig, tick, current_prices)
+
+        # 【2026-09-21】可观测性：本轮没有任何 BUY 时，节流输出一次诊断。
+        # HOLD 信号默认不入库（PERSIST_HOLD_SIGNALS=False）且只走 DEBUG，
+        # 市场转弱时会表现为「连日零信号、页面无任何提示」，无法区分是
+        # 候选池空 / 评分不足 / 日线闸门拦截。这里每 10 分钟最多一条 INFO。
+        self._maybe_log_no_signal(len(candidate_codes), best, regime_ok)
+
+    def _maybe_log_no_signal(self, n_cand: int, best, regime_ok: bool) -> None:
+        if getattr(self, "_last_no_signal_log_ts", 0) and \
+                time.time() - self._last_no_signal_log_ts < 600:
+            return
+        self._last_no_signal_log_ts = time.time()
+        if n_cand == 0:
+            logger.warning("无入场信号：动量闸门后候选池为空"
+                           "（当前宇宙无 60 日正动量标的）")
+        elif best is None:
+            logger.warning("无入场信号：候选 %d 只但全部无法评分", n_cand)
+        else:
+            logger.warning("无入场信号：候选 %d 只、最高分 %s 仅 %.2f"
+                           "（阈值 %.1f）原因=%s",
+                           n_cand, best[0], best[1],
+                           float(STRATEGY_PARAMS.get("buy_score_threshold", 4.0)),
+                           best[2][:60])
 
     # ----- portfolio mode -----
 

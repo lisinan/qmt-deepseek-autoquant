@@ -126,3 +126,13 @@ td.num { text-align: right; font-family: monospace; }
 
 /* 持仓表代码列：等宽弱色，名称列自然高亮 */
 td.code { font-family: monospace; color: #8898a6; }
+/* 实时信号新鲜度徽标（2026-09-21）：显式提示信号源是否停摆。
+   策略判 HOLD 的信号默认不入库，市场转弱时会连日零信号，
+   表格里残留的旧信号若不标注时长，极易被误读为"实时信号"。 */
+.signal-fresh { font-size: 11px; font-weight: 500; margin-left: 8px;
+  padding: 2px 7px; border-radius: 10px; vertical-align: middle;
+  font-family: inherit; letter-spacing: .2px; }
+.signal-fresh.fresh-idle { color: #6b7885; background: #1b2129; }
+.signal-fresh.fresh-ok   { color: #5fd99e; background: rgba(95,217,158,.12); }
+.signal-fresh.fresh-warn { color: #ffb74d; background: rgba(255,183,77,.14); }
+.signal-fresh.fresh-stale{ color: #ef5350; background: rgba(239,83,80,.15); }

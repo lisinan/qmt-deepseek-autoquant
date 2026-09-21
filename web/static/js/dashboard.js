@@ -22,9 +22,19 @@
     return 'flat';
   }
   function shortTs(ts) {
+    // 【2026-09-21】原实现只渲染 HH:mm:ss，跨日的旧信号（例如 4 天前的 15:03）
+    // 会显示成"15:03"，看起来就像当天产生的 → 把停摆的信号源误判为实时。
+    // 现在：非今天的信号补上 MM-DD，日期归属一眼可辨。
     try {
-      const d = new Date(ts);
-      return d.toLocaleTimeString('zh-CN', { hour12: false });
+      var d = new Date(ts);
+      if (isNaN(d.getTime())) return ts;
+      var t = d.toLocaleTimeString('zh-CN', { hour12: false });
+      var now = new Date();
+      var sameDay = d.getFullYear() === now.getFullYear()
+        && d.getMonth() === now.getMonth() && d.getDate() === now.getDate();
+      if (sameDay) return t;
+      var md = (d.getMonth() + 1) + '-' + ('0' + d.getDate()).slice(-2);
+      return md + ' ' + t;
     } catch (e) { return ts; }
   }
   function esc(s) {
@@ -159,11 +169,38 @@
   function appendSignals(sigs) {
     if (!sigs || !sigs.length) return;
     var body = $('signal-table').querySelector('tbody');
+    var newest = '';
+    sigs.forEach(function (s) { if (s.ts > newest) newest = s.ts; });
+    if (newest) updateSignalFreshness(newest);
     sigs.slice().reverse().forEach(function (s) {
       body.insertAdjacentHTML('afterbegin', signalRow(s));
     });
     while (body.children.length > 30) body.removeChild(body.lastChild);
   }
+  // 【2026-09-21】信号源新鲜度徽标。
+  // 背景：策略判定为 HOLD 的信号默认不入库（PERSIST_HOLD_SIGNALS=False），
+  // 市场转弱时会出现「连日零信号」。表格里残留的旧信号又没有日期，
+  // 很容易被误读成"策略在正常发信号但没成交"。这里显式给出停滞时长。
+  function updateSignalFreshness(ts) {
+    var el = $('signal-fresh');
+    if (!el || !ts) return;
+    var d = new Date(ts);
+    if (isNaN(d.getTime())) return;
+    var mins = Math.floor((Date.now() - d.getTime()) / 60000);
+    var txt, cls = 'fresh-ok';
+    if (mins < 30) {
+      txt = '最新信号 ' + mins + ' 分钟前';
+    } else if (mins < 60 * 24) {
+      txt = '⚠ 已 ' + mins + ' 分钟无新信号';
+      cls = 'fresh-warn';
+    } else {
+      txt = '⚠ 已 ' + Math.floor(mins / 1440) + ' 天无新信号（信号源停摆）';
+      cls = 'fresh-stale';
+    }
+    el.textContent = txt;
+    el.className = 'signal-fresh ' + cls;
+  }
+
   function appendFills(fills) {
     if (!fills || !fills.length) return;
     var body = $('fill-table').querySelector('tbody');
@@ -339,6 +376,7 @@
         if (data.snapshot) renderSnapshot(data.snapshot);
         if (data.ticks) renderTicks(data.ticks);
         if (data.new_signals) appendSignals(data.new_signals);
+        if (data.last_signal_ts) updateSignalFreshness(data.last_signal_ts);
         if (data.new_fills) appendFills(data.new_fills);
         if (data.sector_heat) renderSectorHeat(data.sector_heat);
         if (data.dynamic_universe_summary) renderUniverse(data.dynamic_universe_summary);
