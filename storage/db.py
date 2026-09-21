@@ -133,7 +133,8 @@ _SCHEMA = [
         day_open_asset REAL,
         tick_count INTEGER,
         peak_equity REAL,
-        trade_date TEXT
+        trade_date TEXT,
+        risk_state TEXT
     )""",
 ]
 
@@ -191,6 +192,11 @@ class Storage:
             "ALTER TABLE orders ADD COLUMN mode TEXT",
             "ALTER TABLE fills ADD COLUMN mode TEXT",
             "ALTER TABLE equity_snapshots ADD COLUMN mode TEXT",
+            # 【2026-09-21】风控熔断/连亏时间戳持久化。engine_state 原先只存
+            # consec_loss 数值、不存「何时发生」，导致重启后无法判定该连亏是否
+            # 已过冷却期 → 连亏降仓把 position_scale 压到 0 后永久无法开仓
+            # （僵尸冻结）。补一列 JSON 存 halted/halt_reason/halt_day/consec_loss_date。
+            "ALTER TABLE engine_state ADD COLUMN risk_state TEXT",
         ):
             try:
                 c.execute(stmt)
@@ -340,7 +346,7 @@ class Storage:
                     "INSERT OR REPLACE INTO engine_state("
                     "id, ts, cash, positions, daily_trade_count, daily_pnl,"
                     " consec_loss, peak_asset, day_open_asset, tick_count,"
-                    " peak_equity, trade_date) VALUES (1,?,?,?,?,?,?,?,?,?,?,?)",
+                    " peak_equity, trade_date, risk_state) VALUES (1,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (datetime.now().isoformat(),
                      float(state.get("cash") or 0.0),
                      state.get("positions") or "[]",
@@ -351,7 +357,8 @@ class Storage:
                      state.get("day_open_asset"),
                      int(state.get("tick_count") or 0),
                      float(state.get("peak_equity") or 0.0),
-                     state.get("trade_date")),
+                     state.get("trade_date"),
+                     state.get("risk_state")),
                 )
                 return 1
             except Exception as e:

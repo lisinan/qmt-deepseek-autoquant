@@ -515,3 +515,29 @@ Calmar 3.22 / PF 3.23 / n=75 / 胜率 42.7% / 暴露 96% / **alpha = −111.2pt*
 
 > 证据：`logs/am_evolve_tvs2_2026-09-21.json`、`logs/am_evolve_dde2_2026-09-21.json`、
 > `logs/am_evolve_consensus_2026-09-21.json`。
+
+---
+
+### 十·补（2026-09-21 15:30）首版僵尸修复的**实际缺陷**已纠正
+
+**背景**：上午落盘的首版修复（§十 §3）**在真实重启场景下不会生效**。用户反馈「仍然没有开仓」后复核查出：
+
+- 首版用 `_halt_day` 算冷却天数，但 `_halt_day` **不持久化**，且
+  `RiskManager.__init__` 第 46 行恒把它设为 `date.today()` → 恢复后的
+  `held = (today - 今天).days = 0 < halt_recover_days(1)` → **自愈永远触发不了**。
+  这是「看起来修好了、重启后依旧冻结」的假修复。
+
+**纠正（本轮实际改动）**：
+1. `risk/manager.py` 新增 `_consec_loss_date`（**连亏起算日**），在 `on_fill` 首次计亏时写入、
+   连亏清零时清空；`_maybe_recover_zombie()` 改用该字段算冷却。
+2. **无时间戳（老库升级）时按「已过冷却」立即解封**——无法证明这段连亏是当天发生的，
+   而它确实跨多个交易日滞留在 `engine_state`，继续冻结毫无风控意义。
+3. 新增 `export_state()` / `load_state()`；`storage/db.py` 加 `engine_state.risk_state`
+   列（幂等 `ALTER TABLE`，已在 DB 副本验证）；`engine/event_engine.py` 保存/恢复该列，
+   顺带把 `_halted/_halt_reason/_halt_day` 一并持久化（上午 §7 的待办项一并完成）。
+4. 顺序已验证：`on_asset_update`（event_engine.py:1267）早于 `_run_single_step`（1352），
+   → **重启后首个 tick 即解封，同一 tick 内即可开仓**，不会浪费一天。
+
+**回归**：`tests/test_risk_zombie.py` 扩到 **8 例全通过**（新增：无时间戳立即解封、
+持久化往返）；`tests/run_all.py` **212 通过 / 1 既有失败 / 共 213**。
+**仍需用户手动重启引擎**（当前进程 PID 19764 启于 00:16，加载的是修复前代码）。

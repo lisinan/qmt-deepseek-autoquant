@@ -44,6 +44,10 @@ class RiskManager:
         self._peak_asset: float = 0.0
         self._daily_trade_count: int = 0
         self._halt_day: date = date.today()   # 回撤熔断触发日（用于冷却自动恢复）
+        # 【2026-09-21】连亏起算日。只存 consec_loss 数值而不存「何时开始亏」，
+        # 重启后就无法判定这段连亏是否已过冷却期 → 冷却自愈永远算不出 held>=1，
+        # 账户被 position_scale=0 永久冻结。此后该字段随 engine_state 持久化。
+        self._consec_loss_date: Optional[date] = None
         # 【2026-09-16 优化】日内硬止损+强平标志。当日账户相对开盘资产亏损达
         #   daily_stop_flatten_pct 时置位，引擎据此强平全部可卖持仓（不只停牌）。
         self._flatten_requested: bool = False
@@ -171,9 +175,12 @@ class RiskManager:
                 pnl = (fill.price - avg_cost) * fill.quantity
                 self._daily_pnl += pnl
                 if pnl < 0:
+                    if self._consec_loss == 0:
+                        self._consec_loss_date = date.today()   # 连亏起算日
                     self._consec_loss += 1
                 elif pnl > 0:
                     self._consec_loss = 0
+                    self._consec_loss_date = None
                 # 连续亏损降仓 / 熔断
                 if self._consec_loss >= self.p["max_consecutive_losses_halt"]:
                     self._halt(reason=f"consec_loss={self._consec_loss}")
@@ -239,24 +246,77 @@ class RiskManager:
         （halt_recover_days）重置连亏与日内盈亏，使账户恢复到可交易状态。
         · 不重置 _peak_asset —— 保留真实回撤基线，max_drawdown 保护不弱化；
         · 不改变任何风险底线参数，仅恢复「可恢复断路器」的设计语义。
+
+        ★ 冷却天数以 **_consec_loss_date（连亏起算日，已持久化）** 为准，
+        不能用 _halt_day：后者不持久化、每次 __init__ 都被重置为 date.today()，
+        用它算 held 恒为 0 → 自愈永远触发不了（这是首版修复的实际缺陷）。
         """
         if self._consec_loss < self.p["max_consecutive_losses_halt"]:
             return False
-        if self._halt_day is None:
-            self._halt_day = today   # 无触发日记录（如重启丢失）→ 自今日起计冷却
-            return False
-        held = (today - self._halt_day).days
+        start = self._consec_loss_date
+        if start is None:
+            # 无时间戳（老库升级上来的历史僵尸态）：无法证明这段连亏是「今天」发生的，
+            # 而它已跨多个交易日滞留在 engine_state → 按已过冷却处理，立即解封。
+            self._heal_zombie(0)
+            logger.warning("RiskManager 僵尸冻结自愈（无连亏起算日，按已过冷却处理）："
+                           "重置连亏/日内盈亏，仓位倍数恢复 1.0（回撤基线保留）")
+            return True
+        held = (today - start).days
         if held < self.p.get("halt_recover_days", 1):
             return False
-        self._consec_loss = 0
-        self._daily_pnl = 0.0
-        self._flatten_requested = False
-        self._halt_day = None
+        self._heal_zombie(held)
         logger.warning("RiskManager 僵尸冻结自愈（冷却 %s 日）：重置连亏/日内盈亏，"
                        "仓位倍数恢复 1.0（回撤基线保留）", held)
+        return True
+
+    def _heal_zombie(self, held: int) -> None:
+        """执行僵尸解封：只清「连亏计数 + 日内盈亏」，**保留 peak_asset**。"""
+        self._consec_loss = 0
+        self._consec_loss_date = None
+        self._daily_pnl = 0.0
+        self._flatten_requested = False
         system_notice("SUCCESS", "风控",
                       f"仓位冻结自愈（冷却 {held} 日）：连亏计数与日内盈亏已重置，恢复开仓能力")
-        return True
+
+    # ---------- 状态持久化 ----------
+
+    def export_state(self) -> dict:
+        """供 engine_state.risk_state 落盘的风控状态（2026-09-21 新增）。"""
+        return {
+            "halted": self._halted,
+            "halt_reason": self._halt_reason,
+            "halt_day": self._halt_day.isoformat() if self._halt_day else "",
+            "consec_loss_date": (self._consec_loss_date.isoformat()
+                                 if self._consec_loss_date else ""),
+        }
+
+    def load_state(self, state) -> None:
+        """恢复风控状态（JSON 字符串或 dict；老库无此列时传 None 即可）。"""
+        if not state:
+            return
+        if isinstance(state, str):
+            import json as _json
+            try:
+                state = _json.loads(state)
+            except Exception:
+                return
+        if not isinstance(state, dict):
+            return
+        self._halted = bool(state.get("halted"))
+        self._halt_reason = str(state.get("halt_reason") or "")
+
+        def _d(v):
+            if not v:
+                return None
+            try:
+                return date.fromisoformat(v) if isinstance(v, str) else v
+            except Exception:
+                return None
+
+        hd = _d(state.get("halt_day"))
+        if hd:
+            self._halt_day = hd
+        self._consec_loss_date = _d(state.get("consec_loss_date"))
 
     # ---------- 手动恢复 ----------
 

@@ -2150,6 +2150,9 @@ class EventEngine:
             self._peak_equity = float(row.get("peak_equity") or 0.0)
             self._trade_date = (date.fromisoformat(row["trade_date"])
                                 if row.get("trade_date") else date.today())
+            # 【2026-09-21】恢复风控熔断/连亏时间戳。必须在 _reset_daily_if_needed
+            # 之前：僵尸冻结自愈要用 persist 下来的「连亏起算日」算冷却天数。
+            self.risk.load_state(row.get("risk_state"))
             self._reset_daily_if_needed()  # 跨日归一（新交易日重置日内计数）
             logger.info("恢复引擎状态: 持仓 %d 现金 %.2f 日内交易 %d 已实现 %.2f",
                         len(self._positions), self._cash,
@@ -2178,6 +2181,7 @@ class EventEngine:
                 "tick_count": self._tick_count,
                 "peak_equity": self._peak_equity,
                 "trade_date": self._trade_date.isoformat(),
+                "risk_state": json.dumps(self.risk.export_state()),
             })
         except Exception as e:
             logger.debug("保存引擎状态失败: %s", e)
