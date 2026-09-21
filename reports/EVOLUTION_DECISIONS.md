@@ -416,3 +416,102 @@ Calmar 3.22 / PF 3.23 / n=75 / 胜率 42.7% / 暴露 96% / **alpha = −111.2pt*
 **6) 目标重心重定位**：`docs/AUTOMATIONS.md` §三 加「重心定位」——Sharpe 1.6 为不退化底线，**主 KPI 是相对等权买入持有 alpha ≥ −30pt**；新轴以「alpha 从 −111pt 拉向 −30pt」为成败判据。
 
 > 详见 `reports/EVOLUTION_PROPOSAL_RND2_2026-09-19.md`；证据 `logs/research_northbound_wf.json`。
+
+---
+
+## 十、2026-09-21 上午 · AM-EVOLVE（11:40 午休）：账户「僵尸冻结」P0 修复 + 2 候选否决
+
+**前置：`EXECUTION_MODE = "paper"` 已确认（config/settings.py:401）。风险底线全程未触碰。**
+
+### 1) 半日度量（storage/qmt.db，09-21 11:29 快照）
+
+| 项 | 值 |
+|---|---|
+| 总资产 | **803,680.18**（100% 现金，market_value=0，positions=0） |
+| 今日成交 | **0 笔**（最后一笔成交停留在 09-16 10:53） |
+| 账户回撤 | **−19.63%**（peak 1,000,000） |
+| 与 09-18 收盘对比 | **完全一致**（09-17 / 09-18 / 09-21 三日恒为 803,680.18） |
+| 风险快照 | `halted=false`、`consecutive_losses=9`、`daily_pnl=−188,766.82`、`position_scale=0.0` |
+
+### 2) ★ 根因定位：不是「策略闸门关闭」，是**账户级僵尸冻结**
+
+上一轮（09-18 AM）把「100% 现金、零成交」归因于「全宇宙 trend_up=False → 日线闸门关闭」，
+**该诊断不完整**。实测证据链：
+
+1. `risk/manager.py` 连亏降仓阶梯 `_SCALE_LADDER = [1.0,0.8,0.6,0.4,0.0]`，09-16 强平 5 笔全亏
+   → `_consec_loss=9`（≥ `max_consecutive_losses_halt=5`）→ **`position_scale = 0.0`**；
+2. `engine/event_engine.py:1765` `_handle_buy` 首段 `if scale <= 0: return` → **任何买入信号
+   （含 manual_entry 观察篮）都被无声丢弃**，不产生任何拒绝日志；
+3. `_halted` **未持久化**，`_consec_loss` 却从 `engine_state` 恢复为陈旧值 → 重启后
+   `halted=false`，而旧 `_maybe_recover` 首行即 `if not self._halted: return False`
+   → **冷却恢复永不触发**；
+4. `reset_daily()` 只挂在 `on_fill()` 上 → 零成交时日切重置也不执行，`_daily_pnl` 把
+   09-16 的 −188,766 元一直背到 09-21。
+
+→ 结论：**未熔断、却永久无法开仓**，且无自愈路径。这直接导致「live paper 近 4 周 > 0%」
+考核项**在机制上不可能达标**（账户物理上无法参与任何修复行情）。
+
+### 3) 本轮落盘：P0 工程修复（唯一的实际改动，`risk/manager.py`）
+
+- 新增 `_maybe_recover_zombie()`：对「未 halt 但连亏已达 halt 阈值」的陈旧态，套用
+  **同一冷却窗口** `halt_recover_days` 重置 `_consec_loss` / `_daily_pnl`，恢复 `position_scale=1.0`。
+  · **不重置 `_peak_asset`** → 回撤 −19.63% 基线保留，`max_drawdown` 保护**不弱化**；
+  · 不改变任何风险底线参数，仅恢复「可恢复断路器」的既有设计语义。
+- `on_asset_update()` 每轮调用 `reset_daily()` → 零成交时跨日也能清零日内盈亏。
+- 回归 `tests/test_risk_zombie.py`（**6 例全通过**）已登记进 `tests/run_all.py`，锁定：
+  自愈生效 / 冷却未满不解封 / 回撤基线保留 / 正常连亏仍按阶梯降仓 / 健康态不受影响 / 日切清零。
+- ⚠️ **生效时点：需重启引擎**（自动化不代重启，交由用户手动重启桌面引擎）。
+  重启后首个 tick 即自愈（实测 `_halt_day`=09-16，冷却已超 1 日）→ **当日下午即可恢复交易能力**。
+
+### 4) 候选否决（2 个，均走完网格 + 4 窗口共识）
+
+| 候选 | IS_ret | IS_Sh | OOS 均值Sh | 最差 dSh | 裁决 |
+|---|---|---|---|---|---|
+| `trend_vol_sizing=True` | 159.0%→**44.9%** | 1.25→1.32 | 1.325→**1.268** | **−0.056** | **REJECTED** |
+| `down_day_exit_pct=−5.0` | 159.0%→148.2% | 1.25→**1.45** | 1.325→**1.446** | **+0.031** | **REJECTED（尖峰）** |
+
+- **`trend_vol_sizing`（settings 中长期挂起待验证项，本轮结案）**：改为「用真实趋势止损做
+  风险平价」后敞口从 ~97% 降到 ~55%，IS 收益 **159.0% → 44.9%**、6 折累计 **−173.2pt**、
+  OOS 均值 Sharpe **−0.056**。虽 MDD 由 −16.08% 改善到 −5.75%，但收益与 Sharpe 双降，
+  未过闸门 ②。**结论：保持 `False`，该疑问项正式结案并可从待办移除。**
+- **`down_day_exit_pct`（生产当前 −99.0=关闭，基线 −9.0）**：90×6 网格里 −5.0 达
+  dSh **+0.121**（看似过闸）。**细扫高原后判定为孤立尖峰**：邻居 −5.5 → +0.005、
+  −4.5 → +0.063 均未达 +0.10，且 −5.5/−4.5 正收折数掉到 5/6、最差折 −1.4%/−2.4%。
+  **4 窗口共识终局**：dSh = +0.141 / +0.031 / +0.121 / +0.037 → **最差窗口仅 +0.031 < +0.10
+  → 闸门 ② fail**（均值 +0.083）。90×6 的 +0.121 系窗口运气，非稳健增益 → **否决落盘**。
+  机理备注：−99.0（生产）IS Sharpe 1.39 高于 −9.0（基线）的 1.25，但 OOS 1.202 反而更低
+  —— 典型的「无暴跌退出在样本内过拟合」特征，−5.0 亦受同一噪声源驱动。
+- **防 churn**：本轮 24h 内无参数被改动；`northbound_mode`（09-19 落盘）未重复触碰。
+
+### 5) 晋升闸门执行结果
+
+**零参数落盘。** 本轮仅落 P0 工程修复。`config/settings.py` **完全未改**，
+`momentum_top_n=3` / `risk_per_trade=0.012` / `max_drawdown_pct=-0.20` / `T1_RESTRICTION` /
+`max_positions=5` 全部保持；`EXECUTION_MODE` 保持 `paper`。
+`tests/run_all.py`：**210 通过 / 1 失败 / 共 211**（较上轮 +6 新增，无新增回归；
+唯一失败 `test_stock_names` 系今日实时引擎改写 `storage/dynamic_universe.json` 所致，
+开工前该文件即已为 modified 状态，与本次改动无关）。
+
+### 6) 口径纪律核查（易踩坑项，已查）
+
+- `down_day_exit_pct` 有实盘读取点（`strategy/trend_strategy.py:224,260`，引擎
+  `event_engine.py:1336` 每 tick 调 `on_exit`）；但 `trend_strategy.py:53` 是
+  `self.p = dict(STRATEGY_PARAMS)` **构造期快照** → 该参数属**缓存型，改后需重启**，
+  并非热读。已据实记录，未因"看似热读"而误判生效时点。
+- `base_cfg()` 基线**本轮刻意不改**：`tests/test_northbound.py` 显式断言
+  `base_cfg().northbound_mode == "off"`，若把 09-19 落盘的北向闸门并入基线会破坏
+  gate/off 对照。→ 已知口径差异：**验证器 P0 = 无北向闸门基线**，北向 +0.101 单独计量。
+
+### 7) 交 18:00 PM-EVOLVE 的下一步聚焦
+
+1. **重启引擎使僵尸冻结修复生效**（最高优先级，用户手动）。重启后观察 13:00 后是否
+   出现建仓；若仍 0 成交，则剩余阻力才是「trend_up 闸门」，届时再判。
+2. **建议补做**：`_halted/_halt_reason/_halt_day` 持久化（需 `engine_state` 加列）。
+   当前缺口：真熔断后重启会丢失 halt 标志 → 冷却期被绕过（既有行为，非本轮引入）。
+3. **alpha ≥ −30pt 主 KPI**：参数与已试结构性方向持续证伪，本轮再证 2 项。
+   建议 PM 周期评估「扩宇宙 / 跨板块降单一高β暴露」这一**结构性**方向（非调参）。
+4. **数据新鲜度**：日线末端仍为 **2026-08-25**（滞后约 4 周），所有结论均在该截面下成立，
+   补拉后应复跑共识复核。
+
+> 证据：`logs/am_evolve_tvs2_2026-09-21.json`、`logs/am_evolve_dde2_2026-09-21.json`、
+> `logs/am_evolve_consensus_2026-09-21.json`。

@@ -113,6 +113,11 @@ def candidates_final() -> dict:
     out["D5_topn3_cd8"] = replace(b, momentum_top_n=3, reentry_cooldown=8)
     out["D6_topn3_cd5_hs15"] = replace(
         b, momentum_top_n=3, reentry_cooldown=5, hard_stop_pct=-0.15)
+    # ---- 2026-09-21 AM：单日暴跌清仓阈值（生产当前 -99.0=关闭，基线 -9.0）----
+    # 90x6 网格里 -5.0 达 +0.121 门槛，但邻居 -5.5/+0.005、-4.5/+0.063 均未达标
+    # → 疑似尖峰。此处纳入 4 窗口共识做终局裁决（防窗口运气）。
+    out["E1_dd5"] = replace(b, down_day_exit_pct=-5.0)
+    out["E2_dd6"] = replace(b, down_day_exit_pct=-6.0)
     return out
 
 

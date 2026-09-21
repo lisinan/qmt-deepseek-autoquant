@@ -68,6 +68,11 @@ class RiskManager:
                         day_open_asset: float = 0.0) -> None:
         if total_asset <= 0:
             return
+        # 【2026-09-21 P0 修复】日切重置原先只挂在 on_fill() 上：账户一旦被冻结
+        # （零成交）就再也不会触发，导致 _daily_pnl 把 09-16 的 -188,766 元
+        # 一直背到 09-21（实测值），日内亏损口径失真。改为每轮资产更新都校准日切。
+        # 注意顺序：先 reset_daily（跨日会把 _day_open_asset 清零），再写入本次口径。
+        self.reset_daily()
         if day_open_asset and day_open_asset > 0:
             self._day_open_asset = day_open_asset
         today = date.today()
@@ -195,7 +200,8 @@ class RiskManager:
         以保证「空仓停牌」也会在日历冷却后恢复，而非永久死亡。
         """
         if not self._halted:
-            return False
+            # 【2026-09-21】未熔断但仓位被陈旧连亏压到 0 的「僵尸冻结」自愈
+            return self._maybe_recover_zombie(today)
         held = (today - self._halt_day).days
         if self._halt_reason.startswith("max_drawdown"):
             recover_days = self.p.get("dd_recover_days", 5)
@@ -214,6 +220,43 @@ class RiskManager:
                           f"熔断自动恢复（冷却 {held} 日，已重置连亏/日内盈亏，恢复开仓）")
             return True
         return False
+
+    def _maybe_recover_zombie(self, today) -> bool:
+        """【2026-09-21 P0 修复】「僵尸冻结」自愈：仓位倍数为 0 但未处于 halt。
+
+        根因链（实盘 paper 已复现，2026-09-17/18/21 连续三日 100% 现金、0 成交）：
+          1. 09-16 强平 5 笔全部亏损 → _consec_loss 累加到 9（≥ max_consecutive_losses_halt=5）；
+          2. 连亏降仓阶梯 _SCALE_LADDER 末端为 0.0 → position_scale = 0.0；
+          3. 引擎 `_handle_buy` 在 `if scale <= 0: return` 处直接返回，
+             **任何买入信号（含 manual_entry 观察篮）都无法建仓**；
+          4. _halted 标志**未持久化**，而 _consec_loss 从 engine_state 恢复为陈旧值 →
+             重启后 halted=False，而原先的 `_maybe_recover` 首行即
+             `if not self._halted: return False` → 冷却恢复**永不触发**；
+          5. reset_daily() 只在 on_fill() 里调用 → 零成交时日切重置也永不执行。
+        于是账户陷入「未熔断、却永久无法开仓」的僵尸态，且无自愈路径。
+
+        修复：对「未 halt 但连亏已达 halt 阈值」的陈旧状态，套用**同一冷却窗口**
+        （halt_recover_days）重置连亏与日内盈亏，使账户恢复到可交易状态。
+        · 不重置 _peak_asset —— 保留真实回撤基线，max_drawdown 保护不弱化；
+        · 不改变任何风险底线参数，仅恢复「可恢复断路器」的设计语义。
+        """
+        if self._consec_loss < self.p["max_consecutive_losses_halt"]:
+            return False
+        if self._halt_day is None:
+            self._halt_day = today   # 无触发日记录（如重启丢失）→ 自今日起计冷却
+            return False
+        held = (today - self._halt_day).days
+        if held < self.p.get("halt_recover_days", 1):
+            return False
+        self._consec_loss = 0
+        self._daily_pnl = 0.0
+        self._flatten_requested = False
+        self._halt_day = None
+        logger.warning("RiskManager 僵尸冻结自愈（冷却 %s 日）：重置连亏/日内盈亏，"
+                       "仓位倍数恢复 1.0（回撤基线保留）", held)
+        system_notice("SUCCESS", "风控",
+                      f"仓位冻结自愈（冷却 {held} 日）：连亏计数与日内盈亏已重置，恢复开仓能力")
+        return True
 
     # ---------- 手动恢复 ----------
 
