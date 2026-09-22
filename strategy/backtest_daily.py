@@ -350,6 +350,15 @@ class BacktestConfig:
     max_per_sector: int = 0
     buy_score_threshold: float = 4.0
     min_signals: int = 3
+    # ---- 日线偏置闸门（与实盘 trend_strategy.on_bars 对齐）----
+    # 【2026-09-22 PM-EVOLVE 口径修正】实盘的入场日线闸门是
+    #   ``trend_up or bias >= min_daily_bias``（trend_strategy.py:151），
+    # 而回测历史上**只有 trend_up 一路**（bias 通道从未建模）→
+    # 回测系统性**低估**实盘的入场机会，所有历史调参结论都建立在偏保守的基线上。
+    # 现补上该通道。bias ∈ [-1, 1]（daily_context.py:180-187），故
+    # 默认 **2.0 = 关闭**（bias 永不可达），逐位保持既有回测行为，
+    # 不破坏任何历史结论与测试；需要评估生产口径时显式传入 0.2 即可。
+    min_daily_bias: float = 2.0
     # ---- 退出范式 + 动量（本次优化）----
     exit_mode: str = "scalp"        # "scalp"=紧移动止损; "trend"=趋势骑行至破位
     trend_exit_ma: int = 60          # 趋势破位判定均线
@@ -711,6 +720,7 @@ def run_backtest(codes: List[str], cfg: BacktestConfig,
     # atr_pct_at / score_daily，使 run_backtest 为 O(n^2)。预计算为全序列数组
     # 后按 [i] 索引（数值与 I.last(series[:i+1]) 完全一致，已验证 base 指标不变）。
     trend_up_arr: Dict[str, list] = {}
+    bias_arr: Dict[str, list] = {}
     atr_pct_arr: Dict[str, list] = {}
     score_arr: Dict[str, list] = {}
     # 量能突破确认（vol_confirm）预计算：放量比 + 是否贴近阶段高位。
@@ -735,6 +745,21 @@ def run_backtest(codes: List[str], cfg: BacktestConfig,
                     and (_mh[i] or 0) >= 0):
                 _tu[i] = True
         trend_up_arr[code] = _tu
+        # 综合偏置序列 bias ∈ [-1,1]（与 daily_context.py:180-187 严格同式）
+        # 实盘闸门 ``trend_up or bias >= min_daily_bias`` 的第二路，
+        # 回测原本缺失，此处补齐（默认阈值 2.0 = 该路关闭，行为不变）。
+        _bi = [0.0] * n_c
+        for i in range(n_c):
+            m20 = _s20[i]; m60 = _s60[i]
+            b = 0.0
+            if m20:
+                b += 0.35 * (1.0 if cl[i] > m20 else -1.0)
+            if m60:
+                b += 0.35 * (1.0 if cl[i] > m60 else -1.0)
+            if m20 and m60:
+                b += 0.30 * (1.0 if m20 > m60 else -1.0)
+            _bi[i] = max(-1.0, min(1.0, b))
+        bias_arr[code] = _bi
         # ATR% 序列（与 atr_pct_at 等价）
         _atr = I.atr(hi, lo, cl, 14)
         _ap = [0.0] * n_c
@@ -1157,7 +1182,9 @@ def run_backtest(codes: List[str], cfg: BacktestConfig,
                         continue
                     if sum(1 for x in factors.values() if x > 0) < cfg.min_signals:
                         continue
-                    if cfg.use_gate and not trend_up_arr[code][i]:
+                    if cfg.use_gate and not (
+                            trend_up_arr[code][i]
+                            or bias_arr[code][i] >= cfg.min_daily_bias):
                         continue
                 scored.append((score, code))
             scored.sort(key=lambda x: x[0], reverse=True)

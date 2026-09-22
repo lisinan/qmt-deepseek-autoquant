@@ -118,6 +118,14 @@ def candidates_final() -> dict:
     # → 疑似尖峰。此处纳入 4 窗口共识做终局裁决（防窗口运气）。
     out["E1_dd5"] = replace(b, down_day_exit_pct=-5.0)
     out["E2_dd6"] = replace(b, down_day_exit_pct=-6.0)
+    # ---- 2026-09-22 PM-EVOLVE：日线偏置闸门 min_daily_bias ----
+    # 实盘入场闸门是 ``trend_up or bias >= min_daily_bias``（trend_strategy.py:151，
+    # 生产 0.2），而回测历史只有 trend_up 一路（等价于 2.0=关闭）。
+    # F1 = 回测基线口径（关闭 bias 通道）；F2 = **当前生产口径**（0.2，放行 bias>=0.3）。
+    # 若 F2 在四窗口一致为负，则生产应改为 2.0 与已验证口径对齐。
+    out["F1_bias关闭_2.0"] = replace(b, min_daily_bias=2.0)
+    out["F2_生产口径_0.2"] = replace(b, min_daily_bias=0.2)
+    out["F3_bias_-0.3"] = replace(b, min_daily_bias=-0.3)
     return out
 
 

@@ -213,7 +213,23 @@ STRATEGY_PARAMS = {
     "volume_surge": 1.2,            # 量比阈值
     "min_signals": 3,               # 至少 3 个因子共振
     # 日线多周期闸门（MTF）
-    "min_daily_bias": 0.2,          # 日线偏置 >= 该值才允许买入（trend_up 直接放行）
+    # 【2026-09-22 PM-EVOLVE 落盘：0.2 → 2.0】日线偏置 >= 该值才允许买入（trend_up 直接放行）
+    # 机理与证据：实盘入场闸门是 ``trend_up or bias >= min_daily_bias``
+    #   （trend_strategy.py:151），而回测历史上**只有 trend_up 一路**——bias 通道
+    #   从未被建模、也从未被验证过（等价于 2.0=关闭，因 bias ∈ [-1,1] 不可达 2.0）。
+    #   本轮首次把该通道补进回测（backtest_daily.BacktestConfig.min_daily_bias）后验证：
+    #     90×6 OOS 网格（单调）：2.0 → dSh +0.000（精确复现基线，可逆性已验）
+    #       0.2 → −0.238 / 0.0 → −0.238 / −0.3 → −0.245 / −0.4 → −0.295 / −1.0 → −0.320
+    #     4 窗口共识（60×9 / 75×7 / 90×6 / 120×4）生产口径 0.2 的 dSh：
+    #       −0.298 / −0.197 / −0.238 / −0.117 → **最差 −0.298，四窗口全负**
+    #     IS：ret 138.0%→159.0%、Sh 1.15→1.25、MDD −19.70%→−16.08%
+    #     OOS：均值 Sh 0.960→1.173、均值 MDD −10.89%→−9.24%、最差折 −5.9%→−5.1%
+    #   结论：bias 通道放行的多是「价格站上 MA20/MA60 但均线仍空头排列」的弱势反弹，
+    #   假信号多于真机会。关闭它与已验证的回测口径对齐。
+    #   可逆：改回 0.2 即恢复旧行为。**缓存型参数**（trend_strategy.py:53
+    #   self.p = dict(STRATEGY_PARAMS) 为构造期快照）→ **改动需重启引擎才生效**。
+    "min_daily_bias": 2.0,
+
     # 【2026-09-02 P0 修正】日线数据缺失时的处置。
     #   原实现：features(code) 为 None 即 daily_ok=True「保守放行」。但 DailyContext
     #   只装载静态 STOCK_CODES，而候选池还包含 DYNAMIC_UNIVERSE 的 ~30 只活跃股 →

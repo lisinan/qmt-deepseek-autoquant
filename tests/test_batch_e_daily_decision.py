@@ -48,9 +48,16 @@ def test_on_daily_features_returns_buy_when_score_passes():
 
 
 def test_on_daily_features_returns_hold_when_score_low():
-    """daily_ok 成立但 score 不达标时 → HOLD with reason 'score<...'。"""
-    s = TrendStrategy()
-    # bias=0.5 ≥ 0.2 → daily_ok=True；score=2 < threshold=4 → score 不够
+    """daily_ok 成立但 score 不达标时 → HOLD with reason 'score<...'。
+
+    【2026-09-22 PM-EVOLVE】本例必须与**生产 min_daily_bias 取值解耦**：
+    原实现依赖生产默认值 0.2（bias=0.5 ≥ 0.2 → daily_ok=True），
+    落盘把生产改为 2.0（关闭 bias 通道）后该前提不再成立，
+    于是本例实际走的是 daily-gate 拒绝而非 score 拒绝。
+    现显式注入 params 固定闸门阈值，测试意图（验证 score 路径）不随生产值漂移。
+    """
+    s = TrendStrategy(params={"min_daily_bias": 0.2})
+    # bias=0.5 ≥ 0.2（显式注入） → daily_ok=True；score=2 < threshold=4 → score 不够
     f = DailyFeatures(code="X", close=100.0, score=2.0,
                       factors={"trend": 0.5, "momentum": 0.0,
                                "oversold": 0.5, "volume": 0.0,
@@ -72,6 +79,29 @@ def test_on_daily_features_blocks_when_daily_gate_fails():
     sig = s.on_daily_features("X", "TEST", f)
     assert sig.side == "HOLD"
     assert "daily-gate" in sig.reason, f"应 daily-gate 拒，实际 {sig.reason}"
+
+
+def test_on_daily_features_prod_gate_closes_bias_channel():
+    """【2026-09-22 PM-EVOLVE 落盘守卫】生产 min_daily_bias=2.0 → bias 通道关闭。
+
+    bias ∈ [-1,1] 恒 < 2.0，故 trend_up=False 时**任何** bias 都无法放行。
+    证据：4 窗口共识下生产旧值 0.2 的 dSh = −0.298/−0.197/−0.238/−0.117（全负）。
+    本例把该语义钉住：若有人把生产改回 0.2，此测试立即失败。
+    """
+    assert STRATEGY_PARAMS["min_daily_bias"] == 2.0, (
+        "生产 min_daily_bias 应为 2.0（关闭 bias 通道），"
+        f"实际 {STRATEGY_PARAMS['min_daily_bias']}")
+    s = TrendStrategy()      # 用生产默认，不注入
+    for bias in (0.3, 0.4, 0.5, 1.0):
+        f = DailyFeatures(code="X", close=100.0, score=9.0,
+                          factors={"trend": 2.0, "momentum": 1.0,
+                                   "oversold": 1.0, "volume": 0.5,
+                                   "position": 0.5},
+                          trend_up=False, bias=bias)
+        sig = s.on_daily_features("X", "TEST", f)
+        assert sig.side == "HOLD", f"bias={bias} 应被闸门拒绝，实际 {sig.side}"
+        assert "daily-gate" in sig.reason, (
+            f"bias={bias} 应 daily-gate 拒绝，实际 {sig.reason}")
 
 
 def test_on_daily_features_hold_when_features_is_none():

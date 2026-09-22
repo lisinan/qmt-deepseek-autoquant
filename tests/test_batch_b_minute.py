@@ -118,10 +118,16 @@ def test_minute_baseline_documented_loss_is_pinned():
         data[c] = d
     if not data:
         return
+    # 【2026-09-22 PM-EVOLVE】显式固定闸门阈值，与生产 min_daily_bias 解耦。
+    # 生产已由 0.2 改为 2.0（关闭 bias 通道，见 EVOLUTION_DECISIONS.md §十三）；
+    # 若不注入，分钟路径在 trend_up=False 时**一笔都开不出**（实测 n_trades=0），
+    # 本例钉住的「分钟级负收益」事实就无从验证。
+    # 注入 0.2 复原文档化基线，使该历史结论不随生产闸门取值漂移。
     r = run_minute_backtest(
         list(data.keys()),
         MinuteConfig(fixed_amount=100000.0,
-                     buy_threshold=4.0, t1_restriction=True),
+                     buy_threshold=4.0, t1_restriction=True,
+                     strategy_params={"min_daily_bias": 0.2}),
         data)
     assert r["n_trades"] >= 5, \
         f"应至少有若干笔交易进行验证，实际 {r['n_trades']}"
