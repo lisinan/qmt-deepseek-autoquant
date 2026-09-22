@@ -65,6 +65,13 @@ main { display: grid;
   transition: transform .12s ease;
 }
 .heat-cell:hover { transform: translateY(-1px); }
+/* 数值变化时闪一下：3s 刷新后数字是静默变化的，不提示会以为页面没更新。
+   注意用 filter 而非 background-color —— 卡片背景是不透明渐变，改背景色看不见。 */
+@keyframes hc-flash-kf {
+  0%   { filter: brightness(1.9); }
+  100% { filter: brightness(1); }
+}
+.heat-cell.hc-flash { animation: hc-flash-kf .9s ease-out; }
 /* 热度第一名：加一圈描边，一眼锁定最强环节 */
 .heat-cell.hot-leader { box-shadow: 0 0 0 1px rgba(232,114,45,.45) inset; }
 

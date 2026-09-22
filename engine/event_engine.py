@@ -323,6 +323,8 @@ class EventEngine:
         self.SLOW_ROUND_SEC = 10.0     # 单轮超过它就告警并打印分段耗时
         self._slow_rounds = 0
         self._last_round_ms = 0.0
+        # 单模式下每几轮评估一次环节热度。1 = 每轮（与 3s 行情同频）；改回 5 即旧行为。
+        self.SECTOR_EVAL_EVERY_N_ROUNDS = 1
         self.data_mode = qmt_client.mode
         self.broker_mode = qmt_broker.mode
 
@@ -1536,22 +1538,29 @@ class EventEngine:
         _mark("exit")
 
         # 5) 评估入场 + sector
-        # Portfolio select() 调 on_bars 需要 8 指标计算，每只股票~0.5s，30 只需 15s
-        # 超过 REFRESH_INTERVAL=3s 会导致上一轮卡住。所以改成每 N tick 跑一次
-        portfolio_every_n = 5   # 每 5 tick 跑一次 select + sector
+        # 【2026-09-22】单模式下的 sector 评估改为**每轮都跑**。
+        # 原注释称「on_bars 每只 0.5s，30 只需 15s，超过 REFRESH_INTERVAL=3s」，
+        # 那是引入 on_bars 指标缓存之前的数据；实测现在 39 只 × 240 根 bar = 0.04s
+        # （0.001s/只），evaluate+build 合计 ~1ms。于是「每 5 tick 跑一次」这个
+        # 节流只剩副作用：热力图数值比行情慢 5 倍（用户明确要求"数值也 3 秒刷新"）。
+        # 注意：推荐池**写库**与 LLM 重排的节流在 _evaluate_sectors 内部各自保留，
+        # 放开评估频率不会放大 DB 写入或 API 调用。
+        # 旋钮：SECTOR_EVAL_EVERY_N_ROUNDS（改回 5 即恢复旧行为，完全可逆）。
+        portfolio_every_n = 5   # 组合模式：每 5 tick 跑一次 select + sector
         if self._portfolio is not None:
             if self._tick_count % portfolio_every_n == 0:
                 self._run_portfolio_step(ticks)
             else:
-                # 其他轮只跑轻量 sector 评估（30ms）
+                # 其他轮只跑轻量 sector 评估
                 if self.sector_scorer is not None:
                     self._evaluate_sectors(ticks)
         else:
             self._run_single_step(ticks)
-            # 单标的模式：产业链推荐池与策略正交（纯观察），同样每 N tick 轻量维护，
-            # 使 /api/sector/recommendations 与 LLM 重排序在单模式下也能工作。
+            # 单标的模式：产业链推荐池与策略正交（纯观察）。原先同样按
+            # portfolio_every_n 节流，导致热力图滞后于行情；现按
+            # SECTOR_EVAL_EVERY_N_ROUNDS 每轮评估，与 3s 行情节奏对齐。
             if self.sector_scorer is not None and \
-                    self._tick_count % portfolio_every_n == 0:
+                    self._tick_count % self.SECTOR_EVAL_EVERY_N_ROUNDS == 0:
                 self._evaluate_sectors(ticks)
 
         _mark("entry/sector")

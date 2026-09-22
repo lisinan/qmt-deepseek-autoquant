@@ -85,6 +85,10 @@
   <tr><td>板块广度</td><td>只有文字 "上涨 1/3"</td><td>占比进度条 + 文字，红=上涨家数</td></tr>
   <tr><td>领跌 / 分化</td><td>无</td><td>领涨+领跌并列；价差 ≥5pt 且未普涨时标「⚠ 内部分化」</td></tr>
   <tr><td>响应式</td><td>固定 3 列，窄屏挤扁</td><td><code>auto-fill minmax(196px,1fr)</code> 自动降列</td></tr>
+  <tr><td>刷新节奏</td><td>单模式下每 5 轮评估一次（比行情慢 5 倍）</td>
+      <td>每轮评估，与 3s 行情同频；前端节流 3s 且数值无变化不重建 DOM</td></tr>
+  <tr><td>更新可见性</td><td>数字静默变化</td><td>数值变化时卡片闪一下（<code>filter: brightness</code>）</td></tr>
+  <tr><td>排序稳定性</td><td>无排序</td><td>热度差 &lt;0.15 视为并列沿用上次顺序，避免卡片来回跳</td></tr>
 </table>
 
 <h2>被修掉的误读（真实案例）</h2>

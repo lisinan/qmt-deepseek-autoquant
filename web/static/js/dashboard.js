@@ -287,6 +287,12 @@
   }
 
   // ----- 产业链热力图 -----
+  // 热力图渲染节流与排序迟滞（见 renderSectorHeat 注释）
+  var HEAT_REFRESH_MS = 3000;   // 与 3s 行情节奏对齐
+  var HEAT_SORT_TOL = 0.15;     // 热度差小于此值视为并列，不重排
+  var _lastHeatSig = null, _lastHeatHtml = null, _lastHeatTs = 0;
+  var _lastHeatOrder = [], _lastHeatValues = null;
+
   // 【2026-09-22 展示重做】原实现的问题：
   //   ① 按配置顺序平铺，不排序 → 看不出谁最热；
   //   ② 只给热度/涨幅/上涨数/领涨四项，量比（热度三大构成之一）从未展示；
@@ -299,12 +305,37 @@
       el.innerHTML = '<div class="muted">等待数据...</div>';
       return;
     }
+
+    // 【2026-09-22】渲染节奏控制。
+    // SSE 每 1s 推一帧，而热力图数值只需跟住 3s 行情节奏：
+    //   ① 节流到 3s，避免每秒整块重建 DOM（hover 会被打断、CSS 过渡失效）；
+    //   ② 数值没变就不重建，纯省开销。
+    var sig = Object.keys(heat).map(function (k) {
+      var s = heat[k] || {};
+      return k + ':' + (s.heat_score || 0) + ':' + (s.avg_change_pct || 0) +
+        ':' + (s.n_up || 0) + ':' + (s.best_change_pct || 0) +
+        ':' + (s.worst_change_pct || 0);
+    }).sort().join('|');
+    var now = Date.now();
+    if (sig === _lastHeatSig && _lastHeatHtml) return;          // 无变化
+    if (_lastHeatTs && now - _lastHeatTs < HEAT_REFRESH_MS) return;  // 节流
+    _lastHeatTs = now;
+
+    var prev = _lastHeatValues || {};
+    var prevOrder = _lastHeatOrder || [];
     var rows = Object.keys(heat).map(function (k) {
       var s = heat[k] || {};
       s._key = k;
       return s;
     }).sort(function (a, b) {
-      return (Number(b.heat_score) || 0) - (Number(a.heat_score) || 0);
+      var d = (Number(b.heat_score) || 0) - (Number(a.heat_score) || 0);
+      // 排序迟滞：热度差 <0.15 视为并列，沿用上一帧顺序。
+      // 否则两个环节热度交替领先时卡片会来回跳，根本看不清数值。
+      if (Math.abs(d) < HEAT_SORT_TOL) {
+        var ia = prevOrder.indexOf(a._key), ib = prevOrder.indexOf(b._key);
+        if (ia >= 0 && ib >= 0) return ia - ib;
+      }
+      return d;
     });
 
     var html = '';
@@ -321,8 +352,12 @@
       var spread = best - worst;
       // 分化度：领涨与领跌差距超过 5 个百分点即视为内部严重分化
       var divergent = spread >= 5.0 && nUp < nStocks;
+      // 数值有变化就闪一下：3s 刷新后数字是静默变化的，不提示会以为没更新
+      var pv = prev[s._key];
+      var flash = (pv !== undefined && pv !== score) ? ' hc-flash' : '';
 
-      html += '<div class="heat-cell' + (idx === 0 ? ' hot-leader' : '') + '"' +
+      html += '<div class="heat-cell' + (idx === 0 ? ' hot-leader' : '') +
+        flash + '"' +
         ' style="border-left-color:' + col + ';' +
         ' background:linear-gradient(90deg,' + col + '1f 0%, #151a23 60%);">' +
 
@@ -365,6 +400,13 @@
         '</div>';
     });
     el.innerHTML = html;
+
+    // 记住本帧状态供下一帧做「变化检测 + 排序迟滞」
+    _lastHeatSig = sig;
+    _lastHeatHtml = html;
+    _lastHeatOrder = rows.map(function (r) { return r._key; });
+    _lastHeatValues = {};
+    rows.forEach(function (r) { _lastHeatValues[r._key] = Number(r.heat_score) || 0; });
   }
 
   // ----- 动态候选池 -----

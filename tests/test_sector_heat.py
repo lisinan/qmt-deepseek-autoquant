@@ -99,3 +99,35 @@ def test_latest_sector_heat_exposes_volume_and_worst():
     assert d["avg_volume_ratio"] == 1.35
     assert d["worst_name"] == "天孚通信"
     assert d["worst_change_pct"] == -1.8
+
+
+def _real_engine():
+    """构造一个真实引擎实例（关掉外部依赖），用于读实例级旋钮。"""
+    from engine.event_engine import EventEngine
+    return EventEngine(exec_mode="paper", auto_init_positions=False,
+                       enable_sector_scorer=True,
+                       enable_dynamic_universe=False,
+                       enable_llm_reranker=False)
+
+
+def test_sector_eval_every_round_by_default():
+    """单模式下热度默认每轮评估，才能跟上 3s 行情节奏。
+
+    原实现与组合模式共用 ``portfolio_every_n = 5``，热力图比行情慢 5 倍。
+    """
+    e = _real_engine()
+    assert e.SECTOR_EVAL_EVERY_N_ROUNDS == 1, "默认应为每轮评估（与 3s 行情同频）"
+
+
+def test_sector_eval_knob_is_reversible():
+    """旋钮改成 5 必须立刻恢复「每 5 轮评估一次」的旧行为（可逆性要求）。"""
+    import inspect
+    from engine.event_engine import EventEngine
+    e = _real_engine()
+    e.SECTOR_EVAL_EVERY_N_ROUNDS = 5
+    assert e.SECTOR_EVAL_EVERY_N_ROUNDS == 5
+    # _run_once 必须真的读这个旋钮，而不是仍然写死 5 或 1
+    src = inspect.getsource(EventEngine._run_once)
+    assert "self.SECTOR_EVAL_EVERY_N_ROUNDS" in src
+    # 组合模式仍按 portfolio_every_n 节流（不能一并放开，select() 更重）
+    assert "portfolio_every_n" in src
