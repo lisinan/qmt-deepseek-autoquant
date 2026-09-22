@@ -181,6 +181,11 @@ class _XtdClient:
             "lastClose": lc,
             "volume": int(tick.get("volume", 0) or 0),
             "amount": float(tick.get("amount", 0) or 0),
+            # 【2026-09-22】透传交易所行情时间（xtdata 毫秒时间戳）。
+            # 没有它时引擎只能用「抓取时刻」冒充行情时间，于是行情已经停更
+            # （订阅掉线/主循环阻塞）时页面依然显示"刚刚"，掩盖滞后问题。
+            "time": tick.get("time"),
+            "_pushed_at": tick.get("_pushed_at"),
         }
 
     def get_ticks(self, codes: Iterable[str]) -> Dict[str, dict]:

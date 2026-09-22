@@ -147,14 +147,34 @@ def _pid_alive(pid: int) -> bool:
         return True
 
 
+def _tick_ts(raw: dict) -> datetime:
+    """从行情原始字典解析真实行情时间。
+
+    xtdata 的 tick 带 ``time``（毫秒 epoch）与 ``timetag``；推送缓存里另有
+    ``_pushed_at``（秒 epoch，推送到达时刻）。二者都拿不到才退回当前时刻。
+    """
+    for key, div in (("time", 1000.0), ("_pushed_at", 1.0)):
+        v = raw.get(key)
+        if not v:
+            continue
+        try:
+            return datetime.fromtimestamp(float(v) / div)
+        except (TypeError, ValueError, OSError, OverflowError):
+            continue
+    return datetime.now()
+
+
 def _to_tick(code: str, raw: dict) -> Tick:
     name = UNIVERSE.get(code, code)
     lp = float(raw.get("lastPrice") or 0)
     pre = float(raw.get("lastClose") or lp or 0)
     chg = lp - pre if pre else 0.0
     pct = (chg / pre * 100) if pre else 0.0
+    # 【2026-09-22】优先用交易所行情时间，其次用推送到达时间，最后才是抓取时刻。
+    # 这样才能真实反映「行情有多旧」，而不是「引擎刚取过」。
+    ts = _tick_ts(raw)
     return Tick(
-        ts=datetime.now(), code=code, name=name, price=lp,
+        ts=ts, code=code, name=name, price=lp,
         open=float(raw.get("open") or lp),
         high=float(raw.get("high") or lp),
         low=float(raw.get("low") or lp),
@@ -299,6 +319,10 @@ class EventEngine:
         self.llm_reranker = LLMReranker() if enable_llm_reranker else None
         self._llm_rerank_interval = llm_rerank_interval
         self._llm_last_result = None
+        # ---- 主循环健康度（2026-09-22）----
+        self.SLOW_ROUND_SEC = 10.0     # 单轮超过它就告警并打印分段耗时
+        self._slow_rounds = 0
+        self._last_round_ms = 0.0
         self.data_mode = qmt_client.mode
         self.broker_mode = qmt_broker.mode
 
@@ -656,6 +680,7 @@ class EventEngine:
             code, sig, eff_score, is_breakout = slot_cands[0]
             bp = ticks[code]
             sig.price = float(getattr(bp, "price", 0) or 0)
+            self._save_signal(sig)   # 2026-09-22：轮动买入也要落库（见 _manual_entry_step）
             self._handle_buy(sig, bp, {c: t.price for c, t in ticks.items()})
             self._last_rotate_ts = now
             system_notice(
@@ -717,10 +742,12 @@ class EventEngine:
                 side="SELL", price=wpos.last_price,
                 reason=f"板块轮动换出(评分{weakest_score:.1f}<候选{eff_score:.1f}"
                        f"{'|日内突破' if is_breakout else ''})")
+            self._save_signal(wsig)   # 2026-09-22：轮动换出同样落库
             self._handle_sell(wsig, wpos)
             self._last_rotate_ts = now
             bp = ticks[code]
             sig.price = float(getattr(bp, "price", 0) or 0)
+            self._save_signal(sig)    # 2026-09-22：轮动换入落库
             self._handle_buy(sig, bp, {c: t.price for c, t in ticks.items()})
             swap_pairs.append((weakest_code, code))
             del remaining[weakest_code]
@@ -883,6 +910,8 @@ class EventEngine:
                         len(dynamic_codes),
                         len(self.dynamic_universe.codes))
         qmt_client.subscribe(codes)
+        # 外网自检（代理 / Tushare）——见 _probe_network_async 说明
+        self._probe_network_async()
         # 分钟线预热：后台线程（首次补拉 1m 历史实测 ~9.75s/只，46 只约 7.5 分钟，
         # 绝不能阻塞启动）。预热完成前主循环照常现场聚合，二者会在换入时合并。
         if BAR_WARMUP:
@@ -1116,6 +1145,11 @@ class EventEngine:
         total_asset = round(self._total_asset(), 2)
         snap = {
             "tick": self._tick_count,
+            # 【2026-09-22】行情与主循环新鲜度：页面据此显示「行情滞后 N 秒」，
+            # 用户一眼能区分「行情停更」与「策略本来就没信号」。
+            "market_data_ts": self._market_data_ts(),
+            "round_ms": round(self._last_round_ms, 1),
+            "slow_rounds": self._slow_rounds,
             "strategy_mode": self.strategy_mode,
             "data_mode": self.data_mode,
             "broker_mode": self.broker_mode,
@@ -1160,6 +1194,7 @@ class EventEngine:
             "llm_rerank": (self.latest_llm_rerank()),
             "llm_reranker": (self.llm_reranker.snapshot()
                               if self.llm_reranker else None),
+            "data_health": self.data_health(),
             "notices": self.latest_notices(20),
         }
         if self._portfolio:
@@ -1214,17 +1249,74 @@ class EventEngine:
         """最近一次拉到的 tick（用于 SSE 推送）"""
         return self._last_ticks
 
+    def _probe_network_async(self) -> None:
+        """启动后异步探测外网（DeepSeek / Tushare）连通性。
+
+        【2026-09-22】整个「LLM 重排没工作 + 行情滞后」的根源是引擎进程带着
+        失效的 HTTP(S)_PROXY 启动：代理软件没开 → 每次外网调用都等满超时，
+        主循环被拖慢一个数量级，而页面对此零提示。这里启动即自检，把结论
+        写进系统提示，用户不用翻日志就能知道「该开代理了 / 该去掉代理了」。
+        """
+        def _worker():
+            import os
+            import socket
+            proxy = (os.environ.get("HTTPS_PROXY") or os.environ.get(
+                "https_proxy") or os.environ.get("HTTP_PROXY") or
+                os.environ.get("http_proxy") or "")
+            msgs = []
+            if proxy:
+                # 解析 host:port 做一次 TCP 连通测试
+                try:
+                    hp = proxy.split("//")[-1].rstrip("/")
+                    host, port = hp.split(":")
+                    s = socket.create_connection((host, int(port)), timeout=2.0)
+                    s.close()
+                    msgs.append(f"代理 {proxy} 可达")
+                except Exception as e:
+                    msgs.append(f"⚠ 已配置代理 {proxy} 但连不上({type(e).__name__})"
+                                f" —— 外网 API 将逐个等超时，主循环会被拖慢、"
+                                f"LLM 重排会静默失败。请开启代理软件或清除该环境变量")
+                    system_notice("ERROR", "网络", msgs[-1])
+            try:
+                from data.tushare_client import tushare_client
+                if tushare_client.enabled and tushare_client.test_connection():
+                    msgs.append("Tushare 连通")
+                elif tushare_client.enabled:
+                    msgs.append("Tushare 不可用（基本面分回落中性值，不影响交易）")
+            except Exception as e:
+                msgs.append(f"Tushare 自检异常: {type(e).__name__}")
+            logger.info("网络自检: %s", " | ".join(msgs))
+
+        threading.Thread(target=_worker, name="net-probe", daemon=True).start()
+
+    def _market_data_ts(self) -> Optional[str]:
+        """最新行情时间（ISO）。取所有标的中最新的一只，代表本轮数据新鲜度。"""
+        latest = None
+        for t in (self._last_ticks or {}).values():
+            v = t.get("ts") if isinstance(t, dict) else None
+            if v and (latest is None or v > latest):
+                latest = v
+        return latest
+
     def latest_sector_heat(self) -> dict:
         """产业链热度（每个环节的 heat_score）。"""
         if self.sector_scorer is None:
             return {}
+        # 【2026-09-22】补齐 avg_volume_ratio 与领跌字段：前者本来就在 SectorScore
+        # 里却从未下发（量能是热度三大构成之一，页面看不到）；后者用于算分化度，
+        # 避免「单只暴涨 + 平均涨幅高」被误读成板块普涨。
         return {k: {"heat_score": v.heat_score,
-                     "avg_change_pct": v.avg_change_pct,
-                     "strength": v.strength,
-                     "n_up": v.n_up, "n_stocks": v.n_stocks,
-                     "best_code": v.best_code,
-                     "best_name": v.best_name,
-                     "label": v.label}
+                    "avg_change_pct": v.avg_change_pct,
+                    "avg_volume_ratio": getattr(v, "avg_volume_ratio", 1.0),
+                    "strength": v.strength,
+                    "n_up": v.n_up, "n_stocks": v.n_stocks,
+                    "best_code": v.best_code,
+                    "best_name": v.best_name,
+                    "best_change_pct": getattr(v, "best_change_pct", 0.0),
+                    "worst_code": getattr(v, "worst_code", ""),
+                    "worst_name": getattr(v, "worst_name", ""),
+                    "worst_change_pct": getattr(v, "worst_change_pct", 0.0),
+                    "label": v.label}
                 for k, v in self.sector_scorer.sector_scores.items()}
 
     def latest_recommendations(self) -> list:
@@ -1235,11 +1327,41 @@ class EventEngine:
         return [asdict(r) for r in self.sector_scorer.recommendations]
 
     def latest_llm_rerank(self) -> Optional[dict]:
-        """最新 LLM 重排序结果。"""
+        """最新 LLM 重排序结果。
+
+        【2026-09-22】附带 health：之前 LLM 调用失败（典型是代理没开导致
+        ProxyError）时前端**完全没有反馈**——按钮点下去返回 200，页面继续显示
+        上一次结果，用户只能得出「LLM 重排没工作」的结论。现在把 enabled /
+        last_error / 上次成功时间一起回传，页面可显示明确失败原因。
+        """
         if self._llm_last_result is None:
             return None
         from dataclasses import asdict
-        return asdict(self._llm_last_result)
+        out = asdict(self._llm_last_result)
+        out["health"] = self.llm_health()
+        return out
+
+    def llm_health(self) -> dict:
+        """LLM 重排健康状态（供前端展示失败原因，见 latest_llm_rerank 注释）。"""
+        health: dict = {
+            "enabled": bool(self.llm_reranker and self.llm_reranker.enabled),
+            "has_result": self._llm_last_result is not None,
+        }
+        try:
+            client = getattr(self.llm_reranker, "client", None)
+            if client is not None and hasattr(client, "health"):
+                health.update(client.health())
+        except Exception:
+            pass
+        return health
+
+    def data_health(self) -> dict:
+        """数据源健康（tushare 基本面）。熔断时页面应能看出「基本面降级」。"""
+        try:
+            from data.tushare_client import tushare_client
+            return tushare_client.health()
+        except Exception as e:
+            return {"enabled": False, "error": str(e)}
 
     def latest_dynamic_universe_summary(self) -> dict:
         """动态候选池摘要（不传全 373 只代码，只传统计）。"""
@@ -1256,13 +1378,32 @@ class EventEngine:
     # ============================================================ 单轮
 
     def _run_once(self, codes: List[str]) -> None:
+        # 【2026-09-22 可观测性】分段计时。
+        # 背景：REFRESH_INTERVAL=3s，但实测主循环长期 43~79s/轮，页面行情因此
+        # 「看起来滞后」。没有分段计时时只能靠猜（曾误判为 on_bars / xtdata 慢）。
+        # 现在单轮超过 SLOW_ROUND_SEC 就输出各段耗时，直接指出是谁拖慢的。
+        _rt0 = time.time()
+        _rt_prev = _rt0
+        _phases: List[str] = []
+
+        def _mark(name: str) -> None:
+            nonlocal _rt_prev
+            _now = time.time()
+            _phases.append(f"{name}={(_now - _rt_prev) * 1000:.0f}ms")
+            _rt_prev = _now
+
         # 1) 拉 tick
         raw = qmt_client.get_ticks(codes)
+        _mark("ticks")
         if not raw:
             return
         ticks = {c: _to_tick(c, r) for c, r in raw.items()
                  if (r.get("lastPrice") or 0) > 0}
+        # 【2026-09-22】补 ts：Tick 本身带 ts，但这里序列化时漏掉了，
+        # 前端拿不到行情时间戳 → 无法判断「行情是否滞后」，用户只能凭价格不变猜。
+        # 现在每只带 ts，SSE 另汇总一份 market_data_ts 供页面显示新鲜度徽标。
         self._last_ticks = {c: {
+            "ts": t.ts.isoformat() if getattr(t, "ts", None) else None,
             "price": t.price, "open": t.open, "high": t.high, "low": t.low,
             "pre_close": t.pre_close, "change": t.change, "change_pct": t.change_pct,
             "volume": t.volume, "amount": t.amount, "source": t.source,
@@ -1271,6 +1412,7 @@ class EventEngine:
         # 2) 聚合 bars
         for code, tick in ticks.items():
             self._aggregate_bar(code, tick)
+        _mark("bars")
 
         # 2.5) live 模式：以 broker 为权威源同步本地账本（持仓/现金/总资产）。
         # 修复 live 路径长期 Bug——原实现只在 paper 分支维护 self._positions，
@@ -1315,6 +1457,7 @@ class EventEngine:
                                    ap * 6.0)
                         pos.stop_price = round(pos.avg_cost * (1 - wide), 3)
         total_asset = self._total_asset()
+        _mark("positions")
         # 首次观测到总资产即作为今日日内盈亏基线（若 init 时未从 equity 快照取到）
         if self._day_open_asset is None:
             self._day_open_asset = total_asset
@@ -1390,6 +1533,7 @@ class EventEngine:
             exit_sig = self._trend.on_exit(code, pos, ticks[code].price, bars)
             if exit_sig and exit_sig.side == "SELL":
                 self._handle_sell(exit_sig, pos)
+        _mark("exit")
 
         # 5) 评估入场 + sector
         # Portfolio select() 调 on_bars 需要 8 指标计算，每只股票~0.5s，30 只需 15s
@@ -1410,8 +1554,22 @@ class EventEngine:
                     self._tick_count % portfolio_every_n == 0:
                 self._evaluate_sectors(ticks)
 
+        _mark("entry/sector")
+
         # 6) 持久化风控快照（仅状态变化或超过最小间隔时）
         self._maybe_save_risk_snapshot()
+        _mark("persist")
+
+        # 慢轮告警：正常一轮应当远低于 REFRESH_INTERVAL×N，超过阈值就点名各段耗时
+        _elapsed = time.time() - _rt0
+        if _elapsed >= self.SLOW_ROUND_SEC:
+            self._slow_rounds += 1
+            logger.warning(
+                "主循环慢轮 %.1fs（轮次=%d，累计慢轮 %d）分段: %s",
+                _elapsed, self._tick_count, self._slow_rounds,
+                " ".join(_phases))
+        else:
+            self._last_round_ms = _elapsed * 1000.0
 
     def _maybe_save_risk_snapshot(self) -> None:
         """风控快照写库：状态变化即写，否则按 RISK_SNAPSHOT_MIN_INTERVAL 节流。
@@ -1589,6 +1747,10 @@ class EventEngine:
                          name=get_stock_name(code), side="BUY",
                          score=0.0, price=price,
                          reason="manual_entry(观察篮·绕过信号闸门)")
+            # 【2026-09-22】入库：原来只有策略路径调 _save_signal，观察篮与轮动
+            # 的成交不落库 → 引擎当天明明买了 7 笔，signals 表却连日 0 行，
+            # 页面「实时信号」只能显示几天前的旧信号（看着像停摆）。
+            self._save_signal(sig)
             self._handle_buy(sig, tick, current_prices)
             if code in {c for c, p in self._positions.items() if p.quantity > 0}:
                 self._manual_positions.add(code)

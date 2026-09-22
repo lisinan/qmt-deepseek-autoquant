@@ -42,15 +42,59 @@
       .replace(/&/g, '&amp;').replace(/</g, '&lt;')
       .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   }
+  // 【2026-09-22 配色重做】原实现是 灰→亮绿 的单色渐变，有两个问题：
+  //   ① 低热度区间（0~5）几乎全是暗色，冷/热分不出来，热力图失去了"图"的意义；
+  //   ② 用绿色代表高热，与中国股市「绿=跌」的直觉相反，容易被误读成走弱。
+  // 现在改成真正的冷→热色阶，并**刻意避开绿色**：
+  //   蓝(冷) → 青(温) → 琥珀(暖) → 橙(热) → 红(极热)
+  // 涨跌幅仍然单独按中国习惯用红涨/绿跌，两套语义不打架。
+  const HEAT_STOPS = [
+    [0.0, [61, 74, 92]],    // 冷：灰蓝
+    [3.0, [63, 124, 184]],  // 蓝
+    [5.0, [47, 166, 160]],  // 青
+    [6.5, [217, 164, 65]],  // 琥珀
+    [8.0, [232, 114, 45]],  // 橙
+    [10.0, [224, 49, 49]],  // 极热：红
+  ];
+
   function heatColor(score) {
-    // 0~10 → 灰/红/绿 渐变
-    if (score == null) return '#2a3441';
-    const s = Math.max(0, Math.min(10, score));
-    // 热度越高越亮绿
-    const r = Math.round(40 + (95 - 40) * (s / 10));
-    const g = Math.round(60 + (217 - 60) * (s / 10));
-    const b = Math.round(70 + (158 - 70) * (s / 10));
-    return 'rgb(' + r + ',' + g + ',' + b + ')';
+    if (score == null) return '#3d4a5c';
+    const s = Math.max(0, Math.min(10, Number(score) || 0));
+    for (let i = 0; i < HEAT_STOPS.length - 1; i++) {
+      const [a, ca] = HEAT_STOPS[i], [b, cb] = HEAT_STOPS[i + 1];
+      if (s <= b) {
+        const t = (s - a) / (b - a || 1);
+        const c = ca.map((v, k) => Math.round(v + (cb[k] - v) * t));
+        return 'rgb(' + c.join(',') + ')';
+      }
+    }
+    return 'rgb(224,49,49)';
+  }
+
+  // 热度等级文字（配合色阶，数值之外再给一个可读的定性标签）
+  function heatLevel(score) {
+    const s = Number(score) || 0;
+    if (s >= 8.0) return '极热';
+    if (s >= 6.5) return '偏热';
+    if (s >= 5.0) return '温和';
+    if (s >= 3.0) return '偏冷';
+    return '冷';
+  }
+
+  // 涨跌幅着色：严格中国习惯 涨=红 / 跌=绿
+  function chgColor(pct) {
+    const p = Number(pct) || 0;
+    if (p > 0) return '#ef5350';
+    if (p < 0) return '#26a67a';
+    return '#8898a6';
+  }
+  function chgArrow(pct) {
+    const p = Number(pct) || 0;
+    return p > 0 ? '▲' : (p < 0 ? '▼' : '—');
+  }
+  function signed(pct, d) {
+    const p = Number(pct) || 0;
+    return (p > 0 ? '+' : '') + fmt(p, d === undefined ? 2 : d);
   }
 
   // ============================================================ 行模板
@@ -201,6 +245,38 @@
     el.className = 'signal-fresh ' + cls;
   }
 
+  // 【2026-09-22】行情新鲜度徽标。
+  // 之前 tick 没有时间戳，页面只能显示 tick 计数，行情停更（订阅掉线 /
+  // 主循环被慢调用拖住）时毫无提示，用户只能看到"价格好像没变"。现在后端
+  // 回传行情真实时间（market_data_ts）与单轮耗时（round_ms / slow_rounds），
+  // 这里把「行情滞后 N 秒」与「主循环卡顿」显式化。
+  function updateMarketFreshness(snap) {
+    var el = $('market-fresh');
+    if (!el) return;
+    var ts = snap && snap.market_data_ts;
+    if (!ts) { el.textContent = '无行情时间'; el.className = 'signal-fresh fresh-stale'; return; }
+    var d = new Date(ts);
+    if (isNaN(d.getTime())) { el.textContent = '行情时间无效'; el.className = 'signal-fresh fresh-stale'; return; }
+    var sec = Math.floor((Date.now() - d.getTime()) / 1000);
+    var txt, cls = 'fresh-ok';
+    if (sec < 30) {
+      txt = '行情 ' + sec + ' 秒前';
+    } else if (sec < 180) {
+      txt = '⚠ 行情滞后 ' + sec + ' 秒';
+      cls = 'fresh-warn';
+    } else {
+      txt = '⚠ 行情滞后 ' + Math.floor(sec / 60) + ' 分钟（疑似停更）';
+      cls = 'fresh-stale';
+    }
+    var slow = (snap && snap.slow_rounds) || 0;
+    if (slow > 0) {
+      txt += ' · 主循环慢轮 ' + slow + ' 次';
+      cls = 'fresh-warn';
+    }
+    el.textContent = txt;
+    el.className = 'signal-fresh ' + cls;
+  }
+
   function appendFills(fills) {
     if (!fills || !fills.length) return;
     var body = $('fill-table').querySelector('tbody');
@@ -211,28 +287,81 @@
   }
 
   // ----- 产业链热力图 -----
+  // 【2026-09-22 展示重做】原实现的问题：
+  //   ① 按配置顺序平铺，不排序 → 看不出谁最热；
+  //   ② 只给热度/涨幅/上涨数/领涨四项，量比（热度三大构成之一）从未展示；
+  //   ③ 没有领跌与分化度，"单只暴涨 + 平均涨幅高"会被读成板块普涨
+  //      （实测 PCB互联 avg +7.14% 但上涨仅 1/3，正是这种情况）。
+  // 现在：按热度降序 + 排名、热度进度条、广度条、量比、领涨/领跌、分化提示。
   function renderSectorHeat(heat) {
     var el = $('sector-heatmap');
     if (!heat || !Object.keys(heat).length) {
       el.innerHTML = '<div class="muted">等待数据...</div>';
       return;
     }
+    var rows = Object.keys(heat).map(function (k) {
+      var s = heat[k] || {};
+      s._key = k;
+      return s;
+    }).sort(function (a, b) {
+      return (Number(b.heat_score) || 0) - (Number(a.heat_score) || 0);
+    });
+
     var html = '';
-    Object.keys(heat).forEach(function (sector) {
-      var s = heat[sector];
-      var score = s.heat_score || 0;
-      var strength = s.strength || 0;
-      html += '<div class="heat-cell" style="border-left-color:' +
-        heatColor(score) + ';">' +
-        '<div class="label">' + esc(s.label || sector) + '</div>' +
-        '<div class="heat" style="color:' + heatColor(score) + ';">' +
-        fmt(score, 1) + '</div>' +
-        '<div class="meta">' +
-        '涨幅 ' + fmt(s.avg_change_pct, 2) + '% · ' +
-        '上涨 ' + s.n_up + '/' + s.n_stocks +
+    rows.forEach(function (s, idx) {
+      var score = Number(s.heat_score) || 0;
+      var col = heatColor(score);
+      var nStocks = Number(s.n_stocks) || 0;
+      var nUp = Number(s.n_up) || 0;
+      var breadth = nStocks > 0 ? Math.round(nUp / nStocks * 100) : 0;
+      var vr = (s.avg_volume_ratio === undefined || s.avg_volume_ratio === null)
+        ? null : Number(s.avg_volume_ratio);
+      var best = Number(s.best_change_pct) || 0;
+      var worst = Number(s.worst_change_pct) || 0;
+      var spread = best - worst;
+      // 分化度：领涨与领跌差距超过 5 个百分点即视为内部严重分化
+      var divergent = spread >= 5.0 && nUp < nStocks;
+
+      html += '<div class="heat-cell' + (idx === 0 ? ' hot-leader' : '') + '"' +
+        ' style="border-left-color:' + col + ';' +
+        ' background:linear-gradient(90deg,' + col + '1f 0%, #151a23 60%);">' +
+
+        '<div class="hc-head">' +
+          '<span class="hc-rank">' + (idx + 1) + '</span>' +
+          '<span class="label">' + esc(s.label || s._key) + '</span>' +
+          '<span class="hc-lvl" style="color:' + col + ';">' + heatLevel(score) + '</span>' +
         '</div>' +
-        '<div class="best">领涨: ' + esc(s.best_name || s.best_code) +
-        ' (' + fmt(s.best_change_pct, 2) + '%)</div>' +
+
+        '<div class="hc-score">' +
+          '<span class="heat" style="color:' + col + ';">' + fmt(score, 1) + '</span>' +
+          '<span class="hc-chg" style="color:' + chgColor(s.avg_change_pct) + ';">' +
+            chgArrow(s.avg_change_pct) + ' ' + signed(s.avg_change_pct) + '%' +
+          '</span>' +
+        '</div>' +
+
+        // 热度进度条：把 0~10 的抽象分值变成肉眼可比的宽度
+        '<div class="hc-bar"><i style="width:' +
+          Math.max(2, Math.min(100, score * 10)) + '%;background:' + col + ';"></i></div>' +
+
+        // 广度（上涨占比）：红=上涨，其余灰。与"涨红跌绿"一致
+        '<div class="hc-breadth" title="板块内上涨家数占比">' +
+          '<div class="hc-bbar"><i style="width:' + breadth + '%;"></i></div>' +
+          '<span class="hc-btxt">' + nUp + '/' + nStocks + ' 上涨</span>' +
+        '</div>' +
+
+        '<div class="hc-meta">' +
+          '量比 ' + (vr === null ? '--' : fmt(vr, 2)) +
+          ' · 强度 ' + fmt((Number(s.strength) || 0) * 100, 0) + '%' +
+        '</div>' +
+
+        '<div class="hc-best">领涨 ' + esc(s.best_name || s.best_code || '--') +
+          ' <b style="color:' + chgColor(best) + ';">' + signed(best) + '%</b></div>' +
+        '<div class="hc-worst">领跌 ' + esc(s.worst_name || s.worst_code || '--') +
+          ' <b style="color:' + chgColor(worst) + ';">' + signed(worst) + '%</b></div>' +
+
+        (divergent ? '<div class="hc-warn" title="领涨与领跌差距过大，' +
+          '平均涨幅由少数个股拉动">⚠ 内部分化 价差 ' + fmt(spread, 2) + 'pt</div>' : '') +
+
         '</div>';
     });
     el.innerHTML = html;
@@ -275,6 +404,9 @@
       return;
     }
     $('llm-status').textContent = shortTs(r.ts) + (r.cached ? ' (缓存)' : '');
+    // 【2026-09-22】失败可见化：以前 LLM 调用失败（典型是代理没开）时页面
+    // 依然显示上一次的成功结果，用户完全看不出"它其实已经坏了"。
+    renderLLMHealth(r.health);
     var macro = r.macro_view || 'neutral';
     var macroCls = macro === 'bullish' ? 'bullish' :
                   macro === 'bearish' ? 'bearish' : 'neutral';
@@ -299,6 +431,26 @@
       });
     }
     $('llm-rank-list').innerHTML = html;
+  }
+
+  // LLM 健康徽标（可独立调用：即使还没有任何重排结果也要能显示失败原因）
+  function renderLLMHealth(h) {
+    var herr = $('llm-health');
+    if (!herr) return;
+    h = h || {};
+    if (!h.enabled) {
+      herr.textContent = '未启用（无 API Key）';
+      herr.className = 'signal-fresh fresh-warn';
+    } else if (h.last_error) {
+      herr.textContent = '⚠ 最近一次调用失败：' + h.last_error;
+      herr.className = 'signal-fresh fresh-stale';
+    } else if (!h.has_result) {
+      herr.textContent = '等待首次重排';
+      herr.className = 'signal-fresh fresh-idle';
+    } else {
+      herr.textContent = '调用正常' + (h.mode === 'direct' ? '（直连）' : '');
+      herr.className = 'signal-fresh fresh-ok';
+    }
   }
 
   function renderRecommendations(recs) {
@@ -374,6 +526,7 @@
         var data = JSON.parse(ev.data);
         if (data.error) return;
         if (data.snapshot) renderSnapshot(data.snapshot);
+        if (data.snapshot) updateMarketFreshness(data.snapshot);
         if (data.ticks) renderTicks(data.ticks);
         if (data.new_signals) appendSignals(data.new_signals);
         if (data.last_signal_ts) updateSignalFreshness(data.last_signal_ts);
@@ -440,6 +593,7 @@
     fetch('/api/llm/rerank/latest').then(function (r) { return r.json(); })
       .then(function (d) {
         if (d.result) renderLLMRerank(d.result);
+        if (d.health) renderLLMHealth(d.health);
       }).catch(function () {});
   }
 

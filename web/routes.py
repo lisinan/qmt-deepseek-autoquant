@@ -277,6 +277,7 @@ def api_llm_rerank_latest():
     e = _engine()
     return jsonify({
         "result": e.latest_llm_rerank(),
+        "health": e.llm_health(),
         "reranker": (e.llm_reranker.snapshot() if e.llm_reranker else None),
     })
 

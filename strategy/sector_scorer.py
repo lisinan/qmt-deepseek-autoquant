@@ -49,6 +49,12 @@ class SectorScore:
     best_code: str = ""
     best_name: str = ""
     best_change_pct: float = 0.0
+    # 【2026-09-22】领跌与分化度：只有「领涨 + 平均涨幅」时，板块内部分化会被
+    # 平均值掩盖。实测 PCB互联 avg +7.14% 但上涨仅 1/3（单只暴涨拉动，多数票在跌），
+    # 页面却显示成一片火热。有了 worst 才能算出 spread = best - worst 提示分化。
+    worst_code: str = ""
+    worst_name: str = ""
+    worst_change_pct: float = 0.0
 
 
 @dataclass
@@ -100,6 +106,9 @@ class SectorScorer:
             best_code = ""
             best_name = ""
             best_chg = -1e9
+            worst_code = ""
+            worst_name = ""
+            worst_chg = 1e9
 
             for code, name in stocks:
                 md = market_data.get(code)
@@ -115,6 +124,10 @@ class SectorScorer:
                     best_chg = chg
                     best_code = code
                     best_name = name
+                if chg < worst_chg:
+                    worst_chg = chg
+                    worst_code = code
+                    worst_name = name
 
             n = len(changes)
             if n == 0:
@@ -147,6 +160,10 @@ class SectorScorer:
                 best_code=best_code,
                 best_name=best_name,
                 best_change_pct=round(best_chg, 2),
+                worst_code=worst_code,
+                worst_name=worst_name,
+                worst_change_pct=(round(worst_chg, 2)
+                                  if worst_chg < 1e9 else 0.0),
             )
 
         with self._lock:

@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Web 展示三连故障诊断报告 · 2026-09-22</title>
+<style>
+  :root{--bg:#f7f9fb;--card:#fff;--bd:#e3e8ef;--tx:#1f2937;--mu:#6b7280;
+        --ok:#0f9d58;--warn:#e08700;--bad:#d93025;--acc:#1a73e8;}
+  *{box-sizing:border-box}
+  body{margin:0;padding:32px 20px;background:var(--bg);color:var(--tx);
+       font:15px/1.7 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif;}
+  .wrap{max-width:900px;margin:0 auto}
+  h1{font-size:24px;margin:0 0 4px}
+  .sub{color:var(--mu);font-size:13px;margin-bottom:26px}
+  h2{font-size:17px;margin:30px 0 12px;padding-left:10px;border-left:4px solid var(--acc)}
+  .card{background:var(--card);border:1px solid var(--bd);border-radius:10px;
+        padding:16px 18px;margin-bottom:14px}
+  table{width:100%;border-collapse:collapse;font-size:14px}
+  th,td{padding:8px 10px;border-bottom:1px solid var(--bd);text-align:left}
+  th{color:var(--mu);font-weight:600;font-size:12.5px;letter-spacing:.3px}
+  tr:last-child td{border-bottom:none}
+  .tag{display:inline-block;padding:2px 9px;border-radius:20px;font-size:12px;font-weight:600}
+  .t-bad{background:#fdecea;color:var(--bad)}
+  .t-warn{background:#fef3e2;color:var(--warn)}
+  .t-ok{background:#e6f4ea;color:var(--ok)}
+  .mono{font-family:ui-monospace,Consolas,monospace;font-size:13px}
+  .kv{display:flex;gap:10px;flex-wrap:wrap}
+  .kv div{flex:1;min-width:150px;background:#f2f5f9;border-radius:8px;padding:10px 12px}
+  .kv b{display:block;font-size:20px;line-height:1.3}
+  .kv span{color:var(--mu);font-size:12px}
+  ul{margin:8px 0;padding-left:20px}
+  li{margin-bottom:6px}
+  .chain{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:13px;margin:6px 0}
+  .chain i{font-style:normal;background:#eef2f7;border:1px solid var(--bd);
+           border-radius:6px;padding:5px 9px}
+  .arrow{color:var(--mu)}
+  code{background:#eef2f7;padding:1px 5px;border-radius:4px;font-size:13px}
+</style>
+</head>
+<body><div class="wrap">
+
+<h1>Web 展示三连故障诊断报告</h1>
+<div class="sub">qmtIDE-deepseek · 2026-09-22 11:20 用户报告「llm 重排 / 实时信号都没正常工作，行情信息滞后」</div>
+
+<h2>一、结论速览</h2>
+<div class="card">
+  <div class="kv">
+    <div><b style="color:var(--bad)">58 秒</b><span>主循环实测单轮耗时（目标 3 秒）</span></div>
+    <div><b style="color:var(--bad)">4%</b><span>今日 Tushare 基本面填充率（往日 99~100%）</span></div>
+    <div><b style="color:var(--bad)">0 行</b><span>今日 signals 表行数（成交 7 笔）</span></div>
+    <div><b style="color:var(--ok)">223 / 223</b><span>修复后全量测试（修复前 210 通过 / 1 失败）</span></div>
+  </div>
+</div>
+
+<h2>二、因果链</h2>
+<div class="card">
+  <div class="chain">
+    <i>引擎进程带失效代理 <code>127.0.0.1:7897</code> 启动</i>
+    <span class="arrow">→</span>
+    <i>DeepSeek / Tushare 全部外网调用失败</i>
+    <span class="arrow">→</span>
+    <i>Tushare 失败不进缓存，每轮重打网络</i>
+    <span class="arrow">→</span>
+    <i>主循环 58s/轮</i>
+    <span class="arrow">→</span>
+    <i><b>页面行情滞后</b></i>
+  </div>
+  <div class="chain">
+    <i>DeepSeek 失败被异常分支吞掉</i>
+    <span class="arrow">→</span>
+    <i>手动触发仍返回 200，页面继续显示旧结果</i>
+    <span class="arrow">→</span>
+    <i><b>LLM 重排"没工作"</b></i>
+  </div>
+  <div class="chain">
+    <i>观察篮 / 轮动买入不调 <code>_save_signal</code></i>
+    <span class="arrow">→</span>
+    <i>成交 7 笔但 signals 表停在 09-17</i>
+    <span class="arrow">→</span>
+    <i><b>实时信号空白 / 显示 5 天前旧信号</b></i>
+  </div>
+</div>
+
+<h2>三、证据</h2>
+<div class="card">
+<table>
+  <tr><th>观察项</th><th>实测</th><th>判读</th></tr>
+  <tr><td>主循环轮次增速（心跳日志）</td>
+      <td class="mono">09:15 轮次=1 → 11:29 轮次=140</td>
+      <td><span class="tag t-bad">58s/轮</span> 远超 REFRESH_INTERVAL=3s</td></tr>
+  <tr><td>阻塞形态（T+1 拦截日志间隔）</td>
+      <td class="mono">5 轮 × 3s，随后静默 283s，循环往复</td>
+      <td><span class="tag t-warn">突发性阻塞</span> 窗口内无任何日志</td></tr>
+  <tr><td>LLM 重排</td>
+      <td class="mono">全天多次 POST 200，无一条"rerank 完成"</td>
+      <td><span class="tag t-bad">静默失败</span></td></tr>
+  <tr><td>DeepSeek 错误</td>
+      <td class="mono">ProxyError 127.0.0.1:7897 · WinError 10061</td>
+      <td><span class="tag t-bad">代理未运行</span></td></tr>
+  <tr><td>Tushare 基本面填充率</td>
+      <td class="mono">09-15~09-21：99~100% &nbsp;|&nbsp; 09-22：4%</td>
+      <td><span class="tag t-bad">引擎内网路中断</span></td></tr>
+  <tr><td>signals 表</td>
+      <td class="mono">max(ts) = 2026-09-17T15:03:26</td>
+      <td><span class="tag t-bad">连日 0 行</span> 但当日 7 笔 BUY 成交</td></tr>
+  <tr><td>行情时间戳</td>
+      <td class="mono">tick.ts = null</td>
+      <td><span class="tag t-warn">滞后不可见</span></td></tr>
+</table>
+</div>
+
+<h2>四、已排除的嫌疑（避免重复排查）</h2>
+<div class="card">
+<table>
+  <tr><th>嫌疑</th><th>实测结论</th></tr>
+  <tr><td>xtdata 行情拉取慢</td><td><span class="tag t-ok">排除</span> <code>get_full_tick(3)</code> 0.00s，本机会话可达且价格实时</td></tr>
+  <tr><td><code>TrendStrategy.on_bars</code> 指标计算慢</td><td><span class="tag t-ok">排除</span> 离线压测 39 只 × 240 根 bar = 0.04s（0.001s/只），缓存命中 0ms</td></tr>
+  <tr><td>sector 热度计算</td><td><span class="tag t-ok">排除</span> 纯 CPU，无网络调用</td></tr>
+  <tr><td>策略真的没信号</td><td><span class="tag t-warn">部分</span> 策略路径确实全 HOLD（候选评分 &lt; 4.0），但<b>不能解释</b>已有 7 笔成交却不落库</td></tr>
+</table>
+</div>
+
+<h2>五、修复清单</h2>
+<div class="card">
+<table>
+  <tr><th>层面</th><th>改动</th><th>文件</th></tr>
+  <tr><td>数据源</td><td>失败负缓存 + 连续 5 次全局熔断 300s；新增 <code>health()</code></td><td class="mono">data/tushare_client.py</td></tr>
+  <tr><td>LLM</td><td>代理失败自动 <code>trust_env=False</code> 直连重试；记录 <code>last_error</code></td><td class="mono">ai/deepseek_client.py</td></tr>
+  <tr><td>行情</td><td>透传 xtdata <code>time</code>；<code>_last_ticks</code> 补 <code>ts</code></td><td class="mono">core/qmt_client.py, engine/event_engine.py</td></tr>
+  <tr><td>可观测</td><td><code>_run_once</code> 分段计时 + &gt;10s 慢轮告警；快照增 <code>market_data_ts / round_ms / slow_rounds</code></td><td class="mono">engine/event_engine.py</td></tr>
+  <tr><td>信号</td><td>观察篮买入、轮动换入/换出全部落库</td><td class="mono">engine/event_engine.py</td></tr>
+  <tr><td>运维</td><td>启动异步外网自检，代理不可达直接发系统提示</td><td class="mono">engine/event_engine.py</td></tr>
+  <tr><td>前端</td><td>行情新鲜度徽标、LLM 调用成败徽标</td><td class="mono">web/templates, dashboard.js</td></tr>
+  <tr><td>测试</td><td>新增 10 例；修 3 处测试桩失配；1 例不稳定用例改为确定性</td><td class="mono">tests/</td></tr>
+</table>
+</div>
+
+<h2>六、待办</h2>
+<div class="card">
+<ul>
+  <li><b>需你手动重启引擎</b>后修复才生效（自动化严禁 kill 交易进程）。</li>
+  <li>重启后若仍慢，直接从日志搜 <code>主循环慢轮</code> 即可读出归属段（ticks / bars / positions / exit / entry+sector / persist）。</li>
+  <li>单轮 43~79s 的<b>精确归属段</b>尚未最终定性：代理"拒绝"是毫秒级返回，不足以解释 283s 阻塞，已埋分段计时留给重启后定位。</li>
+  <li>工作区有上一轮 AM-EVOLVE 未提交改动（<code>trend_exit_confirm_days</code> / <code>trend_broken</code> / <code>backtest_daily</code>），尚未推送。</li>
+</ul>
+</div>
+
+</div></body></html>

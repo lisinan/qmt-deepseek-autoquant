@@ -509,6 +509,10 @@ if not TUSHARE_TOKEN:
 
 TUSHARE_TIMEOUT = float(os.environ.get("TUSHARE_TIMEOUT", "15"))
 TUSHARE_CACHE_TTL = 3600  # 基本面缓存 1 小时
+# 【2026-09-22 故障熔断】失败负缓存：某次调用失败后，冷却期内不再重打网络。
+# 没有它时，代理/网络不可用会让每次调用都等满 TUSHARE_TIMEOUT，主循环被拖垮。
+TUSHARE_FAIL_COOLDOWN = float(os.environ.get("TUSHARE_FAIL_COOLDOWN", "300"))
+TUSHARE_FAIL_TRIP = int(os.environ.get("TUSHARE_FAIL_TRIP", "5"))  # 连续失败几次后全局熔断
 TUSHARE_FUNDAMENTAL_FILTER = {
     "max_pe": 200.0,          # PE_TTM 上限
     "min_pe": 0.0,            # PE 下限（亏损股 PE 为负会被过滤）

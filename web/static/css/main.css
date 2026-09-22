@@ -48,24 +48,74 @@ main { display: grid;
 .panel h2:first-child { margin-top: 0; }
 .muted { color: #5a6876; font-weight: normal; font-size: 11px; }
 
-/* 热力图 */
+/* 热力图（2026-09-22 重做：排序 + 热度条 + 广度条 + 领涨/领跌 + 分化提示） */
 .heatmap {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  /* 固定 3 列在窄屏会把卡片压扁；改成自适应最小宽度，窄屏自动降列 */
+  grid-template-columns: repeat(auto-fill, minmax(196px, 1fr));
   gap: 8px;
   grid-column: 1 / -1;
 }
 .heat-cell {
   background: #151a23;
   border-radius: 6px;
-  padding: 10px 12px;
-  border-left: 3px solid #2a3441;
+  padding: 9px 11px 10px;
+  border-left: 3px solid #3d4a5c;
   position: relative;
+  transition: transform .12s ease;
 }
-.heat-cell .label { font-size: 11px; color: #8898a6; margin-bottom: 4px; }
-.heat-cell .heat { font-size: 22px; font-weight: 600; font-family: monospace; }
-.heat-cell .meta { font-size: 10px; color: #5a6876; margin-top: 4px; }
-.heat-cell .best { font-size: 11px; color: #5fd99e; margin-top: 4px; }
+.heat-cell:hover { transform: translateY(-1px); }
+/* 热度第一名：加一圈描边，一眼锁定最强环节 */
+.heat-cell.hot-leader { box-shadow: 0 0 0 1px rgba(232,114,45,.45) inset; }
+
+.heat-cell .hc-head {
+  display: flex; align-items: baseline; gap: 6px; margin-bottom: 5px;
+}
+.heat-cell .hc-rank {
+  flex: none; width: 15px; height: 15px; line-height: 15px; text-align: center;
+  border-radius: 3px; background: #222b38; color: #8898a6;
+  font-size: 10px; font-weight: 700;
+}
+.heat-cell .label {
+  flex: 1 1 auto; font-size: 11px; color: #c3cede; margin: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.heat-cell .hc-lvl { flex: none; font-size: 10px; font-weight: 600; }
+
+.heat-cell .hc-score {
+  display: flex; align-items: baseline; gap: 8px; margin-bottom: 5px;
+}
+.heat-cell .heat { font-size: 22px; font-weight: 600; font-family: monospace; line-height: 1; }
+.heat-cell .hc-chg { font-size: 12px; font-weight: 600; font-family: monospace; }
+
+/* 热度 / 广度 进度条 */
+.heat-cell .hc-bar {
+  height: 4px; border-radius: 3px; background: #222b38;
+  overflow: hidden; margin-bottom: 6px;
+}
+.heat-cell .hc-bar > i { display: block; height: 100%; border-radius: 3px; }
+
+.heat-cell .hc-breadth {
+  display: flex; align-items: center; gap: 6px; margin-bottom: 4px;
+}
+.heat-cell .hc-bbar {
+  flex: 1 1 auto; height: 3px; border-radius: 2px;
+  background: #2a3441; overflow: hidden;
+}
+/* 红=上涨家数占比（与"涨红跌绿"一致），灰=其余 */
+.heat-cell .hc-bbar > i { display: block; height: 100%; background: #ef5350; }
+.heat-cell .hc-btxt { flex: none; font-size: 10px; color: #8898a6; }
+
+.heat-cell .hc-meta { font-size: 10px; color: #5a6876; margin-bottom: 5px; }
+.heat-cell .hc-best,
+.heat-cell .hc-worst {
+  font-size: 11px; color: #8898a6; line-height: 1.6;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.heat-cell .hc-warn {
+  margin-top: 5px; font-size: 10px; color: #ffb74d;
+  background: rgba(255,183,77,.12); border-radius: 3px; padding: 2px 5px;
+}
 
 /* 动态候选池 */
 .universe-info {

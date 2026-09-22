@@ -99,6 +99,22 @@ def _restore_tushare(prev):
 
 
 def test_ensure_recommendations_builds_from_last_ticks():
+    # 【2026-09-22 去不稳定化】本用例原先依赖**实时** Tushare 基本面：
+    # 综合分 = 0.4*热度 + 0.3*技术 + 0.3*基本面，而这里的 tech 固定为 0
+    # （_bars 为空，FakeTrend 用不上），于是 300308.SZ 能否过 4.5 的池阈值
+    # 完全取决于当天拉到的真实 PE/ROE —— 实测同一份代码在盘中 FAIL、盘后 PASS。
+    # 现在把基本面钉死为一组「低估+高 ROE」的确定值，让断言只考验重建逻辑。
+    from data.tushare_client import tushare_client
+    prev = tushare_client.summary
+    tushare_client.summary = lambda code: {
+        "pe": 25.0, "roe": 15.0, "pb": 3.0, "total_mv_yi": 500.0}
+    try:
+        _ensure_recommendations_impl()
+    finally:
+        tushare_client.summary = prev
+
+
+def _ensure_recommendations_impl():
     eng = _make_engine()
     eng.sector_scorer = SectorScorer()
     eng.storage = _fake_storage([])

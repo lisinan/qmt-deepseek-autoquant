@@ -21,6 +21,7 @@ from typing import Any, Dict, Optional
 
 from config.settings import (
     TUSHARE_CACHE_TTL, TUSHARE_FUNDAMENTAL_FILTER, TUSHARE_TIMEOUT, TUSHARE_TOKEN,
+    TUSHARE_FAIL_COOLDOWN, TUSHARE_FAIL_TRIP,
 )
 
 logger = logging.getLogger(__name__)
@@ -68,10 +69,59 @@ class TushareClient:
         self._lock = threading.RLock()
         # 缓存：(key) -> (data, ts)
         self._cache: Dict[str, Any] = {}
+        # 【2026-09-22 故障熔断】失败负缓存：key -> 失败时刻。
+        # 背景：引擎进程常常带着失效的 HTTP(S)_PROXY 启动（代理软件未运行），
+        # 此时每次 tushare 调用都要等满 TUSHARE_TIMEOUT=15s 才抛异常，而异常
+        # 分支**不写缓存** → 下一轮照旧重打网络。sector 评估每轮对 ~40 只候选
+        # 各调 summary()（内部 3 次 API），实测把主循环从 3s/轮拖到 58s/轮，
+        # 页面表现为「行情信息滞后」。现在失败也进缓存，冷却期内直接返回 None。
+        self._fail_at: Dict[str, float] = {}
+        self._consec_fail = 0
+        self._disabled_until = 0.0
 
     @property
     def enabled(self) -> bool:
         return bool(self.token)
+
+    # ---------- 故障熔断 ----------
+
+    def _fail_blocked(self, key: str) -> bool:
+        """该 key 最近失败过且在冷却期内 → True（应当跳过网络调用）。"""
+        if time.time() < self._disabled_until:
+            return True
+        t = self._fail_at.get(key)
+        if t is None:
+            return False
+        if time.time() - t < TUSHARE_FAIL_COOLDOWN:
+            return True
+        self._fail_at.pop(key, None)
+        return False
+
+    def _mark_fail(self, key: str, err: Exception) -> None:
+        self._fail_at[key] = time.time()
+        self._consec_fail += 1
+        # 连续失败达阈值 → 全局熔断一段时间，避免每只股票各等一次超时
+        if self._consec_fail >= TUSHARE_FAIL_TRIP:
+            self._disabled_until = time.time() + TUSHARE_FAIL_COOLDOWN
+            self._consec_fail = 0
+            logger.warning(
+                "Tushare 连续失败达 %d 次，熔断 %.0fs（常见原因：代理/网络不可用。"
+                "期间基本面分回落中性值，不影响行情与交易）",
+                TUSHARE_FAIL_TRIP, TUSHARE_FAIL_COOLDOWN)
+
+    def _mark_ok(self) -> None:
+        self._consec_fail = 0
+
+    def health(self) -> dict:
+        """供前端/诊断展示的网络健康状态。"""
+        return {
+            "enabled": bool(self.token),
+            "connected": self._pro is not None,
+            "circuit_open": time.time() < self._disabled_until,
+            "retry_after_sec": (max(0.0, self._disabled_until - time.time())
+                                if time.time() < self._disabled_until else 0.0),
+            "fail_keys": len(self._fail_at),
+        }
 
     # ---------- 内部 ----------
 
@@ -130,6 +180,8 @@ class TushareClient:
         cached = self._cache_get(key)
         if cached is not None:
             return cached
+        if self._fail_blocked(key):
+            return None
         try:
             fields = "ts_code,name,industry,fullname,list_date,market,exchange"
             if ts_code:
@@ -141,8 +193,10 @@ class TushareClient:
                 df = self._pro.stock_basic(list_status=list_status, fields=fields)
                 out = df
             self._cache_set(key, out)
+            self._mark_ok()
             return out
         except Exception as e:
+            self._mark_fail(key, e)
             logger.debug("stock_basic 失败: %s", e)
             return None
 
@@ -188,6 +242,8 @@ class TushareClient:
         cached = self._cache_get(key)
         if cached is not None:
             return cached
+        if self._fail_blocked(key):
+            return None
         try:
             # 取最近 5 个交易日，取最新一行
             end = datetime.now().strftime("%Y%m%d")
@@ -205,8 +261,10 @@ class TushareClient:
             row = df.iloc[0].to_dict()
             out = _normalize_basic(row)
             self._cache_set(key, out)
+            self._mark_ok()
             return out
         except Exception as e:
+            self._mark_fail(key, e)
             logger.debug("daily_basic(%s) 失败: %s", ts_code, e)
             return None
 
@@ -223,6 +281,8 @@ class TushareClient:
         cached = self._cache_get(key)
         if cached is not None:
             return cached
+        if self._fail_blocked(key):
+            return None
         try:
             kwargs = {"ts_code": _to_ts_code(ts_code),
                       "fields": "ts_code,end_date,roe,roe_waa,roe_dt,"
@@ -235,8 +295,10 @@ class TushareClient:
                 return None
             out = df.iloc[0].to_dict()
             self._cache_set(key, out)
+            self._mark_ok()
             return out
         except Exception as e:
+            self._mark_fail(key, e)
             logger.debug("fina_indicator(%s) 失败: %s", ts_code, e)
             return None
 

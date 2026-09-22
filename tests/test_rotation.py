@@ -91,6 +91,10 @@ def _make_engine(scores, held, hot_codes, enable=True, cooldown=0.0):
     eng._hot_codes_set = lambda: EventEngine._hot_codes_set(eng)
     eng._handle_sell = lambda sig, pos: eng._sells.append(sig.code)
     eng._handle_buy = lambda sig, tick, cp: eng._buys.append((sig.code, sig.score))
+    # 【2026-09-22】轮动换入/换出也要落库（此前不落库 → 引擎有成交而 signals
+    # 表 0 行，页面「实时信号」只剩几天前的旧信号）。桩需跟上新契约。
+    eng._saved_signals = []
+    eng._save_signal = lambda sig: eng._saved_signals.append(sig)
     return eng
 
 
@@ -110,6 +114,9 @@ def test_rotation_swaps_weakest_for_hot_candidate():
     # 最弱 = 688082.SH(1.0)；候选 300308.SZ(9.0)，差 8.0 ≥ 2.0 → 轮换
     assert eng._sells == ["688082.SH"], eng._sells
     assert eng._buys == [("300308.SZ", 9.0)], eng._buys
+    # 2026-09-22：换出与换入都要写进信号表
+    sides = sorted(s.side for s in eng._saved_signals)
+    assert sides == ["BUY", "SELL"], sides
 
 
 def test_rotation_skips_when_gap_too_small():

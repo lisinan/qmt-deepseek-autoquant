@@ -44,6 +44,13 @@ def _make_engine(held, bought=None):
             code=sig.code, name=sig.name, quantity=100,
             avg_cost=sig.price, last_price=sig.price)
     eng._handle_buy = _buy
+    # 【2026-09-22】观察篮买入也要落库（此前只有策略路径落库，导致引擎有成交
+    # 而 signals 表连日 0 行，页面「实时信号」只剩几天前的旧信号）。
+    eng._saved_signals = []
+
+    def _save_signal(sig):
+        eng._saved_signals.append(sig)
+    eng._save_signal = _save_signal
     return eng
 
 
@@ -71,6 +78,9 @@ def test_manual_entry_buys_unheld_codes():
         EventEngine._manual_entry_step(eng, _ticks(CODES), {})
     assert sorted(eng._buys) == sorted(CODES), eng._buys
     assert eng._manual_positions == set(CODES)
+    # 2026-09-22：买入决策必须写入信号表，否则页面「实时信号」看不到真实成交
+    assert sorted(s.code for s in eng._saved_signals) == sorted(CODES)
+    assert all(s.side == "BUY" for s in eng._saved_signals)
 
 
 def test_manual_entry_skips_already_held():

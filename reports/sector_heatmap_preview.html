@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>产业热力图改版预览 · 2026-09-22</title>
+<style>
+  :root{--bg:#0f131a;--card:#151a23;--bd:#222b38;--tx:#e3e9f2;--mu:#8898a6;--dim:#5a6876;}
+  *{box-sizing:border-box}
+  body{margin:0;padding:28px 20px;background:var(--bg);color:var(--tx);
+       font:14px/1.6 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif;}
+  .wrap{max-width:980px;margin:0 auto}
+  h1{font-size:21px;margin:0 0 4px}
+  .sub{color:var(--mu);font-size:12.5px;margin-bottom:8px}
+  .note{background:#151a23;border:1px solid var(--bd);border-left:3px solid #ffb74d;
+        border-radius:6px;padding:9px 12px;font-size:12.5px;color:#c3cede;margin:14px 0 22px}
+  h2{font-size:15px;margin:26px 0 10px;color:var(--mu);font-weight:600}
+
+  /* ↓↓↓ 与 web/static/css/main.css 保持一致（此处内联以便独立预览） ↓↓↓ */
+  .heatmap{display:grid;grid-template-columns:repeat(auto-fill,minmax(196px,1fr));gap:8px}
+  .heat-cell{background:#151a23;border-radius:6px;padding:9px 11px 10px;
+    border-left:3px solid #3d4a5c;position:relative;transition:transform .12s ease}
+  .heat-cell:hover{transform:translateY(-1px)}
+  .heat-cell.hot-leader{box-shadow:0 0 0 1px rgba(232,114,45,.45) inset}
+  .heat-cell .hc-head{display:flex;align-items:baseline;gap:6px;margin-bottom:5px}
+  .heat-cell .hc-rank{flex:none;width:15px;height:15px;line-height:15px;text-align:center;
+    border-radius:3px;background:#222b38;color:#8898a6;font-size:10px;font-weight:700}
+  .heat-cell .label{flex:1 1 auto;font-size:11px;color:#c3cede;margin:0;
+    overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .heat-cell .hc-lvl{flex:none;font-size:10px;font-weight:600}
+  .heat-cell .hc-score{display:flex;align-items:baseline;gap:8px;margin-bottom:5px}
+  .heat-cell .heat{font-size:22px;font-weight:600;font-family:monospace;line-height:1}
+  .heat-cell .hc-chg{font-size:12px;font-weight:600;font-family:monospace}
+  .heat-cell .hc-bar{height:4px;border-radius:3px;background:#222b38;overflow:hidden;margin-bottom:6px}
+  .heat-cell .hc-bar>i{display:block;height:100%;border-radius:3px}
+  .heat-cell .hc-breadth{display:flex;align-items:center;gap:6px;margin-bottom:4px}
+  .heat-cell .hc-bbar{flex:1 1 auto;height:3px;border-radius:2px;background:#2a3441;overflow:hidden}
+  .heat-cell .hc-bbar>i{display:block;height:100%;background:#ef5350}
+  .heat-cell .hc-btxt{flex:none;font-size:10px;color:#8898a6}
+  .heat-cell .hc-meta{font-size:10px;color:#5a6876;margin-bottom:5px}
+  .heat-cell .hc-best,.heat-cell .hc-worst{font-size:11px;color:#8898a6;line-height:1.6;
+    overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .heat-cell .hc-warn{margin-top:5px;font-size:10px;color:#ffb74d;
+    background:rgba(255,183,77,.12);border-radius:3px;padding:2px 5px}
+  /* ↑↑↑ 内联样式结束 ↑↑↑ */
+
+  /* 旧版样式，仅用于对比展示 */
+  .old .heat-cell{background:#151a23;border-radius:6px;padding:10px 12px;border-left:3px solid #2a3441}
+  .old .heat-cell .label{font-size:11px;color:#8898a6;margin-bottom:4px}
+  .old .heat-cell .heat{font-size:22px;font-weight:600;font-family:monospace}
+  .old .heat-cell .meta{font-size:10px;color:#5a6876;margin-top:4px}
+  .old .heat-cell .best{font-size:11px;color:#5fd99e;margin-top:4px}
+  .old .heatmap{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+
+  table{width:100%;border-collapse:collapse;font-size:13px;margin-top:8px}
+  th,td{padding:7px 10px;border-bottom:1px solid var(--bd);text-align:left}
+  th{color:var(--dim);font-size:11.5px;font-weight:600}
+  .sw{display:inline-block;width:26px;height:12px;border-radius:3px;vertical-align:middle;margin-right:6px}
+</style>
+</head>
+<body><div class="wrap">
+
+<h1>产业热力图改版预览</h1>
+<div class="sub">qmtIDE-deepseek · 数据取自 2026-09-22 13:20 真实盘中行情（非模拟）</div>
+<div class="note">
+  本页为<b>静态预览</b>，渲染逻辑与 <code>web/static/js/dashboard.js</code> 新版一致，仅用于先看效果；
+  实际页面需<b>重启引擎</b>后才会带出量比 / 领跌等新字段。
+</div>
+
+<h2>新版</h2>
+<div class="heatmap" id="new"></div>
+
+<h2>改版前后对比</h2>
+<table>
+  <tr><th>维度</th><th>旧版</th><th>新版</th></tr>
+  <tr><td>排序</td><td>按配置顺序平铺，看不出谁最热</td><td>按热度降序 + 排名徽章，第一名高亮描边</td></tr>
+  <tr><td>热度配色</td><td>灰→亮绿单色渐变，低分区几乎全是暗色；<b>绿色代表高热与"绿=跌"直觉相反</b></td>
+      <td>冷→热五色阶<br><span class="sw" style="background:rgb(61,74,92)"></span>冷
+          <span class="sw" style="background:rgb(63,124,184)"></span>偏冷
+          <span class="sw" style="background:rgb(47,166,160)"></span>温和
+          <span class="sw" style="background:rgb(217,164,65)"></span>偏热
+          <span class="sw" style="background:rgb(224,49,49)"></span>极热<br>
+          <b>刻意避开绿色</b>，避免与"跌"混淆</td></tr>
+  <tr><td>涨跌幅</td><td>灰字，无方向</td><td>涨红跌绿 + ▲▼ 箭头 + 带符号</td></tr>
+  <tr><td>量比</td><td>未展示（数据一直存在却未下发）</td><td>已展示，量能是热度三大构成之一</td></tr>
+  <tr><td>板块广度</td><td>只有文字 "上涨 1/3"</td><td>占比进度条 + 文字，红=上涨家数</td></tr>
+  <tr><td>领跌 / 分化</td><td>无</td><td>领涨+领跌并列；价差 ≥5pt 且未普涨时标「⚠ 内部分化」</td></tr>
+  <tr><td>响应式</td><td>固定 3 列，窄屏挤扁</td><td><code>auto-fill minmax(196px,1fr)</code> 自动降列</td></tr>
+</table>
+
+<h2>被修掉的误读（真实案例）</h2>
+<div class="note" style="border-left-color:#ef5350">
+  <b>PCB/高速互联</b>：平均涨幅 <b style="color:#ef5350">+7.09%</b>，旧版只显示「涨幅 +7.09% · 上涨 1/3」，
+  看起来只是"热度高"。新版同时给出领跌与广度条后可以看出 —— 该环节 3 只票里只有 1 只在涨，
+  平均涨幅是<b>被单只拉高</b>的，并非板块普涨。这就是加「领跌 / 分化度」的原因。
+</div>
+
+<h2>旧版（对照）</h2>
+<div class="heatmap old" id="old"></div>
+
+<script>
+/* 真实盘中数据（2026-09-22 13:20 抓取） */
+var DATA = [
+ {"label":"PCB/高速互联","heat_score":8.5,"avg_change_pct":7.09,"avg_volume_ratio":1.0,"strength":1.0,"n_up":1,"n_stocks":3,"best_name":"澜起科技","best_change_pct":7.09,"worst_name":"澜起科技","worst_change_pct":7.09},
+ {"label":"AI 芯片/GPU","heat_score":7.04,"avg_change_pct":3.07,"avg_volume_ratio":1.0,"strength":1.0,"n_up":3,"n_stocks":4,"best_name":"海光信息","best_change_pct":4.44,"worst_name":"寒武纪","worst_change_pct":1.41},
+ {"label":"服务器/算力/IDC","heat_score":6.05,"avg_change_pct":1.09,"avg_volume_ratio":1.0,"strength":1.0,"n_up":2,"n_stocks":4,"best_name":"中科曙光","best_change_pct":1.31,"worst_name":"浪潮信息","worst_change_pct":0.88},
+ {"label":"晶圆代工/设备","heat_score":5.79,"avg_change_pct":0.58,"avg_volume_ratio":1.0,"strength":1.0,"n_up":3,"n_stocks":3,"best_name":"中芯国际","best_change_pct":0.83,"worst_name":"北方华创","worst_change_pct":0.22},
+ {"label":"AI 应用/软件","heat_score":5.16,"avg_change_pct":1.33,"avg_volume_ratio":1.0,"strength":0.75,"n_up":3,"n_stocks":5,"best_name":"金山办公","best_change_pct":2.75,"worst_name":"同花顺","worst_change_pct":-0.02},
+ {"label":"光模块/光器件","heat_score":4.17,"avg_change_pct":-0.06,"avg_volume_ratio":1.0,"strength":0.67,"n_up":2,"n_stocks":4,"best_name":"中际旭创","best_change_pct":0.26,"worst_name":"天孚通信","worst_change_pct":-0.63}
+];
+
+/* 以下配色/渲染逻辑与 dashboard.js 新版同步（预览用副本） */
+var HEAT_STOPS=[[0,[61,74,92]],[3,[63,124,184]],[5,[47,166,160]],[6.5,[217,164,65]],[8,[232,114,45]],[10,[224,49,49]]];
+function heatColor(s){s=Math.max(0,Math.min(10,Number(s)||0));
+ for(var i=0;i<HEAT_STOPS.length-1;i++){var a=HEAT_STOPS[i],b=HEAT_STOPS[i+1];
+  if(s<=b){var t=(s-a[0])/((b[0]-a[0])||1);
+   return 'rgb('+a[1].map(function(v,k){return Math.round(v+(b[1][k]-v)*t)}).join(',')+')';}}
+ return 'rgb(224,49,49)';}
+function heatLevel(s){s=Number(s)||0;return s>=8?'极热':s>=6.5?'偏热':s>=5?'温和':s>=3?'偏冷':'冷';}
+function chgColor(p){p=Number(p)||0;return p>0?'#ef5350':p<0?'#26a67a':'#8898a6';}
+function chgArrow(p){p=Number(p)||0;return p>0?'▲':p<0?'▼':'—';}
+function fmt(n,d){if(d===undefined)d=2;if(n===null||n===undefined)return'--';
+ return Number(n).toFixed(d);}
+function signed(p,d){p=Number(p)||0;return (p>0?'+':'')+fmt(p,d===undefined?2:d);}
+function esc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+
+var html='';
+DATA.forEach(function(s,idx){
+ var score=Number(s.heat_score)||0,col=heatColor(score);
+ var nStocks=Number(s.n_stocks)||0,nUp=Number(s.n_up)||0;
+ var breadth=nStocks>0?Math.round(nUp/nStocks*100):0;
+ var vr=s.avg_volume_ratio,best=Number(s.best_change_pct)||0,worst=Number(s.worst_change_pct)||0;
+ var spread=best-worst,divergent=spread>=5.0&&nUp<nStocks;
+ html+='<div class="heat-cell'+(idx===0?' hot-leader':'')+'" style="border-left-color:'+col+
+  ';background:linear-gradient(90deg,'+col+'1f 0%, #151a23 60%);">'+
+  '<div class="hc-head"><span class="hc-rank">'+(idx+1)+'</span>'+
+  '<span class="label">'+esc(s.label)+'</span>'+
+  '<span class="hc-lvl" style="color:'+col+';">'+heatLevel(score)+'</span></div>'+
+  '<div class="hc-score"><span class="heat" style="color:'+col+';">'+fmt(score,1)+'</span>'+
+  '<span class="hc-chg" style="color:'+chgColor(s.avg_change_pct)+';">'+
+  chgArrow(s.avg_change_pct)+' '+signed(s.avg_change_pct)+'%</span></div>'+
+  '<div class="hc-bar"><i style="width:'+Math.max(2,Math.min(100,score*10))+'%;background:'+col+';"></i></div>'+
+  '<div class="hc-breadth"><div class="hc-bbar"><i style="width:'+breadth+'%;"></i></div>'+
+  '<span class="hc-btxt">'+nUp+'/'+nStocks+' 上涨</span></div>'+
+  '<div class="hc-meta">量比 '+fmt(vr,2)+' · 强度 '+fmt((Number(s.strength)||0)*100,0)+'%</div>'+
+  '<div class="hc-best">领涨 '+esc(s.best_name)+' <b style="color:'+chgColor(best)+';">'+signed(best)+'%</b></div>'+
+  '<div class="hc-worst">领跌 '+esc(s.worst_name)+' <b style="color:'+chgColor(worst)+';">'+signed(worst)+'%</b></div>'+
+  (divergent?'<div class="hc-warn">⚠ 内部分化 价差 '+fmt(spread,2)+'pt</div>':'')+
+  '</div>';
+});
+document.getElementById('new').innerHTML=html;
+
+/* 旧版渲染（对照） */
+var oh='';
+DATA.forEach(function(s){
+ var sc=Number(s.heat_score)||0;
+ var r=Math.round(40+(95-40)*(sc/10)),g=Math.round(60+(217-60)*(sc/10)),b=Math.round(70+(158-70)*(sc/10));
+ var c='rgb('+r+','+g+','+b+')';
+ oh+='<div class="heat-cell" style="border-left-color:'+c+';">'+
+  '<div class="label">'+esc(s.label)+'</div>'+
+  '<div class="heat" style="color:'+c+';">'+fmt(sc,1)+'</div>'+
+  '<div class="meta">涨幅 '+fmt(s.avg_change_pct,2)+'% · 上涨 '+s.n_up+'/'+s.n_stocks+'</div>'+
+  '<div class="best">领涨: '+esc(s.best_name)+' ('+fmt(s.best_change_pct,2)+'%)</div></div>';
+});
+document.getElementById('old').innerHTML=oh;
+</script>
+
+</div></body></html>

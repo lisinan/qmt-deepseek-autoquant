@@ -42,7 +42,9 @@ class FakeDaily:
     def features(self, code):
         return self._feats.get(code)
 
-    def trend_broken(self, code, ma=60):
+    # 【2026-09-22】签名跟随 DailyContext.trend_broken 新增的 confirm_days
+    # （抗假破位，默认 1 = 原行为）。桩不跟上会抛 TypeError，导致整文件用例隐形失败。
+    def trend_broken(self, code, ma=60, confirm_days=1):
         return self._broken
 
     def atr_pct(self, code):
