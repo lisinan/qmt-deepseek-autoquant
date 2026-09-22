@@ -353,6 +353,18 @@ class BacktestConfig:
     # ---- 退出范式 + 动量（本次优化）----
     exit_mode: str = "scalp"        # "scalp"=紧移动止损; "trend"=趋势骑行至破位
     trend_exit_ma: int = 60          # 趋势破位判定均线
+    # ---- 单仓上限（与实盘 RISK_PARAMS.max_single_position_pct 对齐）----
+    # 【2026-09-22 AM-EVOLVE 口径修正】回测原把单仓上限**硬编码**为 equity*0.30，
+    # 而实盘 PositionSizer 用的是 RISK_PARAMS["max_single_position_pct"]（当前 0.19）。
+    # 0.30 vs 0.19 是 ~58% 的敞口差，直接后果：验证器 P0 系统性**高估**实盘等
+    # 效敞口，所有"增量 dSh"都建立在偏乐观的基线上。现改为可配置字段，
+    # 默认 0.30 保持既有回测行为（不破坏既有测试/历史结论），
+    # 需要"生产对齐"评估时显式传入生产值即可。
+    max_single_position_pct: float = 0.30
+    # 【2026-09-22 AM-EVOLVE 证伪留痕】曾加 ``trend_exit_confirm_days``（破位需
+    # 连续 N 日确认，抗假破位）。90×6 OOS 单调恶化（N=2 −0.046 → N=7 −0.197），
+    # 说明二值破位已是最优退出时点。**实现已撤回，勿重试**；
+    # 详见 strategy/daily_context.py::trend_broken 的证伪注释。
     hard_stop_pct: float = -0.18     # 趋势模式宽幅硬止损（灾难保护）
     trend_max_hold_days: int = 120   # 趋势模式最长持仓
     momentum_rank: bool = False      # 只交易 60 日动量前 N 名
@@ -921,11 +933,12 @@ def run_backtest(codes: List[str], cfg: BacktestConfig,
             wf = order.get("wf", 1.0)   # 动量排名加权因子（均值=1，强者>1弱<1）
             rpw = order.get("weight", 1.0)  # 横截面风险平价权重（均值=1，低波动>1）
             # 仓位（波动率目标）—— 用昨日收盘标记的权益，无未来函数
+            _cap = equity * cfg.max_single_position_pct
             if cfg.vol_sizing:
                 budget = equity * cfg.risk_per_trade
-                tgt = min(budget / stop_dist, equity * 0.30, cfg.fixed_amount)
+                tgt = min(budget / stop_dist, _cap, cfg.fixed_amount)
             else:
-                tgt = min(cfg.fixed_amount, equity * 0.30)
+                tgt = min(cfg.fixed_amount, _cap)
             tgt = tgt * wf * rpw
             # 组合级 DD 控制：缩放新开仓目标仓位（exp_scale<=1.0）
             if cfg.dd_ctrl and exp_scale < 1.0:
@@ -975,7 +988,8 @@ def run_backtest(codes: List[str], cfg: BacktestConfig,
                 # 趋势骑行：MA20 下穿 exit_ma 或 收盘跌破 exit_ma → 离场
                 _m20 = I.last(ma20_arr[code][:i + 1])
                 _mex = I.last(ma_exit_arr[code][:i + 1])
-                if (_m20 and _mex and _m20 < _mex) or (cl < _mex if _mex else False):
+                if ((_m20 and _mex and _m20 < _mex)
+                        or (cl < _mex if _mex else False)):
                     exit_price, reason = cl, "trend_break"
                 elif (cl / entry - 1) <= cfg.hard_stop_pct:
                     exit_price, reason = cl, "hard_stop"
