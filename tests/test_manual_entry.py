@@ -40,6 +40,10 @@ def _make_engine(held, bought=None):
     eng._sold_today_codes = set()
     eng._sold_today_date = datetime.now().strftime("%Y-%m-%d")
     eng._buys = bought
+    # 【2026-09-23 重启前补修】观察篮现在要夹紧 max_positions。既有用例的原意
+    # 是测「买入/跳过/反手抑制」等观察篮逻辑本身，持仓数远低于上限，故显式
+    # 注入 max_positions=5 使测试与生产解耦、保住原意（不放宽任何断言）。
+    eng.max_positions = 5
     # 记录买入，并把代码放进持仓（模拟 _handle_buy 成功建仓）
     def _buy(sig, tick, cp):
         eng._buys.append(sig.code)
@@ -139,6 +143,27 @@ def test_mark_sold_today_resets_across_days():
     # 换日 → 旧集合被清空，只保留当日新登记
     assert eng._sold_today_codes == {"300502.SZ"}, eng._sold_today_codes
     assert eng._sold_today_date == datetime.now().strftime("%Y-%m-%d")
+
+
+def test_manual_entry_respects_max_positions():
+    """守卫：观察篮**不绕过** max_positions（2026-09-23 重启前补修）。
+
+    背景：``_handle_buy`` 内部**没有** max_positions 检查（只查 position_scale /
+    价格 / 账户级阻断），夹紧完全依赖调用方。主信号路径与轮动都有夹紧，
+    **唯独观察篮从未夹紧**，与 ``_manual_entry_step`` 文档串声明的
+    「不绕过 … max_positions」不符。实盘证据：09-22 EOD 8 仓
+    （观察篮 5 只 + 其他 3 只）> max_positions=5。
+    明日开盘必触发：现持仓 6 只已超限 + 观察篮 300308.SZ 未持仓 → 不修会买到 7 仓。
+    """
+    # 已持 5 只 = max_positions，观察篮清单里的 300308.SZ 未持仓
+    eng = _make_engine(held=["002415.SZ", "000977.SZ", "603986.SH",
+                             "688008.SH", "688012.SH"])
+    eng.max_positions = 5
+    with _with_codes(CODES):
+        EventEngine._manual_entry_step(eng, _ticks(CODES), {})
+    # 已达上限 ⇒ 一只都不该再买
+    assert eng._buys == [], eng._buys
+    assert len([p for p in eng._positions.values() if p.quantity > 0]) == 5
 
 
 def test_manual_entry_noop_when_list_empty():

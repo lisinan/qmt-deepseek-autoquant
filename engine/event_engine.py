@@ -1812,6 +1812,20 @@ class EventEngine:
         self._manual_positions &= held
 
         for code in codes:
+            # 【2026-09-23 22:40 重启前补修】max_positions 夹紧 —— 补齐最后一条旁路。
+            # ``_handle_buy`` **内部并没有** max_positions 检查（只查 position_scale /
+            # 价格 / 账户级熔断与日内次数），夹紧**完全依赖调用方**：
+            #   主信号路径  → 有（``len(...) >= max_positions: continue``）
+            #   轮动补强空槽 → 有（仅 ``len == max_positions-1`` 时触发）
+            #   轮动弱换强   → 本日已修（换出未生效不换入 / 超限只卖不买）
+            #   **观察篮     → 从未夹紧**（与本文档串「不绕过 max_positions」不符）
+            # 实盘证据：09-22 EOD 8 仓 = 观察篮 5 只 + 其他 3 只 > max_positions=5。
+            # 明日开盘必触发场景：现持仓 6 只已超限，观察篮 300308.SZ 未持仓，
+            # 若不夹紧会被直接买到 7 仓。故此处补齐夹紧后再走后续过滤。
+            if len({c for c, p in self._positions.items() if p.quantity > 0}) \
+                    >= self.max_positions:
+                logger.info("[观察篮] 持仓已达上限 %d，停止补篮", self.max_positions)
+                break
             # 【2026-09-23 PM-EVOLVE】反手抑制：当日已被任何路径真实卖出的股票，
             # 观察篮当日不再买回（原机制依赖不持久化的 _manual_positions，重启后失效）。
             if code in held or code in self._manual_sold_today:
