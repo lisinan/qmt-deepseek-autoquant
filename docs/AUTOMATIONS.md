@@ -99,6 +99,13 @@ GUARD 存活兜底(每小时,含 paper 断言) ─┐
 5. 任一单折收益 > −15%（不得有灾难折）
 6. `python tests/run_all.py` 全量通过
 7. **风险底线不可动**：`max_drawdown_pct ≤ −0.15`、`risk_per_trade ≤ 0.02`、T+1 约束保持、`max_positions ≥ 3`
+8. **★ 晋升闸门双通道（2026-09-23 OWNER 授权增设）**：
+   - `--track alpha`（默认，用于**调参找 alpha**）：闸门② 要求最差窗口 dSh ≥ **+0.10**
+   - `--track defect`（**缺陷修复**，用于消除「实盘行为 ≠ 配置语义」）：闸门② 放宽为
+     「方向不劣化」——均值 dSh ≥ 0 且最差窗口 ≥ −0.05；**其余闸门①③④⑤⑥⑦⑧ 一条不放宽**。
+     人工判据：DR-a 参数零改动 / DR-b 实盘铁证 / DR-c 守卫测试存在。
+     缺陷修复必须用 `--baseline <实盘现状代理>` 作**反向对照**，否则 dSh 与闸门① 符号会判反。
+   - 理由：+0.10 是为防 alpha churn 设计，套在缺陷修复上会**系统性阻断所有修复**。
 8. `EXECUTION_MODE` 保持 `paper`（严禁切 live）
 
 9. **防 churn**：同一参数 **24 小时内不得重复改动**（落盘前先查 `EVOLUTION_DECISIONS.md` 最近条目）；单轮最多落盘 2 个参数
@@ -168,4 +175,4 @@ GUARD 存活兜底(每小时,含 paper 断言) ─┐
 - **miniQMT**：`C:\pazq_qmt\bin.x64\XtItClient.exe`（用户手动启动 + 勾自动登录）
 - **守护**：`scripts/guardian.py`（5min 轮询）+ `scripts/health_check.py`（存活检测/自启动）
 - **单实例锁**：`logs/engine.pid`；2026-09-16 修复 `main.py::_pid_alive` 致命 bug（原用 `OpenProcess` 单判据，会把强杀后句柄未回收的死进程误判存活 → 永久拒绝启动、守护反复拉起却起不来），现改用 `GetExitCodeProcess(STILL_ACTIVE=259)` 判定
-| `rotation_require_daily_gate` | **False（2026-09-23 AM 新增，默认不启用）** | 轮动建仓是否须通过与主信号路径同一日线闸门 `trend_up or bias>=min_daily_bias`。**背景（真实缺陷）**：`_maybe_rotate` 两条分支（event_engine.py:674-675 补强空槽 / 706-707 弱换强）只要 `is_breakout`（日内涨幅≥1.5%）就无视 `daily-gate` 的 HOLD 直接买入，绕过了 09-22 落盘的 `min_daily_bias`；而 `backtest_daily.py` **无任何 rotation 逻辑**（grep 零命中）⇒ 第二条「实盘有、回测无」口径背离。实盘铁证：2026-09-23 10:00:52 以 `bias=-0.30 trend_up=False` 买入 688008.SH，3 秒后即被「趋势破位离场」判定卖出（T+1 锁住）。**回测（新增代理字段 `breakout_bypass_gate`，默认 99=关闭、零行为变化）**：90×6 单调剂量反应 0.5 −0.208 / 1.0 −0.187 / **1.5 −0.164** / 2.5 −0.038 / 3.0 −0.046 / 99(关闭) 0.000；4 窗口共识 1.5 **全负**（−0.083/−0.063/−0.164/−0.038）。**闸门裁决：关闭绕行 = 4 窗口均值 dSh +0.087、最差窗口 +0.038、规范 wf(90×6) +0.164 ⇒ 按多窗口均值口径未达 +0.10，REJECTED 不启用**（若按规范 wf 单窗口口径则达标，供 OWNER 复核）。**热读参数**：置 True/False 均无需重启引擎，下一轮动评估周期（120s 节流）生效。可逆：置回 False |
+| `rotation_require_daily_gate` | **True（2026-09-23 21:20 OWNER 授权启用）** | 轮动建仓须通过与主信号路径同一日线闸门 `trend_up or bias>=min_daily_bias`。**背景（真实缺陷）**：`_maybe_rotate` 两条分支（event_engine.py 补强空槽 / 弱换强）只要 `is_breakout`（日内涨幅≥1.5%）就无视 `daily-gate` 的 HOLD 直接买入，绕过了 09-22 落盘的 `min_daily_bias`；而 `backtest_daily.py` **无任何 rotation 逻辑**（grep 零命中）⇒ 第二条「实盘有、回测无」口径背离。实盘铁证：2026-09-23 10:00:52 以 `bias=-0.30 trend_up=False` 买入 688008.SH，3 秒后即被「趋势破位离场」判定卖出（T+1 锁住）。**回测**：代理字段 `breakout_bypass_gate` 90×6 单调剂量反应 0.5 −0.208 / 1.0 −0.187 / **1.5 −0.164** / 2.5 −0.038 / 3.0 −0.046 / 99(关闭) 0.000；4 窗口共识 1.5 **全负**（−0.083/−0.063/−0.164/−0.038）。**★ 启用依据（缺陷修复通道）**：OWNER 授权增设 `--track defect` 后，以「实盘现状 G1」为**反向对照**重跑（`--baseline "G1_轮动绕闸门_1.5"`），修复收益 60×9 +0.083 / 75×7 +0.063 / 90×6 +0.164 / 120×4 +0.038 → 均值 **+0.087 ≥ 0**、最差 **+0.038 ≥ −0.05** ⇒ 闸门②「方向不劣化」PASS，①IS↑ PASS（ret 128.6→159.0%、Sh 1.10→1.25），③④⑤⑥⑦⑧ 全 PASS，tests 239/0/239 ⇒ **启用**。**不会空仓**：只拦 `trend_up=False 且 bias<2.0` 的弱候选，`trend_up=True` 仍放行。**热读参数**：无需重启，下一轮动评估周期（120s 节流）生效 ⇒ 次日开盘生效。可逆：置回 False |

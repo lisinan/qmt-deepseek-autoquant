@@ -191,6 +191,16 @@ def main():
     ap.add_argument("--param", default="reentry_cooldown")
     ap.add_argument("--values", default="3,5,8,10,15,20")
     ap.add_argument("--json", default="")
+    # 【2026-09-23 OWNER 授权】晋升双通道：alpha（默认，防 churn）/ defect（缺陷修复）
+    ap.add_argument("--track", default="alpha", choices=["alpha", "defect"],
+                    help="alpha=闸门②要求最差窗口 dSh≥+0.10（防过拟合调参）；"
+                         "defect=缺陷修复通道，闸门②放宽为『方向不劣化』"
+                         "（均值 dSh≥0 且最差窗口≥-0.05），其余闸门照旧")
+    # 反向对照：缺陷修复时「对照」应是实盘现状（如 G1/H1），「候选」是修复后的基线。
+    # 默认以 P0 为对照会把修复收益算成负号、闸门①（IS 提升）也会判反。
+    ap.add_argument("--baseline", default="P0_当前生产基线",
+                    help="对照配置名（默认 P0_当前生产基线）。缺陷修复通道应设为"
+                         "实盘现状代理（如 G1_轮动绕闸门_1.5 / H1_实盘现状_绕闸门+超仓6）")
     args = ap.parse_args()
 
     codes = wide_universe()
@@ -277,19 +287,34 @@ def main():
     # ---------------- consensus（多窗口共识，防窗口运气）----------------
     if args.mode == "consensus":
         WINDOWS = [(60, 9), (75, 7), (90, 6), (120, 4)]
+        track = args.track
         tests = candidates_final()
         print(f"\n{'=' * 116}")
         print("多窗口共识：同一候选在 4 套互不重叠的折划分下重跑，"
               "看最差窗口而非平均（防窗口运气）")
+        if track == "defect":
+            print(f"★ TRACK = DEFECT-REPAIR（缺陷修复通道，OWNER 2026-09-23 授权）："
+                  f"闸门② 放宽为『方向不劣化』（均值dSh≥0 且最差窗口≥-0.05）；"
+                  f"③④⑤⑥⑦⑧ 照旧")
+        else:
+            print("★ TRACK = ALPHA（默认）：闸门② 要求最差窗口 dSh ≥ +0.10")
         print("=" * 116)
+        # 反向对照（--baseline）：缺陷修复通道下对照应是「实盘现状」代理，
+        # 候选是修复后的 P0，此时 dSh 直接就是**修复收益**（正数=修复有效）。
+        base_name = args.baseline
+        if base_name not in tests:
+            raise SystemExit(f"--baseline 无效：{base_name}；可选：{list(tests)}")
+        base_cfg_used = tests[base_name]
         is_res = {name: bt(cfg, data) for name, cfg in tests.items()}
-        bi = is_res["P0_当前生产基线"]
+        bi = is_res[base_name]
+        print(f"对照（baseline）= {base_name}"
+              f"{'（反向对照：dSh 即修复收益）' if base_name != 'P0_当前生产基线' else ''}")
         print(f"基线 P0 IS: ret={bi['total_return']*100:+.2f}% Sh={bi['sharpe']:+.2f} "
               f"MDD={bi['max_drawdown']*100:.2f}%")
         res = {name: [] for name in tests}
         for fold, nf in WINDOWS:
             subs_w = make_folds(data, codes, n, fold, nf)
-            b_st, b_rs = oos_stats(base_cfg(), subs_w, bt)
+            b_st, b_rs = oos_stats(base_cfg_used, subs_w, bt)
             for name, cfg in tests.items():
                 st, rs = oos_stats(cfg, subs_w, bt)
                 tot = sum((rs[k]["total_return"] - b_rs[k]["total_return"]) * 100
@@ -305,7 +330,7 @@ def main():
               + f"{'最差dSh':>10}{'均值dSh':>10}{'最差MDD':>10}{'最差折':>10}{'IS_ret':>10}{'IS_Sh':>8}  结论")
         final = []
         for name in tests:
-            if name == "P0_当前生产基线":
+            if name == base_name:      # 跳过对照自身（可能是 --baseline 指定的实盘现状）
                 continue
             rs_ = res[name]
             line = f"{name:<22}"
@@ -320,7 +345,24 @@ def main():
             wf = min(r["worst"] for r in rs_)
             isr = is_res[name]
             g1 = (isr["total_return"] > bi["total_return"]) or (isr["sharpe"] > bi["sharpe"])
-            g2 = mn >= 0.10
+            # ---- 【2026-09-23 OWNER 授权】晋升双通道 ----
+            # ``--track alpha``（默认）：闸门② 要求最差窗口 dSh ≥ +0.10。
+            #   该门槛是为**防伪 alpha churn** 设计的——阻止为了回测上的小幅增益
+            #   反复调参而过拟合。
+            # ``--track defect``：缺陷修复通道。+0.10 套在「恢复已验证基线行为」
+            #   的缺陷修复上会**系统性阻断修复**（09-23 两项 P0 修复均因此被卡：
+            #   +0.038~+0.087）。缺陷修复不改任何参数值、只消除「实盘行为与配置
+            #   语义不符」，收益来自消除偏离而非寻找新 alpha，故闸门② 放宽为
+            #   「方向不劣化」：均值 dSh ≥ 0 且最差窗口 dSh ≥ -0.05（不得有显著负窗口）。
+            #   其余闸门（③④⑤⑥⑦⑧）**全部照旧保留**。
+            #   人工判据（脚本无法自动判定，由 OWNER 在 EVOLUTION_DECISIONS.md 留痕）：
+            #     DR-a 参数零改动（config/settings.py diff 为空）
+            #     DR-b 实盘铁证（日志/账本级别证据）
+            #     DR-c 守卫测试存在（tests 中有锁死新语义的用例）
+            if track == "defect":
+                g2 = (avg >= 0.0) and (mn >= -0.05)
+            else:
+                g2 = mn >= 0.10
             g4 = wmdd >= -0.22
             g5 = wf > -0.15
             gap = (abs(mean_oos_sh - isr["sharpe"]) / abs(isr["sharpe"])
@@ -333,7 +375,9 @@ def main():
             print(line)
             print(f"{'':<22} ③OOS/IS: 均值OOS_Sh={mean_oos_sh:+.3f} vs IS_Sh={isr['sharpe']:+.2f} "
                   f"→ 差 {gap*100:.1f}% {'PASS' if g3 else 'FAIL'}"
-                  f" | ①IS↑={'PASS' if g1 else 'fail'} ②最差dSh≥+.10={'PASS' if g2 else 'fail'}"
+                  f" | TRACK={track} ①IS↑={'PASS' if g1 else 'fail'}"
+                  f" ②={'均值≥0且最差≥-.05' if track == 'defect' else '最差≥+.10'}"
+                  f"={'PASS' if g2 else 'fail'}"
                   f" ④最差MDD≥-22%={'PASS' if g4 else 'FAIL'} ⑤最差折>-15%={'PASS' if g5 else 'FAIL'}")
             final.append(dict(name=name, per_window=rs_, min_d_sh=mn, mean_d_sh=avg,
                               mean_oos_sharpe=mean_oos_sh,

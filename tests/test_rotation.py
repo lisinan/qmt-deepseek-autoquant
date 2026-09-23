@@ -64,7 +64,7 @@ class _LLM:
 
 
 def _make_engine(scores, held, hot_codes, enable=True, cooldown=0.0,
-                 sell_ok=True):
+                 sell_ok=True, daily_gate_override=False):
     eng = SimpleNamespace()
     eng.enable_rotation = enable
     eng.rotation_min_score_gap = 2.0
@@ -91,11 +91,17 @@ def _make_engine(scores, held, hot_codes, enable=True, cooldown=0.0,
     eng._apply_momentum_gate = lambda s: set(hot_codes)
     # 把真实方法绑定到桩对象（_maybe_rotate 内部会 self._hot_codes_set()）
     eng._hot_codes_set = lambda: EventEngine._hot_codes_set(eng)
-    # 【2026-09-23 AM-EVOLVE】同样绑定日线闸门判定（_maybe_rotate 内部会调用）。
-    # 生产当前 rotation_require_daily_gate=False ⇒ 恒返回 True、保持既有行为，
-    # 故下列既有用例的语义不受影响（保原意，与生产默认值解耦）。
-    eng._rotation_daily_gate_ok = (
-        lambda feat: EventEngine._rotation_daily_gate_ok(eng, feat))
+    # 【2026-09-23 PM】生产已将 ``rotation_require_daily_gate`` 置 **True**
+    # （缺陷修复通道启用）。本文件既有用例的原意是测**轮动逻辑本身**
+    # （弱换强 / 批量换仓 / 补空槽 / 热板块绕动量闸门 / 突破放宽 gap），
+    # 编写时闸门默认关闭（恒放行）。为**保原意、使测试与生产默认值解耦**，
+    # 这里默认注入「闸门关闭」；闸门专属用例显式传 ``daily_gate_override=None``
+    # 走真实方法（读生产 STRATEGY_PARAMS）。不放宽任何断言。
+    if daily_gate_override is False:
+        eng._rotation_daily_gate_ok = lambda feat: True
+    else:
+        eng._rotation_daily_gate_ok = (
+            lambda feat: EventEngine._rotation_daily_gate_ok(eng, feat))
     # 【2026-09-23 PM-EVOLVE】_handle_sell 现在返回 bool（True=仓位真的清掉）。
     # 桩须跟上新契约：sell_ok=True 模拟正常卖出（清仓并释放槽位）；
     # sell_ok=False 模拟 T+1 / 建仓保护期拦截（槽位未释放）。
@@ -279,24 +285,39 @@ def test_rotation_4of5_weak_hot_no_breakout_skips():
     assert eng._buys == []
 
 
-def test_rotation_daily_gate_default_off_preserves_breakout_bypass():
-    """守卫：生产默认 rotation_require_daily_gate=False ⇒ 日内突破仍可绕过日线
-    闸门（既有行为不变）。
+def test_production_default_rotation_requires_daily_gate():
+    """守卫：生产默认 ``rotation_require_daily_gate=True``（2026-09-23 授权启用）。
 
-    背景：2026-09-23 AM-EVOLVE 定位到轮动绕过 min_daily_bias 闸门的口径背离并
-    实现了修复，但**回测未达晋升闸门 ②**（4 窗口均值 dSh +0.087 < +0.10）⇒
-    按纪律不启用。本测试锁死「默认不启用」这一决定；一旦有人把默认值改成
-    True，或把 False 语义改坏，这里立即失败。
+    背景：轮动绕过 ``min_daily_bias`` 闸门是「实盘有、回测无」的口径背离。
+    上午周期已实现修复但闸门②未达（4 窗口均值 +0.087 < +0.10）而未启用；
+    OWNER 授权增设**缺陷修复通道**（闸门②放宽为「方向不劣化」）后，以实盘现状
+    G1 为反向对照重跑：均值 dSh +0.087 ≥ 0、最差 +0.038 ≥ −0.05 ⇒ 全闸门通过
+    ⇒ **启用**。本测试锁死该生产默认值；若有人改回 False，此处立即失败。
+    """
+    assert STRATEGY_PARAMS.get("rotation_require_daily_gate") is True
+
+
+def test_rotation_daily_gate_off_preserves_breakout_bypass():
+    """守卫：置 ``rotation_require_daily_gate=False`` ⇒ 日内突破仍可绕过日线闸门
+    （可逆性保证：改回 False 即完全恢复旧行为）。
+
+    本用例显式注入 False 以**与生产默认值解耦**（保原意），不依赖生产当前值。
     """
     held = ["688072.SH", "688120.SH", "002415.SZ", "688082.SH"]
     scores = {"688072.SH": 3.0, "688120.SH": 2.0, "002415.SZ": 4.0,
               "688082.SH": 1.0, "300308.SZ": 9.0}
-    eng = _make_engine(scores, held, hot_codes=["300308.SZ"])
-    # 桩特征：trend_up=False、bias=0.0 < min_daily_bias(2.0) ⇒ 闸门本应拒绝
-    assert EventEngine._rotation_daily_gate_ok(eng, _Feat(score=9.0)) is True
-    EventEngine._maybe_rotate(
-        eng, _ticks(["300308.SZ"], {"300308.SZ": 3.0}))
-    assert eng._buys == [("300308.SZ", 9.0)], eng._buys
+    old = STRATEGY_PARAMS.get("rotation_require_daily_gate")
+    try:
+        STRATEGY_PARAMS["rotation_require_daily_gate"] = False
+        eng = _make_engine(scores, held, hot_codes=["300308.SZ"],
+                           daily_gate_override=None)
+        # 桩特征：trend_up=False、bias=0.0 < min_daily_bias(2.0) ⇒ 闸门本应拒绝
+        assert EventEngine._rotation_daily_gate_ok(eng, _Feat(score=9.0)) is True
+        EventEngine._maybe_rotate(
+            eng, _ticks(["300308.SZ"], {"300308.SZ": 3.0}))
+        assert eng._buys == [("300308.SZ", 9.0)], eng._buys
+    finally:
+        STRATEGY_PARAMS["rotation_require_daily_gate"] = old
 
 
 def test_rotation_daily_gate_enabled_blocks_weak_candidate():
@@ -309,7 +330,8 @@ def test_rotation_daily_gate_enabled_blocks_weak_candidate():
     old = STRATEGY_PARAMS.get("rotation_require_daily_gate")
     try:
         STRATEGY_PARAMS["rotation_require_daily_gate"] = True
-        eng = _make_engine(scores, held, hot_codes=["300308.SZ"])
+        eng = _make_engine(scores, held, hot_codes=["300308.SZ"],
+                           daily_gate_override=None)
         weak = _Feat(score=9.0)          # trend_up=False, bias=0.0
         strong = _Feat(score=9.0)
         strong.trend_up = True
