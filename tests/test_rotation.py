@@ -16,6 +16,7 @@ from datetime import datetime
 from types import SimpleNamespace
 
 from engine.event_engine import EventEngine
+from config.settings import STRATEGY_PARAMS
 from core.data_models import Signal, Position
 
 
@@ -89,6 +90,11 @@ def _make_engine(scores, held, hot_codes, enable=True, cooldown=0.0):
     eng._apply_momentum_gate = lambda s: set(hot_codes)
     # 把真实方法绑定到桩对象（_maybe_rotate 内部会 self._hot_codes_set()）
     eng._hot_codes_set = lambda: EventEngine._hot_codes_set(eng)
+    # 【2026-09-23 AM-EVOLVE】同样绑定日线闸门判定（_maybe_rotate 内部会调用）。
+    # 生产当前 rotation_require_daily_gate=False ⇒ 恒返回 True、保持既有行为，
+    # 故下列既有用例的语义不受影响（保原意，与生产默认值解耦）。
+    eng._rotation_daily_gate_ok = (
+        lambda feat: EventEngine._rotation_daily_gate_ok(eng, feat))
     eng._handle_sell = lambda sig, pos: eng._sells.append(sig.code)
     eng._handle_buy = lambda sig, tick, cp: eng._buys.append((sig.code, sig.score))
     # 【2026-09-22】轮动换入/换出也要落库（此前不落库 → 引擎有成交而 signals
@@ -260,6 +266,53 @@ def test_rotation_4of5_weak_hot_no_breakout_skips():
     EventEngine._maybe_rotate(eng, _ticks(["300308.SZ"]))  # change_pct 默认 0
     assert eng._sells == []
     assert eng._buys == []
+
+
+def test_rotation_daily_gate_default_off_preserves_breakout_bypass():
+    """守卫：生产默认 rotation_require_daily_gate=False ⇒ 日内突破仍可绕过日线
+    闸门（既有行为不变）。
+
+    背景：2026-09-23 AM-EVOLVE 定位到轮动绕过 min_daily_bias 闸门的口径背离并
+    实现了修复，但**回测未达晋升闸门 ②**（4 窗口均值 dSh +0.087 < +0.10）⇒
+    按纪律不启用。本测试锁死「默认不启用」这一决定；一旦有人把默认值改成
+    True，或把 False 语义改坏，这里立即失败。
+    """
+    held = ["688072.SH", "688120.SH", "002415.SZ", "688082.SH"]
+    scores = {"688072.SH": 3.0, "688120.SH": 2.0, "002415.SZ": 4.0,
+              "688082.SH": 1.0, "300308.SZ": 9.0}
+    eng = _make_engine(scores, held, hot_codes=["300308.SZ"])
+    # 桩特征：trend_up=False、bias=0.0 < min_daily_bias(2.0) ⇒ 闸门本应拒绝
+    assert EventEngine._rotation_daily_gate_ok(eng, _Feat(score=9.0)) is True
+    EventEngine._maybe_rotate(
+        eng, _ticks(["300308.SZ"], {"300308.SZ": 3.0}))
+    assert eng._buys == [("300308.SZ", 9.0)], eng._buys
+
+
+def test_rotation_daily_gate_enabled_blocks_weak_candidate():
+    """守卫：置 rotation_require_daily_gate=True ⇒ 轮动必须与主信号路径同闸门，
+    trend_up=False 且 bias < min_daily_bias 的候选被拒绝；trend_up=True 仍放行。
+    """
+    held = ["688072.SH", "688120.SH", "002415.SZ", "688082.SH"]
+    scores = {"688072.SH": 3.0, "688120.SH": 2.0, "002415.SZ": 4.0,
+              "688082.SH": 1.0, "300308.SZ": 9.0}
+    old = STRATEGY_PARAMS.get("rotation_require_daily_gate")
+    try:
+        STRATEGY_PARAMS["rotation_require_daily_gate"] = True
+        eng = _make_engine(scores, held, hot_codes=["300308.SZ"])
+        weak = _Feat(score=9.0)          # trend_up=False, bias=0.0
+        strong = _Feat(score=9.0)
+        strong.trend_up = True
+        assert EventEngine._rotation_daily_gate_ok(eng, weak) is False
+        assert EventEngine._rotation_daily_gate_ok(eng, strong) is True
+        # 闸门生效 → 弱势候选即使日内突破 3% 也不补空槽
+        EventEngine._maybe_rotate(
+            eng, _ticks(["300308.SZ"], {"300308.SZ": 3.0}))
+        assert eng._buys == [], eng._buys
+    finally:
+        if old is None:
+            STRATEGY_PARAMS.pop("rotation_require_daily_gate", None)
+        else:
+            STRATEGY_PARAMS["rotation_require_daily_gate"] = old
 
 
 if __name__ == "__main__":

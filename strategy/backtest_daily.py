@@ -359,6 +359,24 @@ class BacktestConfig:
     # 默认 **2.0 = 关闭**（bias 永不可达），逐位保持既有回测行为，
     # 不破坏任何历史结论与测试；需要评估生产口径时显式传入 0.2 即可。
     min_daily_bias: float = 2.0
+    # ---- 轮动「日内突破绕过日线闸门」代理建模【2026-09-23 AM-EVOLVE】----
+    # 实盘 _maybe_rotate（event_engine.py:674-675 补强空槽 / 706-707 弱换强）的语义是：
+    #     is_breakout = tick.change_pct >= rotation_intraday_breakout_pct(1.5)
+    #     if not is_breakout and sig.side != "BUY": continue
+    #   ⇒ **只要日内涨幅达标，即使 on_daily_features 因日线闸门（daily-gate）返回
+    #     HOLD 也照样买入**，连 buy_score_threshold / min_signals 都不看。
+    #   而回测器历史上**完全没有 rotation 逻辑**（grep 'rotation|轮动' 零命中）⇒
+    #   这是「实盘有、回测无」的分支，违反 §7 口径纪律：09-22 刚落盘的
+    #   min_daily_bias=2.0 只管住了主信号路径，管不住轮动这条旁路。
+    #   实盘证据（2026-09-23 10:00:52）：688008.SH 以
+    #     「daily-gate:bias=-0.30 trend_up=False」被轮动买入，3 秒后即被
+    #     「趋势破位离场」判定卖出（T+1 锁住），次日开盘真的卖掉 → 买/卖空转。
+    # 本字段在日线上代理该分支：当日涨幅(%) >= 阈值时豁免日线闸门。
+    #   默认 **99.0 = 关闭**（逐位保持既有回测行为，零行为变化，不破坏历史结论）。
+    breakout_bypass_gate: float = 99.0
+    # 是否连评分门槛（buy_score_threshold / min_signals）一起豁免。
+    #   True = 完整复现实盘轮动语义；False = 只豁免日线闸门（默认）。
+    breakout_bypass_score: bool = False
     # ---- 退出范式 + 动量（本次优化）----
     exit_mode: str = "scalp"        # "scalp"=紧移动止损; "trend"=趋势骑行至破位
     trend_exit_ma: int = 60          # 趋势破位判定均线
@@ -1178,11 +1196,19 @@ def run_backtest(codes: List[str], cfg: BacktestConfig,
                     score = 10.0
                 else:
                     score, factors = score_arr[code][i]
-                    if score < cfg.buy_score_threshold:
-                        continue
-                    if sum(1 for x in factors.values() if x > 0) < cfg.min_signals:
-                        continue
-                    if cfg.use_gate and not (
+                    # 代理建模：轮动「日内突破绕过日线闸门」（默认 99.0 关闭，
+                    # 见 BacktestConfig.breakout_bypass_gate 注释）。日线上用
+                    # 「当日涨幅 vs 昨收」代理实盘的 tick.change_pct。
+                    _bypass = (cfg.breakout_bypass_gate <= 50.0
+                               and i > 0 and c[i - 1] > 0
+                               and (c[i] / c[i - 1] - 1.0) * 100.0
+                               >= cfg.breakout_bypass_gate)
+                    if not (_bypass and cfg.breakout_bypass_score):
+                        if score < cfg.buy_score_threshold:
+                            continue
+                        if sum(1 for x in factors.values() if x > 0) < cfg.min_signals:
+                            continue
+                    if cfg.use_gate and not _bypass and not (
                             trend_up_arr[code][i]
                             or bias_arr[code][i] >= cfg.min_daily_bias):
                         continue

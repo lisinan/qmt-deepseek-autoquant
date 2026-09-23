@@ -604,6 +604,35 @@ class EventEngine:
                 pass
         return hot
 
+    def _rotation_daily_gate_ok(self, feat) -> bool:
+        """轮动候选是否通过与主信号路径**同一个**日线闸门。
+
+        【2026-09-23 AM-EVOLVE 口径修复】轮动的两条建仓分支（补强空槽 / 弱换强）
+        原本只要 ``is_breakout``（日内涨幅 >= rotation_intraday_breakout_pct）成立，
+        就无视 ``on_daily_features`` 返回的 HOLD（含 ``daily-gate:...`` 拒绝理由）
+        直接买入 —— 即**绕过了刚于 09-22 落盘、且回测已验证为正向的
+        ``min_daily_bias`` 日线闸门**。回测器无 rotation 逻辑 ⇒ 属「实盘有、
+        回测无」的口径背离（违反 §7 纪律）。
+
+        现让轮动复用与 ``trend_strategy.on_daily_features`` 完全同式的判定：
+        ``trend_up or bias >= min_daily_bias``。这样轮动与主信号路径口径统一。
+
+        **热读** STRATEGY_PARAMS：改 ``rotation_require_daily_gate`` 无需重启引擎，
+        下一个轮动评估周期（默认 120s 节流）即生效。置 False 即一键回滚旧行为。
+        """
+        if not bool(STRATEGY_PARAMS.get("rotation_require_daily_gate", True)):
+            return True
+        if feat is None:
+            # 与 require_daily_data=True 的主路径语义一致：无日线数据 = 不放行
+            return False
+        try:
+            if getattr(feat, "trend_up", False):
+                return True
+            thr = float(STRATEGY_PARAMS.get("min_daily_bias", 2.0))
+            return float(getattr(feat, "bias", -9.9)) >= thr
+        except Exception:
+            return False
+
     def _maybe_rotate(self, ticks: Dict[str, Tick]) -> None:
         """板块轮动 / 弱换强（opt-in，enable_rotation=True 时生效）。
 
@@ -667,6 +696,9 @@ class EventEngine:
                 if code not in hot:
                     continue
                 feat = self.daily.features(code)
+                # 【2026-09-23 AM-EVOLVE】日内突破不再豁免日线闸门（默认开启）
+                if not self._rotation_daily_gate_ok(feat):
+                    continue
                 sig = self.strategy.on_daily_features(code, code, feat)
                 if sig is None:
                     continue
@@ -699,6 +731,9 @@ class EventEngine:
             if code not in hot:
                 continue
             feat = self.daily.features(code)
+            # 【2026-09-23 AM-EVOLVE】同上：弱换强分支的日内突破也须过日线闸门
+            if not self._rotation_daily_gate_ok(feat):
+                continue
             sig = self.strategy.on_daily_features(code, code, feat)
             if sig is None:
                 continue

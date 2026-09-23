@@ -126,6 +126,16 @@ def candidates_final() -> dict:
     out["F1_bias关闭_2.0"] = replace(b, min_daily_bias=2.0)
     out["F2_生产口径_0.2"] = replace(b, min_daily_bias=0.2)
     out["F3_bias_-0.3"] = replace(b, min_daily_bias=-0.3)
+    # ---- 2026-09-23 AM-EVOLVE：轮动「日内突破绕过日线闸门」代理 ----
+    # 实盘 _maybe_rotate 在 is_breakout=True 时无视 daily-gate 的 HOLD 直接买入
+    # （event_engine.py:674-675 / 706-707），回测器无 rotation 逻辑 ⇒ 口径背离。
+    # G1 = 只豁免日线闸门（保留评分门槛）；G2 = 连同评分门槛一起豁免
+    # （完整复现实盘轮动语义）；G3 = 更严的突破阈值做邻居对照。
+    # 若 G* 在四窗口一致为负，则「关闭轮动的闸门旁路」即为正向改动。
+    out["G1_轮动绕闸门_1.5"] = replace(b, breakout_bypass_gate=1.5)
+    out["G2_轮动绕闸门绕评分_1.5"] = replace(
+        b, breakout_bypass_gate=1.5, breakout_bypass_score=True)
+    out["G3_轮动绕闸门_3.0"] = replace(b, breakout_bypass_gate=3.0)
     return out
 
 
