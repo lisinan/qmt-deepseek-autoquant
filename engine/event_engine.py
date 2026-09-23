@@ -313,6 +313,17 @@ class EventEngine:
         self._manual_positions: set = set()
         self._manual_sold_today: set = set()
         self._manual_sold_date: str = ""
+        # 【2026-09-23 PM-EVOLVE】当日「任何路径」真实卖出的代码（含策略破位/止损/
+        # 日线兜底/轮动换出）。与 _manual_sold_today 的区别：后者只在「上一轮已登记
+        # 为观察篮持仓、本轮消失」时才填充，而 _manual_positions **不持久化**——
+        # 引擎重启后它恒为空集，于是「观察篮昨日建仓 → 重启 → 今日被策略卖出」
+        # 这一路径完全检测不到，防反手机制失效。实盘铁证：2026-09-23 10:00:00
+        # 300502/603986/688008 被「趋势破位离场」卖出，10:00:52 观察篮与轮动即
+        # 原价买回（453.03→452.61、403.09→402.45、227.90→226.81），52 秒内
+        # 白付双边 0.3% 摩擦且持仓方向自相矛盾。此处改为在 _handle_sell 成功时
+        # 直接登记，不依赖任何跨重启的内存集合。
+        self._sold_today_codes: set = set()
+        self._sold_today_date: str = ""
         self.analyst = analyst or AIAnalyst()
         self.sector_scorer = SectorScorer() if enable_sector_scorer else None
         self.dynamic_universe = DynamicUniverse() if enable_dynamic_universe else None
@@ -780,14 +791,36 @@ class EventEngine:
                 reason=f"板块轮动换出(评分{weakest_score:.1f}<候选{eff_score:.1f}"
                        f"{'|日内突破' if is_breakout else ''})")
             self._save_signal(wsig)   # 2026-09-22：轮动换出同样落库
-            self._handle_sell(wsig, wpos)
+            # 【2026-09-23 PM-EVOLVE · P0 缺陷修复】卖出**可能并未发生**。
+            # wpos 若当日才建仓，T+1 会锁死卖出；此时槽位**没有**释放，若照常买入
+            # 就净 +1 仓、突破 max_positions（实盘铁证见 _handle_sell 文档串：
+            # 2026-09-23 10:31:06 先打印「[T+1 拦截] 603986 跳过」，同一时刻仍
+            # BUY 688012，持仓 5→6）。回测器 max_positions 严格夹紧，实盘却跑到
+            # 6~8 仓 ⇒ 实盘跑的是从未被回测验证的变体（OOS 网格 6 −0.087）。
+            # 处理：卖出未生效 ⇒ 放弃本轮换入（次日换出可卖时再试）；
+            #       已超上限 ⇒ 只卖不买，让持仓自然收敛回 max_positions。
+            sold = self._handle_sell(wsig, wpos)
             self._last_rotate_ts = now
+            del remaining[weakest_code]
+            if not sold:
+                logger.info(
+                    "[轮动] 换出 %s 未生效（T+1/保护期），放弃换入 %s"
+                    "（防突破 max_positions=%d）", weakest_code, code,
+                    self.max_positions)
+                continue
+            if len([p for p in self._positions.values() if p.quantity > 0]) \
+                    >= self.max_positions:
+                logger.info(
+                    "[轮动] 持仓已达上限 %d，本轮只卖不买以收敛超仓",
+                    self.max_positions)
+                swap_pairs.append((weakest_code, "—(收敛超仓)"))
+                swaps += 1
+                continue
             bp = ticks[code]
             sig.price = float(getattr(bp, "price", 0) or 0)
             self._save_signal(sig)    # 2026-09-22：轮动换入落库
             self._handle_buy(sig, bp, {c: t.price for c, t in ticks.items()})
             swap_pairs.append((weakest_code, code))
-            del remaining[weakest_code]
             swaps += 1
         if swaps > 0:
             self._last_rotate_eval_ts = now
@@ -1779,7 +1812,13 @@ class EventEngine:
         self._manual_positions &= held
 
         for code in codes:
+            # 【2026-09-23 PM-EVOLVE】反手抑制：当日已被任何路径真实卖出的股票，
+            # 观察篮当日不再买回（原机制依赖不持久化的 _manual_positions，重启后失效）。
             if code in held or code in self._manual_sold_today:
+                continue
+            if code in self._sold_today_codes:
+                logger.info(
+                    "[观察篮] %s 当日已被策略卖出，跳过自动补回（防反手摩擦）", code)
                 continue
             tick = ticks.get(code)
             if tick is None:
@@ -2220,7 +2259,25 @@ class EventEngine:
         return True
 
     def _handle_sell(self, sig: Signal, pos: Position,
-                     now: Optional[datetime] = None, force: bool = False) -> None:
+                     now: Optional[datetime] = None, force: bool = False) -> bool:
+        """卖出成交/拦截的统一入口。
+
+        **返回语义（2026-09-23 PM-EVOLVE 新增）**：
+          - ``True``  = 仓位已真的清掉（槽位已释放），调用方可以放心买入补位；
+          - ``False`` = 卖出**未发生**（T+1 锁定 / 建仓保护期 / 委托失败 / 零仓位）。
+
+        背景（max_positions 夹紧失效 P0 缺陷）：轮动「弱换强」原本无条件
+        ``先卖最弱 → 再买候选``，而 ``_handle_sell`` 在 T+1 拦截时只 ``return``，
+        调用方无从得知卖出与否，于是**照常买入** → 净持仓 +1，突破
+        ``max_positions``。实盘铁证：2026-09-23 10:31:06 日志先打印
+        「[T+1 拦截] 603986 …跳过」，同一时刻仍 ``BUY 688012``，持仓 5→6；
+        equity_snapshots 09-22 EOD 8 仓 / 09-23 EOD 6 仓，均 > max_positions=5。
+        回测器 max_positions 是**严格夹紧**的 ⇒ 实盘跑的是从未被回测验证的变体
+        （OOS 网格：6 −0.087 / 7 −0.097 / 8 −0.086，5 为高原峰值）。
+
+        返回值为既有全部调用点提供「卖出是否生效」的可判定信号；旧调用方忽略
+        返回值不受影响（None 语义等价于 False，行为不变）。
+        """
         # ---- A 股 T+1 约束（2026-09-14 修复）----
         # 当日买入的仓位当日不可卖出，否则会生成实盘不可能成交的「同日 round-trip」
         # （如 2026-09-08 300394 于 10:21:14 买入、10:21:17 即被「趋势破位」卖出）。
@@ -2234,7 +2291,7 @@ class EventEngine:
                     "WARNING", "交易",
                     f"[T+1 拦截] {pos.code} 于 {pos.open_date:%Y-%m-%d %H:%M} 买入，"
                     f"当日不可卖出（锁定至下一交易日）；跳过理由={getattr(sig, 'reason', '')}")
-            return
+            return False
         # ---- 建仓保护期（2026-09-14，叠加于 T+1）----
         # 首个可卖交易日开盘后 ENTRY_PROTECT_MINUTES 分钟内不退出，避免轮动换入候选
         # 被分钟级波动「换入即误伤」。与 T+1 同理，所有卖出路径经此处单点拦截。
@@ -2250,8 +2307,10 @@ class EventEngine:
                     f"[保护期拦截] {pos.code} 于 {pos.open_date:%Y-%m-%d %H:%M} 买入，"
                     f"首个可卖日开盘后 {self.entry_protect_minutes} 分钟内不退出"
                     f"（防分钟级误伤）；跳过理由={getattr(sig, 'reason', '')}")
-            return
+            return False
         qty = pos.quantity
+        if qty <= 0:
+            return False
         price = sig.price or pos.last_price
         _reason = getattr(sig, "reason", "") or ""
         _pnl = (price - pos.avg_cost) * qty
@@ -2281,6 +2340,8 @@ class EventEngine:
                               order.account, pos.avg_cost),
                         name=f"fill-{sig.code}-sell", daemon=True,
                     ).start()
+                return True
+            return False
         else:
             proceeds = qty * price
             self._cash += proceeds
@@ -2303,6 +2364,21 @@ class EventEngine:
                 "WARNING", "交易",
                 f"卖出成交 {sig.code} {pos.name} ×{qty} @{price:.3f} "
                 f"盈亏{_pnl:+.2f} 现金余{self._cash:,.2f} 理由={_reason}")
+            self._mark_sold_today(pos.code)
+            return True
+
+    def _mark_sold_today(self, code: str) -> None:
+        """登记「当日已真实卖出」，供观察篮/旁路做反手抑制（2026-09-23 PM-EVOLVE）。
+
+        与 ``_manual_sold_today`` 的区别见 ``__init__`` 注释：本集合在卖出**成交**
+        的瞬间登记，不依赖 ``_manual_positions`` 是否跨重启存活，因此覆盖
+        「引擎重启后才被策略卖出」这一原机制失效的路径。
+        """
+        today = datetime.now().strftime("%Y-%m-%d")
+        if self._sold_today_date != today:
+            self._sold_today_date = today
+            self._sold_today_codes = set()
+        self._sold_today_codes.add(code)
 
     def _daily_fallback_exit(self, code: str, pos: "Position",
                              reason_prefix: str = "") -> None:

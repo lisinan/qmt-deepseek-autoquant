@@ -36,6 +36,9 @@ def _make_engine(held, bought=None):
     eng._manual_positions = set(held)
     eng._manual_sold_today = set()
     eng._manual_sold_date = datetime.now().strftime("%Y-%m-%d")
+    # 【2026-09-23 PM-EVOLVE】当日真实卖出登记集合（反手抑制，见 _mark_sold_today）
+    eng._sold_today_codes = set()
+    eng._sold_today_date = datetime.now().strftime("%Y-%m-%d")
     eng._buys = bought
     # 记录买入，并把代码放进持仓（模拟 _handle_buy 成功建仓）
     def _buy(sig, tick, cp):
@@ -101,6 +104,41 @@ def test_manual_entry_does_not_rebuy_sold_today():
     assert "300502.SZ" not in eng._buys, eng._buys
     assert eng._manual_sold_today == {"300502.SZ"}
     assert sorted(eng._buys) == ["002415.SZ", "300308.SZ"], eng._buys
+
+
+def test_manual_entry_skips_code_sold_by_strategy_today():
+    """守卫：当日被**策略**卖出的股票，观察篮当日不得买回（防反手摩擦）。
+
+    背景：2026-09-23 PM-EVOLVE 定位的 P0 缺陷。原防反手机制只认
+    ``_manual_positions``（上一轮登记为观察篮持仓、本轮消失），而该集合
+    **不持久化**——引擎重启后恒为空集，于是「昨日观察篮建仓 → 重启 → 今日被
+    策略破位卖出」检测不到。实盘铁证：10:00:00 300502/603986/688008 被
+    「趋势破位离场」卖出，10:00:52 即被观察篮/轮动原价买回（453.03→452.61
+    等），52 秒白付双边 0.3% 摩擦且方向自相矛盾。
+
+    修复：``_handle_sell`` 成交瞬间登记 ``_sold_today_codes``，不依赖跨重启
+    的内存集合。本测试锁死该语义（引擎重启后 _manual_positions 为空仍须生效）。
+    """
+    eng = _make_engine(held=[])
+    # 模拟引擎重启：_manual_positions 为空（原机制在此路径下完全失效）
+    eng._manual_positions = set()
+    # 但当日已真实卖出 300502.SZ（策略破位离场）
+    eng._sold_today_codes = {"300502.SZ"}
+    with _with_codes(CODES):
+        EventEngine._manual_entry_step(eng, _ticks(CODES), {})
+    assert "300502.SZ" not in eng._buys, eng._buys
+    assert sorted(eng._buys) == ["002415.SZ", "300308.SZ"], eng._buys
+
+
+def test_mark_sold_today_resets_across_days():
+    """守卫：``_mark_sold_today`` 跨日自动清空，避免永久禁止买回。"""
+    eng = _make_engine(held=[])
+    eng._sold_today_date = "2000-01-01"      # 过期日期
+    eng._sold_today_codes = {"600000.SH"}
+    EventEngine._mark_sold_today(eng, "300502.SZ")
+    # 换日 → 旧集合被清空，只保留当日新登记
+    assert eng._sold_today_codes == {"300502.SZ"}, eng._sold_today_codes
+    assert eng._sold_today_date == datetime.now().strftime("%Y-%m-%d")
 
 
 def test_manual_entry_noop_when_list_empty():

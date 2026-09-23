@@ -54,6 +54,11 @@ def _make_sell_engine(t1: bool = True) -> SimpleNamespace:
     # 绑定真实去重辅助方法（普通实例方法，用 partial 预绑定 self=eng）
     eng._should_emit_block_notice = partial(
         EventEngine._should_emit_block_notice, eng)
+    # 【2026-09-23 PM-EVOLVE】卖出成交时登记「当日已卖」（观察篮反手抑制用）。
+    # 桩须跟上新契约，否则 _handle_sell 成功路径会 AttributeError。
+    eng._sold_today_codes = set()
+    eng._sold_today_date = ""
+    eng._mark_sold_today = partial(EventEngine._mark_sold_today, eng)
     # paper 分支副作用：on_fill / save_order / save_fill 全部置为无操作
     eng.risk = SimpleNamespace(on_fill=lambda *a, **k: None)
     eng.storage = SimpleNamespace(
@@ -74,6 +79,31 @@ def test_is_t1_locked_today_is_locked():
 
 def test_is_t1_locked_previous_day_is_sellable():
     assert is_t1_locked(datetime.now() - timedelta(days=1), date.today()) is False
+
+
+def test_handle_sell_reports_success_and_registers_sold_today():
+    """守卫：``_handle_sell`` 的返回值语义（2026-09-23 PM-EVOLVE 新增）。
+
+    成功清仓 → True 且登记 ``_sold_today_codes``；被 T+1 拦截 → False 且不登记。
+    该返回值是轮动「换出未生效则不换入」修复（防突破 max_positions）的依据。
+    """
+    eng = _make_sell_engine(t1=True)
+    sig = Signal(ts=datetime.now(), code="688120.SH", side="SELL", price=245.09,
+                 reason="板块轮动换出")
+    # ① 当日买入 → 被 T+1 拦截 → False，且不登记为「当日已卖」
+    today_pos = Position(code="300394.SZ", name="天孚通信", quantity=300,
+                         avg_cost=271.12, last_price=271.0,
+                         open_date=datetime.now())
+    sig_today = Signal(ts=datetime.now(), code="300394.SZ", side="SELL",
+                       price=271.0, reason="趋势破位离场")
+    assert EventEngine._handle_sell(eng, sig_today, today_pos) is False
+    assert eng._sold_today_codes == set(), eng._sold_today_codes
+    # ② 老仓正常卖出 → True，且登记为「当日已卖」
+    old_pos = Position(code="688120.SH", name="杭可科技", quantity=200,
+                       avg_cost=256.68, last_price=245.09,
+                       open_date=datetime.now() - timedelta(days=7))
+    assert EventEngine._handle_sell(eng, sig, old_pos) is True
+    assert eng._sold_today_codes == {"688120.SH"}, eng._sold_today_codes
 
 
 def test_handle_sell_blocks_today_bought_position():

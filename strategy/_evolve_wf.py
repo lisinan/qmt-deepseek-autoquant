@@ -136,6 +136,21 @@ def candidates_final() -> dict:
     out["G2_轮动绕闸门绕评分_1.5"] = replace(
         b, breakout_bypass_gate=1.5, breakout_bypass_score=True)
     out["G3_轮动绕闸门_3.0"] = replace(b, breakout_bypass_gate=3.0)
+    # ---- 2026-09-23 PM-EVOLVE：★「实盘现状」复合代理 ----
+    # 上午只建模了「绕闸门」单一缺陷。下午审计发现实盘**同时**存在第二个缺陷：
+    # 轮动「弱换强」在换出被 T+1 拦截时仍执行买入 → 净持仓 +1 → 突破 max_positions。
+    # 铁证：09-23 10:31:06 日志「[T+1 拦截] 603986 跳过」→ 同一时刻仍 BUY 688012，
+    # 持仓 5→6；equity_snapshots 09-22 EOD 8 仓 / 09-23 EOD 6 仓，均 > max_positions=5。
+    # 而回测器 max_positions 是**严格夹紧**的 ⇒ 实盘跑的是「从未被回测验证的变体」。
+    # 网格已证超仓方向单调有害：6 −0.087 / 7 −0.097 / 8 −0.086（5 为高原峰值）。
+    # H 系列 = 两项缺陷叠加，即**实盘真实状态**；基线 P0 = 两项均已修复。
+    # 故「修复收益」= −(H − P0)，需取反阅读。
+    out["H1_实盘现状_绕闸门+超仓6"] = replace(
+        b, breakout_bypass_gate=1.5, max_positions=6)
+    out["H2_实盘现状_绕闸门绕评分+超仓6"] = replace(
+        b, breakout_bypass_gate=1.5, breakout_bypass_score=True, max_positions=6)
+    out["H3_实盘现状_绕闸门+超仓7"] = replace(
+        b, breakout_bypass_gate=1.5, max_positions=7)
     return out
 
 

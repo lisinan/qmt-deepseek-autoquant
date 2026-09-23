@@ -63,7 +63,8 @@ class _LLM:
         self.ranked_codes = list(codes)
 
 
-def _make_engine(scores, held, hot_codes, enable=True, cooldown=0.0):
+def _make_engine(scores, held, hot_codes, enable=True, cooldown=0.0,
+                 sell_ok=True):
     eng = SimpleNamespace()
     eng.enable_rotation = enable
     eng.rotation_min_score_gap = 2.0
@@ -95,7 +96,17 @@ def _make_engine(scores, held, hot_codes, enable=True, cooldown=0.0):
     # 故下列既有用例的语义不受影响（保原意，与生产默认值解耦）。
     eng._rotation_daily_gate_ok = (
         lambda feat: EventEngine._rotation_daily_gate_ok(eng, feat))
-    eng._handle_sell = lambda sig, pos: eng._sells.append(sig.code)
+    # 【2026-09-23 PM-EVOLVE】_handle_sell 现在返回 bool（True=仓位真的清掉）。
+    # 桩须跟上新契约：sell_ok=True 模拟正常卖出（清仓并释放槽位）；
+    # sell_ok=False 模拟 T+1 / 建仓保护期拦截（槽位未释放）。
+    def _fake_sell(sig, pos):
+        if not sell_ok:
+            return False
+        eng._sells.append(sig.code)
+        if sig.code in eng._positions:
+            eng._positions[sig.code].quantity = 0
+        return True
+    eng._handle_sell = _fake_sell
     eng._handle_buy = lambda sig, tick, cp: eng._buys.append((sig.code, sig.score))
     # 【2026-09-22】轮动换入/换出也要落库（此前不落库 → 引擎有成交而 signals
     # 表 0 行，页面「实时信号」只剩几天前的旧信号）。桩需跟上新契约。
@@ -313,6 +324,44 @@ def test_rotation_daily_gate_enabled_blocks_weak_candidate():
             STRATEGY_PARAMS.pop("rotation_require_daily_gate", None)
         else:
             STRATEGY_PARAMS["rotation_require_daily_gate"] = old
+
+
+def test_rotation_no_overshoot_when_sell_blocked_by_t1():
+    """守卫：轮动换出被 T+1 拦截（_handle_sell 返回 False）时**不得**换入。
+
+    背景：2026-09-23 PM-EVOLVE 定位的 P0 缺陷——原实现无条件「先卖最弱 → 再买
+    候选」，而 T+1 会锁死当日建仓的卖出，于是净持仓 +1、突破 max_positions。
+    实盘铁证：10:31:06 先打印「[T+1 拦截] 603986 跳过」，同一时刻仍 BUY 688012。
+    回测器 max_positions 严格夹紧 ⇒ 超仓是「从未被回测验证的变体」
+    （OOS 网格 6 −0.087 / 7 −0.097 / 8 −0.086）。
+    """
+    held = ["688072.SH", "688120.SH", "002415.SZ", "688082.SH", "300308.SZ"]
+    scores = {"688072.SH": 3.0, "688120.SH": 2.0, "002415.SZ": 4.0,
+              "688082.SH": 1.0, "300308.SZ": 0.5, "688111.SH": 9.0}
+    eng = _make_engine(scores, held, hot_codes=["688111.SH"], sell_ok=False)
+    EventEngine._maybe_rotate(eng, _ticks(["688111.SH"], {"688111.SH": 3.0}))
+    # 卖出被拦截 ⇒ 放弃换入，持仓不增加（也不会突破 max_positions=5）
+    assert eng._buys == [], eng._buys
+    assert len([p for p in eng._positions.values() if p.quantity > 0]) == 5
+
+
+def test_rotation_converges_when_already_over_max_positions():
+    """守卫：持仓已超 max_positions 时，弱换强只卖不买，使持仓收敛回上限。
+
+    针对历史遗留超仓（equity_snapshots 09-22 EOD 8 仓 / 09-23 EOD 6 仓，
+    均 > max_positions=5）的收敛路径。
+    """
+    held = ["688072.SH", "688120.SH", "002415.SZ", "688082.SH",
+            "300308.SZ", "688111.SH"]        # 6 仓，已超上限 5
+    scores = {"688072.SH": 3.0, "688120.SH": 2.0, "002415.SZ": 4.0,
+              "688082.SH": 1.0, "300308.SZ": 1.5, "688111.SH": 1.2,
+              "688981.SH": 9.0}
+    eng = _make_engine(scores, held, hot_codes=["688981.SH"])
+    EventEngine._maybe_rotate(eng, _ticks(["688981.SH"], {"688981.SH": 3.0}))
+    # 只卖不买 ⇒ 持仓由 6 收敛到 5，且不产生新买入
+    assert eng._buys == [], eng._buys
+    assert len([p for p in eng._positions.values() if p.quantity > 0]) == 5
+    assert len(eng._sells) == 1, eng._sells
 
 
 if __name__ == "__main__":
