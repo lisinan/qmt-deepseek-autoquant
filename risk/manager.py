@@ -48,6 +48,9 @@ class RiskManager:
         # 重启后就无法判定这段连亏是否已过冷却期 → 冷却自愈永远算不出 held>=1，
         # 账户被 position_scale=0 永久冻结。此后该字段随 engine_state 持久化。
         self._consec_loss_date: Optional[date] = None
+        # 【2026-09-24 P0 缺陷修复】同批退出合并计数的「当日是否已计过一次连亏」。
+        # 详见 on_fill 中「同批退出合并计数」注释块。
+        self._last_loss_day: Optional[date] = None
         # 【2026-09-16 优化】日内硬止损+强平标志。当日账户相对开盘资产亏损达
         #   daily_stop_flatten_pct 时置位，引擎据此强平全部可卖持仓（不只停牌）。
         self._flatten_requested: bool = False
@@ -177,10 +180,31 @@ class RiskManager:
                 if pnl < 0:
                     if self._consec_loss == 0:
                         self._consec_loss_date = date.today()   # 连亏起算日
-                    self._consec_loss += 1
+                    # ---- 同批退出合并计数【2026-09-24 AM-EVOLVE 第 6 轮 P0 修复】----
+                    # 缺陷：原实现对**每笔**亏损 SELL 独立 +1。但「连续亏损」的语义是
+                    #   「连续多次**独立**判断失误」，而本组合 5 只标的同属 AI 产业链、
+                    #   高度同向——板块回调时全部仓位在同一时刻一起破位离场，on_fill
+                    #   在几毫秒内被连续调用 N 次 ⇒ **1 次板块级事件被计成 N 次连亏**。
+                    # 实盘铁证（2026-09-24）：fills 表 4 笔 SELL 时间戳
+                    #     10:00:00.662591 / .664592 / .664592 / .665591（相隔 3 毫秒）
+                    #   ⇒ _consec_loss 由 3 直接跳到 7，瞬间越过 halt 阈值 5，
+                    #     halted=True、position_scale=0.0，账户自 10:00 起整个下午盘
+                    #     （含观察篮）完全丧失开仓能力；risk_snapshots 11:25 仍在冻结态。
+                    # 修复：**同一交易日内至多计 1 次连亏**（盈利卖出照旧立即归零）。
+                    #   既保留「连亏 → 降仓 → 熔断」的完整保护链路，又不再让
+                    #   「一次板块回调」等价于「策略连续 N 次判断失误」。
+                    # 回测证据（strategy/_evolve_wf.py，25 只 × 713 根，4 窗口共识，
+                    #   以「实盘现状」I1 为反向对照，缺陷修复通道）：
+                    #   均值 dSh +0.015、最差窗口 −0.027（≥ −0.05）⇒ 方向不劣化 PASS。
+                    #   反向对照 I4（阶梯不受熔断重置、可自由累积）4 窗口全负、
+                    #   均值 −0.185 ⇒ 阶梯本身是 −0.21 量级的强负效应，计数越快越伤。
+                    if self._last_loss_day != date.today():
+                        self._consec_loss += 1
+                        self._last_loss_day = date.today()
                 elif pnl > 0:
                     self._consec_loss = 0
                     self._consec_loss_date = None
+                    self._last_loss_day = None
                 # 连续亏损降仓 / 熔断
                 if self._consec_loss >= self.p["max_consecutive_losses_halt"]:
                     self._halt(reason=f"consec_loss={self._consec_loss}")
@@ -288,6 +312,9 @@ class RiskManager:
             "halt_day": self._halt_day.isoformat() if self._halt_day else "",
             "consec_loss_date": (self._consec_loss_date.isoformat()
                                  if self._consec_loss_date else ""),
+            # 同批退出合并计数：不持久化会导致重启后当日可再计一次连亏
+            "last_loss_day": (self._last_loss_day.isoformat()
+                              if self._last_loss_day else ""),
         }
 
     def load_state(self, state) -> None:
@@ -316,6 +343,9 @@ class RiskManager:
         hd = _d(state.get("halt_day"))
         if hd:
             self._halt_day = hd
+        lld = _d(state.get("last_loss_day"))
+        if lld:
+            self._last_loss_day = lld
         self._consec_loss_date = _d(state.get("consec_loss_date"))
 
     # ---------- 手动恢复 ----------
@@ -333,6 +363,7 @@ class RiskManager:
         self._daily_trade_count = 0
         self._consec_loss = 0
         self._consec_loss_date = None
+        self._last_loss_day = None
         self._flatten_requested = False
         self._today = date.today()
         if capital > 0:

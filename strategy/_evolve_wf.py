@@ -151,6 +151,43 @@ def candidates_final() -> dict:
         b, breakout_bypass_gate=1.5, breakout_bypass_score=True, max_positions=6)
     out["H3_实盘现状_绕闸门+超仓7"] = replace(
         b, breakout_bypass_gate=1.5, max_positions=7)
+    # ---- 2026-09-24 AM-EVOLVE（第 6 轮）：★ 连亏降仓 position_scale 代理 ----
+    # 上一轮（09-23 PM）交接给我的头号方向：「下一处已知『实盘有、回测无』是
+    #   position_scale 连亏降仓（consec_loss=3→0.8），建议建代理后用缺陷通道度量」。
+    # 今日实盘铁证已出现：09-24 10:00:00 **同一时刻** 4 笔亏损 SELL → _consec_loss
+    #   3→7 → 越过 halt=5 → scale=0.0、halted=True，账户自 10:00 起完全无法开仓。
+    # 机理假设（本代理要检验的）：阶梯末端 0.0 = **完全冻结**，且连亏计数把
+    #   「1 次板块级相关退出」当成「N 次独立判断失误」⇒ 在策略唯一能靠少数大赢家
+    #   修复净值的时候反而缩仓/停摆，形成「跌→缩仓→更难修复」的负反馈。
+    # I1 = 实盘现状（trigger=3 / halt=5 / 地板 0.0，即当前 RISK_PARAMS 语义）
+    out["I1_实盘现状_连亏降仓"] = replace(b, consec_loss_scale=True)
+    # I2 = 只改阶梯地板：降仓但**永不完全冻结**（0.4）。参数零改动可达（改代码常量）。
+    out["I2_连亏降仓_地板0.4"] = replace(
+        b, consec_loss_scale=True, consec_loss_floor=0.4)
+    # I3 = 触发阈值提到 5（与 halt 同点）：阶梯理论上永不生效，只保留熔断。
+    out["I3_连亏降仓_trigger5"] = replace(
+        b, consec_loss_scale=True, consec_loss_trigger=5)
+    # I4 = 关掉熔断、只留阶梯（分离「降仓」与「停摆」两个效应，定位真凶）
+    out["I4_连亏降仓_无halt"] = replace(
+        b, consec_loss_scale=True, consec_loss_halt=10**6)
+    # I5 = 阶梯整体减半幅度（0.9/0.8/0.7/0.6/0.5）—— 剂量反应对照
+    out["I5_连亏降仓_地板0.6"] = replace(
+        b, consec_loss_scale=True, consec_loss_floor=0.6)
+    # ---- ★ 本轮主候选：同批退出合并计数（缺陷修复）----
+    # 实盘 on_fill 逐笔 +1；今日 4 笔 SELL 相隔 3ms（10:00:00.662591/.664592/
+    # .664592/.665591）⇒ 一次板块级回调被计成 4 次连亏，consec 3→7 瞬间越 halt。
+    # J1 = 修复后：按交易日聚合净盈亏判定（一次板块退出 = 1 次连亏）。
+    # 参数零改动（只改计数语义），可逆，属缺陷修复通道。
+    out["J1_修复_同批退出合并计数"] = replace(
+        b, consec_loss_scale=True, consec_loss_batch=True)
+    # J2 = 更激进的剂量对照：连**触发阈值**一起放宽到 5（阶梯实际永不生效）
+    out["J2_修复_合并计数+trigger5"] = replace(
+        b, consec_loss_scale=True, consec_loss_batch=True,
+        consec_loss_trigger=5)
+    # J3 = 合并计数 + 保留地板 0.4（双重保险，剂量更弱）
+    out["J3_修复_合并计数+地板0.4"] = replace(
+        b, consec_loss_scale=True, consec_loss_batch=True,
+        consec_loss_floor=0.4)
     return out
 
 

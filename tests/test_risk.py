@@ -19,6 +19,25 @@ def _order(qty=100, price=10.0):
                  quantity=qty, price=price, order_type="limit", account="cash")
 
 
+def _loss_fill(qty=1, price=9.0):
+    return Fill(ts=datetime.now(), code="x", side="SELL", quantity=qty,
+                price=price, amount=price * qty, account="cash")
+
+
+def _feed_losses_on_distinct_days(r, n, qty=1, price=9.0):
+    """喂 n 笔亏损卖出，每笔落在**不同交易日**。
+
+    【2026-09-24 测试与生产解耦】生产改为「同批退出合并计数」后，同一交易日的
+    多笔亏损 SELL 只计 1 次连亏（见 tests/test_risk_consec_batch.py）。本文件
+    的原意是验证**阶梯降仓 / halt 机制本身**，与计数粒度无关，故显式把每笔
+    亏损放到不同交易日，保住原有断言不放宽。
+    """
+    for k in range(n):
+        r._last_loss_day = date.today() - timedelta(days=(n - k))
+        r.on_fill(_loss_fill(qty, price), avg_cost=10.0)
+    return r
+
+
 def test_can_open_basic():
     r = RiskManager()
     ok, reason = r.can_open(_order(100, 10.0), {}, total_asset=100000, daily_trade_count=0)
@@ -49,22 +68,17 @@ def test_can_open_blocked_by_daily_trades():
 def test_consecutive_loss_scale():
     r = RiskManager({"max_consecutive_losses": 3})
     assert r.position_scale == 1.0
-    # 连亏 1 次后还没到 threshold
-    r.on_fill(Fill(ts=datetime.now(), code="x", side="SELL", quantity=1,
-                   price=9.0, amount=9.0, account="cash"), avg_cost=10.0)
+    # 连亏 1 次后还没到 threshold（不同交易日，见 _feed_losses_on_distinct_days）
+    _feed_losses_on_distinct_days(r, 1)
     assert r.position_scale == 1.0
     # 连亏 3 次 → 应该降仓
-    for _ in range(2):
-        r.on_fill(Fill(ts=datetime.now(), code="x", side="SELL", quantity=1,
-                       price=9.0, amount=9.0, account="cash"), avg_cost=10.0)
+    _feed_losses_on_distinct_days(r, 2)
     assert r.position_scale < 1.0
 
 
 def test_consecutive_loss_resets_on_win():
     r = RiskManager({"max_consecutive_losses": 3})
-    for _ in range(2):
-        r.on_fill(Fill(ts=datetime.now(), code="x", side="SELL", quantity=1,
-                       price=9.0, amount=9.0, account="cash"), avg_cost=10.0)
+    _feed_losses_on_distinct_days(r, 2)
     assert r.consecutive_losses == 2
     # 一笔盈利
     r.on_fill(Fill(ts=datetime.now(), code="x", side="SELL", quantity=1,
@@ -85,9 +99,7 @@ def test_halt_on_daily_loss_pct():
 
 def test_halt_on_consecutive_losses():
     r = RiskManager({"max_consecutive_losses_halt": 5})
-    for _ in range(5):
-        r.on_fill(Fill(ts=datetime.now(), code="x", side="SELL", quantity=1,
-                       price=9.0, amount=9.0, account="cash"), avg_cost=10.0)
+    _feed_losses_on_distinct_days(r, 5)
     assert r.is_halted
 
 
@@ -117,9 +129,8 @@ def test_snapshot():
 
 
 def _sell_loss(r, n=1):
-    for _ in range(n):
-        r.on_fill(Fill(ts=datetime.now(), code="x", side="SELL", quantity=1,
-                       price=9.0, amount=9.0, account="cash"), avg_cost=10.0)
+    """喂 n 笔亏损卖出。**每笔落在不同交易日**（同日合并计数的解耦，见文件头）。"""
+    _feed_losses_on_distinct_days(r, n)
 
 
 def test_consec_loss_halt_auto_recovers():

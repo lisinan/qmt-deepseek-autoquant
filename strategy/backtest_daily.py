@@ -377,6 +377,48 @@ class BacktestConfig:
     # 是否连评分门槛（buy_score_threshold / min_signals）一起豁免。
     #   True = 完整复现实盘轮动语义；False = 只豁免日线闸门（默认）。
     breakout_bypass_score: bool = False
+    # ---- 连亏降仓（position_scale）代理建模【2026-09-24 AM-EVOLVE 第 6 轮】----
+    # ★ 又一条「实盘有、回测无」的分支。实盘 RiskManager.on_fill 对每笔 SELL 判定盈亏：
+    #     亏 → _consec_loss += 1；盈 → _consec_loss = 0
+    #     _consec_loss >= max_consecutive_losses(3)      → position_scale 按阶梯下降
+    #     _consec_loss >= max_consecutive_losses_halt(5) → _halt()，scale 归零、禁止开仓
+    #   阶梯 _SCALE_LADDER = [1.0, 0.8, 0.6, 0.4, 0.0]（risk/manager.py:27），
+    #   event_engine._handle_buy 在 ``if scale <= 0: return`` 处**无声丢弃全部买单**。
+    # 而回测器 run_backtest 历史上**完全没有 position_scale 概念**（grep 零命中），
+    #   恒按 1.0 满仓建 ⇒ 实盘跑的是「从未被任何回测验证过的变体」，违反 §7 口径纪律。
+    #
+    # 实盘铁证（2026-09-24）：
+    #   09-23 收盘 consec=3 → scale=0.8（已降仓）；
+    #   09-24 10:00:00 **同一时刻** 4 笔 SELL（300502/603986/688008/688012）全部亏损
+    #     → _consec_loss 3→7，越过 halt 阈值 5 → halted=True、scale=0.0；
+    #   risk_snapshots 与 engine_state 均确认：11:29 仍是 scale=0.0、halted=True
+    #     ⇒ **账户自 10:00 起完全丧失开仓能力**（含观察篮）。
+    #   注意：4 笔是**同一次板块级相关退出**，却被计为 4 次「独立判断失误」——
+    #   这正是本代理要度量的核心效应。
+    #
+    # 默认 **False = 关闭**（逐位保持既有回测行为，零行为变化，不破坏历史结论与测试）。
+    consec_loss_scale: bool = False
+    consec_loss_trigger: int = 3      # 实盘 RISK_PARAMS["max_consecutive_losses"]
+    consec_loss_halt: int = 5         # 实盘 RISK_PARAMS["max_consecutive_losses_halt"]
+    # 熔断后禁止开仓的**交易日**数。实盘 halt_recover_days=1：当日盘中触发，
+    # 次日 09:30 首个 tick 即自愈 ⇒ 日线粒度下近似为「封锁 1 根 bar」，默认 1。
+    consec_loss_halt_bars: int = 1
+    # 阶梯末端（consec 达到最高档时的仓位倍数）。实盘为 **0.0 = 完全冻结**。
+    # 可调低该字段做「保留地板」的对照（如 0.4 = 降仓但不死亡）。
+    consec_loss_floor: float = 0.0
+    # ---- 「同批退出合并计数」修复变体【2026-09-24 AM-EVOLVE 第 6 轮】----
+    # 缺陷本体：RiskManager.on_fill 对**每笔** SELL 独立判定盈亏并 +1，
+    #   而「连续亏损」的语义是「**连续多次独立判断失误**」。但本组合 5 只标的
+    #   同属 AI 产业链、高度同向：板块回调时**所有仓位在同一时刻一起破位离场**，
+    #   on_fill 在几毫秒内被连续调用 N 次 ⇒ 一次板块级事件被计成 N 次连亏。
+    # 实盘铁证（2026-09-24）：
+    #   10:00:00.662591 / .664592 / .664592 / .665591 —— 4 笔 SELL 相隔 **3 毫秒**，
+    #   _consec_loss 由 3 直接跳到 7，瞬间越过 halt 阈值 5 ⇒ halted=True、
+    #   position_scale=0.0，账户自 10:00 起整个下午盘丧失开仓能力。
+    #   这不是「策略连续 7 次判断失误」，是「1 次板块回调」。
+    # True = 按**交易日聚合**判定：当日所有离场的净盈亏为负才 +1、为正则归零
+    #   （一次板块级退出 = 1 次连亏）。默认 False = 复现实盘现状（逐笔计数）。
+    consec_loss_batch: bool = False
     # ---- 退出范式 + 动量（本次优化）----
     exit_mode: str = "scalp"        # "scalp"=紧移动止损; "trend"=趋势骑行至破位
     trend_exit_ma: int = 60          # 趋势破位判定均线
@@ -930,6 +972,12 @@ def run_backtest(codes: List[str], cfg: BacktestConfig,
     trades: List[dict] = []
     daily_rets: List[float] = []
     days_in_market = 0
+    # ---- 连亏降仓代理状态（见 BacktestConfig.consec_loss_scale 注释）----
+    _SCALE_LADDER = (1.0, 0.8, 0.6, 0.4, 0.0)
+    _consec_loss = 0          # 连续亏损卖出笔数（遇盈利卖出归零）
+    _halt_bar = None          # 触发熔断的 bar 下标；None = 未熔断
+    _scale_blocked_bars = 0   # 统计：因 scale<=0 而整日无买入的 bar 数（诊断用）
+    _batch_pnl = 0.0          # 当日离场净盈亏累计（consec_loss_batch 用）
 
     WARMUP = max(65, int(cfg.momentum_lookback) + 5, exit_ma + 5,
                  int(cfg.min_warmup))
@@ -962,6 +1010,37 @@ def run_backtest(codes: List[str], cfg: BacktestConfig,
         _pending_exec = pending
         if cfg.equity_dd_stop_enable and eq_dd_active:
             _pending_exec = []
+        # ---- 连亏降仓（position_scale）：实盘有、回测原本无 ----
+        # 语义对齐 risk/manager.py：
+        #   ① 熔断冷却自愈：halt 后 consec_loss_halt_bars 个交易日清零连亏、恢复开仓；
+        #   ② 未熔断但连亏达 trigger → 按阶梯缩放**新开仓**目标金额（已有仓不受影响）；
+        #   ③ scale <= 0 → 当日全部买单丢弃（对应 _handle_buy 的 `if scale <= 0: return`）。
+        _scale = 1.0
+        # 同批退出合并计数：本日开市前先结算**昨日**离场的净盈亏（一次性 ±1）
+        if cfg.consec_loss_scale and cfg.consec_loss_batch:
+            if _batch_pnl < 0:
+                _consec_loss += 1
+            elif _batch_pnl > 0:
+                _consec_loss = 0
+            _batch_pnl = 0.0
+            if (_consec_loss >= cfg.consec_loss_halt and _halt_bar is None):
+                _halt_bar = i
+        if cfg.consec_loss_scale:
+            if _halt_bar is not None:
+                if (i - _halt_bar) >= cfg.consec_loss_halt_bars:
+                    _consec_loss = 0          # 冷却自愈，重置风险基线
+                    _halt_bar = None
+                else:
+                    _pending_exec = []        # 熔断未解除，禁止一切开仓
+            if _consec_loss >= cfg.consec_loss_trigger:
+                _idx = min(len(_SCALE_LADDER) - 1,
+                           _consec_loss - cfg.consec_loss_trigger + 1)
+                _scale = _SCALE_LADDER[_idx]
+                if cfg.consec_loss_floor > _scale:
+                    _scale = cfg.consec_loss_floor   # 「保留地板」对照用
+            if _scale <= 0:
+                _pending_exec = []
+                _scale_blocked_bars += 1
         for order in _pending_exec:
             code = order["code"]
             if code in positions or len(positions) >= cfg.max_positions:
@@ -986,6 +1065,9 @@ def run_backtest(codes: List[str], cfg: BacktestConfig,
             # 组合级 DD 控制：缩放新开仓目标仓位（exp_scale<=1.0）
             if cfg.dd_ctrl and exp_scale < 1.0:
                 tgt = tgt * exp_scale
+            # 连亏降仓：实盘 PositionSizer 的 position_scale 乘在新开仓目标金额上
+            if _scale < 1.0:
+                tgt = tgt * _scale
             qty = int(tgt // (entry * 100)) * 100
             if qty <= 0:
                 continue
@@ -1096,6 +1178,20 @@ def run_backtest(codes: List[str], cfg: BacktestConfig,
                     "pnl_pct": (net_exit - net_entry) / net_entry,
                     "hold": i - pos["entry_day"], "reason": reason,
                 })
+                # ---- 连亏降仓代理：与 RiskManager.on_fill 同语义 ----
+                # 亏损卖出 → 连亏 +1；盈利卖出 → 归零。达到 halt 阈值即置熔断。
+                if cfg.consec_loss_scale and not cfg.consec_loss_batch:
+                    # 实盘现状：逐笔计数（同批退出被计成 N 次连亏）
+                    if net_exit < net_entry:
+                        _consec_loss += 1
+                    elif net_exit > net_entry:
+                        _consec_loss = 0
+                    if (_consec_loss >= cfg.consec_loss_halt
+                            and _halt_bar is None):
+                        _halt_bar = i
+                elif cfg.consec_loss_scale and cfg.consec_loss_batch:
+                    # 修复变体：只累计金额，等下一交易日开市前一次性判定（1 次/日）
+                    _batch_pnl += (net_exit - net_entry) * pos["qty"]
                 last_exit_day[code] = i   # 再入场冷静期：记录最后离场日
                 del positions[code]
 
