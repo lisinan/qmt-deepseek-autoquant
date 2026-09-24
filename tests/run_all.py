@@ -65,7 +65,8 @@ def _collect_tests():
             "tests.test_northbound",
             "tests.test_risk_zombie", "tests.test_web_freshness",
             "tests.test_sector_heat",
-            "tests.test_risk_consec_batch"]
+            "tests.test_risk_consec_batch",
+            "tests.test_daily_stale_fallback"]
     tests = []
     import_errors = []
     for m in mods:

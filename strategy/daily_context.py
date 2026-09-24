@@ -35,6 +35,20 @@ DAILY_COUNT = 120
 # 让「动态候选池刷新后追加拉取新代码」这种增量刷新几乎零成本。
 FEATURE_TTL_SEC = 6 * 3600
 
+# ★ 本地日线「陈旧度」阈值（自然日）【2026-09-24 PM-EVOLVE 第 7 轮 P0 修复】
+# 缺陷：``_fetch_daily`` 原逻辑是「本地 xtdata 取到 >= 60 根就**无条件直接返回**」，
+#   从不检查这批数据的最后一根是哪天。而本地 miniQMT 的 1d 数据只在客户端
+#   **主动下载/联网同步**时才更新 —— 一旦用户没开客户端或没补数据，本地日线
+#   就**永久冻结在最后一次同步日**，而 tushare 兜底因为「本地已够 60 根」永远走不到。
+# 实盘铁证（2026-09-24 19:05 实测，今天收盘后）：
+#     xtdata.get_market_data_ex(period='1d') 末 5 根 = 20260819/20/21/24/**20260825**
+#     tushare pro.daily(300308.SZ) 末 6 根    = 20260917/18/21/22/23/**20260924**
+#   ⇒ 本地滞后 **4 周（30 个自然日）**，全部日线特征（MA60/趋势闸门/bias/ATR）
+#     都在用 4 周前的行情判断今天该不该买。
+# 取 5 天：覆盖周末(3 天)+调休(1~2 天)。春节等长假会误判为陈旧，
+#   但后果只是「多试一次 tushare」，tushare 同样没有新数据 ⇒ 回退本地，行为不变。
+DAILY_STALE_DAYS = 5
+
 
 @dataclass
 class DailyFeatures:
@@ -99,44 +113,109 @@ class DailyContext:
 
     # ---------------------------------------------------------- 数据获取
 
-    def _fetch_daily(self, code: str, count: int = DAILY_COUNT
-                     ) -> Optional[Dict[str, List[float]]]:
-        """返回 {open,high,low,close,volume} 列表，或 None。"""
-        # 1) xtdata 本地（零额度、实时）
+    def _fetch_daily_tushare(self, code: str, count: int
+                             ) -> Optional[Dict[str, List[float]]]:
+        """tushare 兜底取日线。返回 None 表示不可用（未启用 / 未连接 / 拉失败）。"""
+        if not tushare_client.enabled:
+            return None
+        if not tushare_client._connect():
+            return None
         try:
-            raw = qmt_client.get_history(code, period="1d", count=count)
-            if raw and len(raw) >= 60:
+            from data.tushare_client import _to_ts_code
+            df = tushare_client._pro.daily(  # type: ignore
+                ts_code=_to_ts_code(code),
+                start_date=(datetime.now()
+                            - timedelta(days=count * 2)).strftime("%Y%m%d"),
+                end_date=datetime.now().strftime("%Y%m%d"),
+                # ★【2026-09-24 PM-EVOLVE 第 7 轮 P0 修复②】原 fields 缺 trade_date，
+                #   而下一行要 ``df.sort_values("trade_date")`` ⇒ 必然
+                #   ``KeyError: 'trade_date'``，被 except 吞成 None。
+                #   ⇒ **tushare 兜底路径从未成功过，一直是不可达的死代码**。
+                #   它与缺陷①（本地陈旧不检查）叠加，共同造成「日线滞后 4 周」。
+                fields="trade_date,open,high,low,close,vol",
+            )
+            if df is not None and not df.empty:
+                df = df.sort_values("trade_date")
                 return {
-                    "open": [b["open"] for b in raw],
-                    "high": [b["high"] for b in raw],
-                    "low": [b["low"] for b in raw],
-                    "close": [b["close"] for b in raw],
-                    "volume": [b["volume"] for b in raw],
+                    "open": df["open"].tolist(),
+                    "high": df["high"].tolist(),
+                    "low": df["low"].tolist(),
+                    "close": df["close"].tolist(),
+                    "volume": df["vol"].tolist(),
                 }
         except Exception as e:
+            logger.debug("DailyContext tushare 失败 %s: %s", code, e)
+        return None
+
+    def _is_stale_bars(self, raw: List[dict]) -> bool:
+        """本地日线是否陈旧：最后一根交易日距今超过 DAILY_STALE_DAYS 个自然日。"""
+        if not raw:
+            return True
+        last = raw[-1].get("ts")
+        if last is None:
+            return True
+        try:
+            d = last.date() if hasattr(last, "date") else last
+            return (datetime.now().date() - d).days > DAILY_STALE_DAYS
+        except Exception:
+            return False      # 判不出来就当新鲜，保持原行为
+
+    def _fetch_daily(self, code: str, count: int = DAILY_COUNT
+                     ) -> Optional[Dict[str, List[float]]]:
+        """返回 {open,high,low,close,volume} 列表，或 None。
+
+        ★【2026-09-24 PM-EVOLVE 第 7 轮 P0 修复】加了「本地日线陈旧度」判定。
+        原流程是「本地够 60 根就直接返回」，于是本地 miniQMT 的日线一旦停止同步，
+        就**永远冻结在最后一次同步日**（实测冻结在 2026-08-25，滞后 4 周），
+        而 tushare 兜底因为「本地已够 60 根」永不触发 ⇒ 全部日线特征基于 4 周前行情。
+        新流程：本地陈旧 ⇒ **优先走 tushare**，只有 tushare 也拿不到才回退本地。
+        """
+        raw = None
+        try:
+            raw = qmt_client.get_history(code, period="1d", count=count)
+        except Exception as e:
             logger.debug("DailyContext xtdata 失败 %s: %s", code, e)
-        # 2) tushare 兜底
-        if tushare_client.enabled:
+
+        local_ok = bool(raw and len(raw) >= 60)
+        local_stale = self._is_stale_bars(raw or [])
+
+        # ★ 修复③：陈旧时先**就地补拉**本地（实测 0.1s/只、零 tushare 额度，
+        #   且补进本地缓存后回测器 load_daily 等所有消费方一并受益），
+        #   补拉后仍陈旧才走 tushare。2026-09-24 实测：23 只宇宙全量补拉 1.9s，
+        #   本地末日 20260825 → 20260924。
+        if local_stale or not local_ok:
             try:
-                from data.tushare_client import _to_ts_code
-                df = tushare_client._pro.daily(  # type: ignore
-                    ts_code=_to_ts_code(code),
-                    start_date=(datetime.now()
-                                - timedelta(days=count * 2)).strftime("%Y%m%d"),
-                    end_date=datetime.now().strftime("%Y%m%d"),
-                    fields="open,high,low,close,vol",
-                )
-                if df is not None and not df.empty:
-                    df = df.sort_values("trade_date")
-                    return {
-                        "open": df["open"].tolist(),
-                        "high": df["high"].tolist(),
-                        "low": df["low"].tolist(),
-                        "close": df["close"].tolist(),
-                        "volume": df["vol"].tolist(),
-                    }
+                if qmt_client.download_history(code, period="1d"):
+                    raw2 = qmt_client.get_history(code, period="1d", count=count)
+                    if raw2 and len(raw2) >= 60 and not self._is_stale_bars(raw2):
+                        logger.info("DailyContext 本地日线已补拉至 %s: %s",
+                                    raw2[-1]["ts"].date(), code)
+                        raw = raw2
+                        local_ok = True
+                        local_stale = False
             except Exception as e:
-                logger.debug("DailyContext tushare 失败 %s: %s", code, e)
+                logger.debug("DailyContext 补拉日线失败 %s: %s", code, e)
+
+        # 本地陈旧（或本地不可用）→ 先试 tushare 拿新鲜数据
+        if (not local_ok) or local_stale:
+            fresh = self._fetch_daily_tushare(code, count)
+            if fresh:
+                if local_stale and local_ok:
+                    logger.info(
+                        "DailyContext 本地日线陈旧（末日 %s，滞后 %s 天），改用 tushare: %s",
+                        (raw[-1]["ts"].date() if raw else "?"),
+                        (datetime.now().date() - raw[-1]["ts"].date()).days
+                        if raw else "?", code)
+                return fresh
+            # tushare 也拿不到 → 回退本地（保持修复前的降级行为）
+        if local_ok:
+            return {
+                "open": [b["open"] for b in raw],
+                "high": [b["high"] for b in raw],
+                "low": [b["low"] for b in raw],
+                "close": [b["close"] for b in raw],
+                "volume": [b["volume"] for b in raw],
+            }
         return None
 
     # ---------------------------------------------------------- 特征计算

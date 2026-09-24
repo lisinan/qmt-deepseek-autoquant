@@ -24,6 +24,7 @@ import math
 import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+import datetime as _dt
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -41,9 +42,31 @@ from core.qmt_client import qmt_client  # noqa: E402
 # ============================================================ 数据
 
 def load_daily(code: str, count: int = 260) -> Optional[Dict[str, List[float]]]:
-    """优先 xtdata 本地日线。同时返回交易日 date（用于跨标的对齐）。"""
+    """优先 xtdata 本地日线。同时返回交易日 date（用于跨标的对齐）。
+
+    ★【2026-09-24 PM-EVOLVE 第 7 轮 P0 修复】加「本地日线陈旧 → 就地补拉」。
+    原实现只读本地缓存，而 miniQMT 的 1d 缓存只在客户端主动同步时更新，
+    一旦停止同步就**永久冻结**（实测冻结在 2026-08-25，滞后 4 周）⇒
+    所有回测/walk-forward 结论都建立在过期 4 周的样本上，且样本量少 22 根。
+    实测 ``download_history(code, period='1d')`` 仅 **0.1s/只**，23 只宇宙
+    全量补拉 1.9s，即可把本地末日从 20260825 拉到 20260924。
+    补拉失败时静默沿用旧数据（保持修复前的降级行为，不引入新的失败模式）。
+    """
     try:
         raw = qmt_client.get_history(code, period="1d", count=count)
+        # 陈旧判定：最后一根距今超过 5 个自然日（覆盖周末+调休）
+        if raw:
+            _last = raw[-1].get("ts")
+            if _last is not None and hasattr(_last, "date"):
+                if (_dt.date.today() - _last.date()).days > 5:
+                    try:
+                        if qmt_client.download_history(code, period="1d"):
+                            _r2 = qmt_client.get_history(code, period="1d",
+                                                         count=count)
+                            if _r2 and len(_r2) >= 120:
+                                raw = _r2
+                    except Exception:
+                        pass
         if raw and len(raw) >= 120:
             return {
                 "date": [b["ts"].strftime("%Y%m%d") for b in raw],
