@@ -419,6 +419,47 @@ class BacktestConfig:
     # True = 按**交易日聚合**判定：当日所有离场的净盈亏为负才 +1、为正则归零
     #   （一次板块级退出 = 1 次连亏）。默认 False = 复现实盘现状（逐笔计数）。
     consec_loss_batch: bool = False
+    # ---- 日内已实现亏损熔断代理【2026-09-24 PM-EVOLVE 第 7 轮】----
+    # ★ 又一条「实盘有、回测无」的分支（risk/manager.py:158-165 / 216-222）。
+    #   实盘 RiskManager 用 ``_daily_pnl``（只累计**已实现**盈亏，SELL 时累加，
+    #   日切归零）做两路 OR 判定，任一触发即 ``_halt()`` → 禁止一切新开仓，
+    #   冷却 halt_recover_days=1 日后自愈：
+    #     ① ``_daily_pnl / total_asset <= daily_loss_limit_pct``（-3%）
+    #     ② ``_daily_pnl <= -daily_loss_limit_abs``（-5000 元，绝对金额）
+    #   而回测器历史上**完全没有 daily_pnl 概念**（grep 零命中）⇒ 与连亏阶梯
+    #   一样，实盘跑的是「从未被任何回测验证过的变体」，违反 §7 口径纪律。
+    #
+    # ★★ 缺陷假设（本代理要度量的核心）：阈值 ② 是**绝对金额、不随账户规模缩放**。
+    #   paper 账户 2026-09-21 复位为 1,000,000 后，5000 元 == **0.5%**，
+    #   而显式设定的百分比阈值 ① 是 **3%** —— 两个参数表达同一意图，
+    #   更严的那个却是遗留绝对值，且账户规模越大越严（规模翻倍 ⇒ 相对阈值翻倍收紧）。
+    #   这属于「长度单位不缩放」型工程缺陷，而非策略选择。
+    #
+    # 实盘铁证（2026-09-24）：risk_snapshots 15:02
+    #   ``{"halted": true, "daily_pnl": -5602.4, "consecutive_losses": 7,
+    #      "position_scale": 0.0, "peak_asset": 1005996.0}``
+    #   ⇒ daily_pnl=-5602.4 **已越过 ②（-5000）**，但 loss_pct=-5602/991309=-0.565%
+    #     远未达 ①（-3%）；当日 44 条观察篮 BUY 信号（300308 中际旭创，每 5 分钟
+    #     一条）**全部零成交**，账户 78.4% 现金空转一整个交易日。
+    #
+    # 默认 **False = 关闭**（逐位保持既有回测行为，零行为变化，不破坏历史结论与测试）。
+    daily_loss_halt: bool = False
+    # ① 百分比阈值（负面小数）。-0.03 = 实盘 daily_loss_limit_pct。
+    daily_loss_pct: float = -0.03
+    # ② 绝对阈值的**账户百分比**表达。0 = 关闭该路判定；
+    #   0.005 = 复现「5000 元 / 100 万账户」的实盘现状（0.5%）。
+    #   用百分比而非绝对金额表达，是为了让网格能直接扫「等效严格度」，
+    #   并让结论对账户规模不变（绝对金额会在不同规模下给出不同答案）。
+    daily_loss_abs_pct: float = 0.0
+    # 熔断后禁止开仓的交易日数（实盘 halt_recover_days=1）。
+    daily_loss_halt_bars: int = 1
+    # ---- 日内强平（daily_stop_flatten_pct）代理 ----
+    # 实盘 risk/manager.py:98-111：以「开盘资产口径」（含隔夜重估）算当日亏损，
+    #   达 daily_stop_flatten_pct(-6%) 即置 flatten_requested 并停牌，
+    #   引擎据此**强平全部可卖持仓**（engine/event_engine.py:1537）。
+    # 日线代理：用「昨日收盘权益」近似开盘资产，触发则次日开盘清仓 + 停牌。
+    #   默认 **-99.0 = 关闭**（零行为变化）。
+    daily_stop_flatten_pct: float = -99.0
     # ---- 退出范式 + 动量（本次优化）----
     exit_mode: str = "scalp"        # "scalp"=紧移动止损; "trend"=趋势骑行至破位
     trend_exit_ma: int = 60          # 趋势破位判定均线
@@ -978,6 +1019,11 @@ def run_backtest(codes: List[str], cfg: BacktestConfig,
     _halt_bar = None          # 触发熔断的 bar 下标；None = 未熔断
     _scale_blocked_bars = 0   # 统计：因 scale<=0 而整日无买入的 bar 数（诊断用）
     _batch_pnl = 0.0          # 当日离场净盈亏累计（consec_loss_batch 用）
+    # ---- 日内已实现亏损熔断代理状态（见 BacktestConfig.daily_loss_halt 注释）----
+    _dl_day_pnl = 0.0         # 当日（本 bar）离场已实现盈亏累计，日切归零
+    _dl_halt_bar = None       # 触发日内亏损熔断的 bar 下标；None = 未熔断
+    _flatten_today = False    # 日内强平：次日开盘清仓标志
+    _prev_close_equity = 0.0  # 昨日收盘权益（强平判定的「开盘资产」口径）
 
     WARMUP = max(65, int(cfg.momentum_lookback) + 5, exit_ma + 5,
                  int(cfg.min_warmup))
@@ -1041,6 +1087,60 @@ def run_backtest(codes: List[str], cfg: BacktestConfig,
             if _scale <= 0:
                 _pending_exec = []
                 _scale_blocked_bars += 1
+        # ---- 日内已实现亏损熔断：结算**昨日**离场的已实现盈亏并判定 ----
+        # 与实盘同语义：_daily_pnl 只累计已实现盈亏，触发即 halt，
+        # 冷却 daily_loss_halt_bars 个交易日后自愈并清零基线。
+        if cfg.daily_loss_halt:
+            _fired = False
+            if cfg.daily_loss_abs_pct > 0 and equity > 0:
+                if _dl_day_pnl <= -cfg.daily_loss_abs_pct * equity:
+                    _fired = True
+            if not _fired and equity > 0:
+                if _dl_day_pnl <= cfg.daily_loss_pct * equity:
+                    _fired = True
+            _dl_day_pnl = 0.0        # 日切归零（实盘 reset_daily）
+            if _fired and _dl_halt_bar is None:
+                _dl_halt_bar = i
+            if _dl_halt_bar is not None:
+                if (i - _dl_halt_bar) >= cfg.daily_loss_halt_bars:
+                    _dl_halt_bar = None        # 冷却自愈
+                else:
+                    _pending_exec = []         # 熔断未解除，禁止一切开仓
+        # ---- 日内强平：以今日开盘价平掉全部可卖持仓（T+1 下当日建仓除外）----
+        if _flatten_today:
+            _flatten_today = False
+            _pending_exec = []
+            for _fc in list(positions.keys()):
+                _fp = positions[_fc]
+                if _fp["entry_day"] >= i:      # A 股 T+1：当日建仓不可卖
+                    continue
+                if not panel[_fc]["valid"][i]:
+                    continue
+                _px = panel[_fc]["open"][i]
+                if _px <= 0:
+                    continue
+                _net = _px * (1 - cfg.cost_pct)
+                _qty = _fp["qty"]
+                cash += _net * _qty
+                trades.append({
+                    "code": _fc,
+                    "pnl_pct": (_net - _fp["entry"]) / _fp["entry"],
+                    "hold": i - _fp["entry_day"], "reason": "daily_stop_flatten",
+                })
+                if cfg.consec_loss_scale and not cfg.consec_loss_batch:
+                    if _net < _fp["entry"]:
+                        _consec_loss += 1
+                    elif _net > _fp["entry"]:
+                        _consec_loss = 0
+                    if (_consec_loss >= cfg.consec_loss_halt
+                            and _halt_bar is None):
+                        _halt_bar = i
+                elif cfg.consec_loss_scale and cfg.consec_loss_batch:
+                    _batch_pnl += (_net - _fp["entry"]) * _qty
+                if cfg.daily_loss_halt:
+                    _dl_day_pnl += (_net - _fp["entry"]) * _qty
+                last_exit_day[_fc] = i
+                del positions[_fc]
         for order in _pending_exec:
             code = order["code"]
             if code in positions or len(positions) >= cfg.max_positions:
@@ -1192,6 +1292,9 @@ def run_backtest(codes: List[str], cfg: BacktestConfig,
                 elif cfg.consec_loss_scale and cfg.consec_loss_batch:
                     # 修复变体：只累计金额，等下一交易日开市前一次性判定（1 次/日）
                     _batch_pnl += (net_exit - net_entry) * pos["qty"]
+                # ---- 日内已实现亏损熔断：累计本 bar 已实现盈亏（实盘 _daily_pnl）----
+                if cfg.daily_loss_halt:
+                    _dl_day_pnl += (net_exit - net_entry) * pos["qty"]
                 last_exit_day[code] = i   # 再入场冷静期：记录最后离场日
                 del positions[code]
 
@@ -1493,6 +1596,17 @@ def run_backtest(codes: List[str], cfg: BacktestConfig,
         equity_curve.append(equity)
         if prev_equity > 0:
             daily_rets.append(equity / prev_equity - 1)
+        # ---- 日内强平（daily_stop_flatten_pct）判定 ----
+        # 实盘以「开盘资产口径（含隔夜重估）」算当日亏损，达阈值即置
+        # flatten_requested + 停牌，引擎次日开盘强平全部可卖持仓。
+        # 日线代理：用「昨日收盘权益」近似开盘资产，触发则次日开盘清仓。
+        if cfg.daily_stop_flatten_pct > -90.0 and _prev_close_equity > 0:
+            _dlp = (equity - _prev_close_equity) / _prev_close_equity
+            if _dlp <= cfg.daily_stop_flatten_pct:
+                _flatten_today = True
+                if cfg.daily_loss_halt and _dl_halt_bar is None:
+                    _dl_halt_bar = i        # 同时停牌（实盘 _halt）
+        _prev_close_equity = equity
         prev_equity = equity
         if positions:
             days_in_market += 1

@@ -188,6 +188,78 @@ def candidates_final() -> dict:
     out["J3_修复_合并计数+地板0.4"] = replace(
         b, consec_loss_scale=True, consec_loss_batch=True,
         consec_loss_floor=0.4)
+    # ---- 2026-09-24 PM-EVOLVE（第 7 轮）：★ 日内已实现亏损熔断代理 ----
+    # 上午交接给我的头号方向：「下一处『实盘有、回测无』是日内强平
+    #   daily_stop_flatten_pct / daily_loss_limit_abs，建议建代理后按同一方法论度量」。
+    # 今日实盘铁证（risk_snapshots 15:02）：
+    #   ``{"halted": true, "daily_pnl": -5602.4, "consecutive_losses": 7,
+    #      "position_scale": 0.0, "peak_asset": 1005996.0}``
+    #   ⇒ daily_pnl=-5602.4 已越过 **daily_loss_limit_abs=-5000（=100万账户的0.5%）**，
+    #     但 loss_pct=-0.565% 远未达 daily_loss_limit_pct=-3%。
+    #     当日 44 条观察篮 BUY 信号（300308，每 5 分钟一条）**全部零成交**。
+    # ★★ 缺陷假设：阈值 ② 是**绝对金额、不随账户规模缩放**的遗留值。paper 账户
+    #   09-21 复位为 1,000,000 后它等价于 0.5%，比显式设定的 -3% 严格 **6 倍**，
+    #   且账户规模越大越严 ⇒ 属「长度单位不缩放」型工程缺陷，不是策略选择。
+    # K1 = **实盘现状**（连亏阶梯 I1 + 日内熔断 abs 0.5% + pct 3%）⇒ 本轮的反向对照基线
+    out["K1_实盘现状_连亏+日内熔断0.5"] = replace(
+        b, consec_loss_scale=True, daily_loss_halt=True,
+        daily_loss_abs_pct=0.005, daily_loss_pct=-0.03)
+    # K2 = **修复候选**：移除不缩放的绝对阈值，只保留显式的百分比口径 -3%
+    out["K2_修复_日内熔断仅pct3"] = replace(
+        b, consec_loss_scale=True, daily_loss_halt=True,
+        daily_loss_abs_pct=0.0, daily_loss_pct=-0.03)
+    # K3 = 完全关闭日内亏损熔断（剂量终点，用于检验单调性）
+    out["K3_日内熔断关闭"] = replace(b, consec_loss_scale=True)
+    # K4~K7 = 剂量反应网格：等效绝对阈值 0.3% / 1% / 2% / 3%（与 pct 同）
+    out["K4_日内熔断_abs0.3"] = replace(
+        b, consec_loss_scale=True, daily_loss_halt=True,
+        daily_loss_abs_pct=0.003, daily_loss_pct=-0.03)
+    out["K5_日内熔断_abs1"] = replace(
+        b, consec_loss_scale=True, daily_loss_halt=True,
+        daily_loss_abs_pct=0.01, daily_loss_pct=-0.03)
+    out["K6_日内熔断_abs2"] = replace(
+        b, consec_loss_scale=True, daily_loss_halt=True,
+        daily_loss_abs_pct=0.02, daily_loss_pct=-0.03)
+    out["K7_日内熔断_abs3"] = replace(
+        b, consec_loss_scale=True, daily_loss_halt=True,
+        daily_loss_abs_pct=0.03, daily_loss_pct=-0.03)
+    # ---- 日内强平（daily_stop_flatten_pct = -6%）----
+    # 实盘 risk/manager.py:98-111 用「开盘资产口径（含隔夜重估）」算当日亏损，
+    #   达阈值即置 flatten_requested + 停牌，引擎次日开盘强平全部可卖持仓。
+    # 回测器历史上**无该分支**（grep 零命中）⇒ 第三处「实盘有、回测无」。
+    # 今日实盘 -0.571% 远未达 -6%，不是当日真凶，但历史上 09-16 单日 -16.4%
+    #   这种日子会被强平 ⇒ 值得单独度量，完成 AM 交接的 #3 全项。
+    out["K8_实盘现状_再叠加强平6"] = replace(
+        b, consec_loss_scale=True, daily_loss_halt=True,
+        daily_loss_abs_pct=0.005, daily_loss_pct=-0.03,
+        daily_stop_flatten_pct=-0.06)
+    # K9 = 只加强平、不叠加 abs（分离两个效应，检验强平自身的方向）
+    out["K9_仅强平6_无abs"] = replace(
+        b, consec_loss_scale=True, daily_loss_halt=True,
+        daily_loss_abs_pct=0.0, daily_loss_pct=-0.03,
+        daily_stop_flatten_pct=-0.06)
+    # K10 = 更宽的强平阈值 -10%（剂量对照，检验是否阈值越宽越好）
+    out["K10_仅强平10"] = replace(
+        b, consec_loss_scale=True, daily_loss_halt=True,
+        daily_loss_abs_pct=0.0, daily_loss_pct=-0.03,
+        daily_stop_flatten_pct=-0.10)
+    # ---- L 系列：以「AM 已落盘的 J1 修复」为新基线，测「再修 abs」的**净增量** ----
+    # 为什么单列：K 系列基线是 I1（逐笔计数 = 今日实盘现状，因 J1 需重启未生效）。
+    #   但 J1 已落盘，重启后的实盘状态 = J1 + 日内熔断。要回答「重启后还要不要
+    #   再修 daily_loss_limit_abs」，对照必须是 J1 而非 I1，否则增量被 I1→J1
+    #   的效应污染。
+    # L1 = 重启后的**实盘现状**（J1 批量计数 + 日内熔断 abs 0.5% + pct 3%）⇒ 新基线
+    out["L1_重启后现状_J1+abs0.5"] = replace(
+        b, consec_loss_scale=True, consec_loss_batch=True,
+        daily_loss_halt=True, daily_loss_abs_pct=0.005, daily_loss_pct=-0.03)
+    # L2 = 在 J1 之上再修 abs（只留显式 pct 口径）⇒ 待裁决的净增量
+    out["L2_重启后再修abs"] = replace(
+        b, consec_loss_scale=True, consec_loss_batch=True,
+        daily_loss_halt=True, daily_loss_abs_pct=0.0, daily_loss_pct=-0.03)
+    # L3 = 剂量对照：abs 放宽到 1%
+    out["L3_重启后abs1"] = replace(
+        b, consec_loss_scale=True, consec_loss_batch=True,
+        daily_loss_halt=True, daily_loss_abs_pct=0.01, daily_loss_pct=-0.03)
     return out
 
 
