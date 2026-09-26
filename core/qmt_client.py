@@ -110,6 +110,18 @@ class _XtdClient:
     #   更早丢弃陈旧价 → 不在过期报价上做止损/开仓决策，提升数据来源准确性。
     PUSH_STALE_SEC = 30.0
 
+    # 快照容忍陈旧度（秒）。
+    # 【2026-09-26 PM-EVOLVE R9 实测铁证】2026-09-25 全天 ``xtdata.get_full_tick``
+    # 返回的 300308.SZ 快照 ``time = 2026-09-24 15:30:00``——陈旧 47 小时。而引擎
+    # **无条件接受**：push 缓存路径有 ``_pushed_at`` 新鲜度校验，快照降级路径
+    # （missing 分支）完全没有 ⇒ 09-25 全天 258 个权益快照、53 条信号、3 笔建仓
+    # （17.4 万元）全部按 09-24 15:30 的冻结价成交，总资产恒定 991,309.60，
+    # 日志零告警。此后一切归因（方向/摩擦/隔夜暴露）全建立在假价格上。
+    # 这里**只打 ``_stale`` 标记、不丢弃**：夜间/周末快照必然陈旧属正常，丢弃
+    # 会让 ``raw`` 变空 → ``_run_once`` 直接 ``return``（比用旧价更糟）。
+    # 是否停止交易交由引擎按标记判断（见 EventEngine.MARKET_STALE_*）。
+    SNAPSHOT_STALE_SEC = 120.0
+
     def __init__(self):
         from xtquant import xtdata
         self.xtdata = xtdata
@@ -166,13 +178,40 @@ class _XtdClient:
             logger.debug("subscribe_quote 部分失败（可忽略）: %s", e)
             self.subscribed.update(new)
 
-    def _normalize(self, code: str, tick: dict) -> Optional[dict]:
+    @staticmethod
+    def _tick_age_sec(tick: dict, now: float) -> Optional[float]:
+        """行情快照年龄（秒）。优先用交易所行情时间，其次推送到达时间。
+
+        都取不到时返回 ``None``（含义是「无法判定」而非「新鲜」），调用方必须
+        按「无法判定」处理——历史上把「取不到时间」当「新鲜」正是静默用旧价
+        的根源之一。
+        """
+        t = tick.get("time")
+        if t:
+            try:
+                tv = float(t)
+                ts = tv / 1000.0 if tv > 1e12 else tv
+                if ts > 1e9:                      # 合理 epoch 下界，过滤脏值
+                    return max(0.0, now - ts)
+            except (TypeError, ValueError):
+                pass
+        p = tick.get("_pushed_at")
+        if p:
+            try:
+                return max(0.0, now - float(p))
+            except (TypeError, ValueError):
+                pass
+        return None
+
+    def _normalize(self, code: str, tick: dict, now: float = None) -> Optional[dict]:
         if not isinstance(tick, dict):
             return None
         lp = float(tick.get("lastPrice", 0) or 0)
         if lp <= 0:
             return None
         lc = float(tick.get("lastClose", 0) or 0) or lp
+        now = time.time() if now is None else now
+        age = self._tick_age_sec(tick, now)
         return {
             "lastPrice": lp,
             "open": float(tick.get("open", 0) or lp),
@@ -186,6 +225,10 @@ class _XtdClient:
             # （订阅掉线/主循环阻塞）时页面依然显示"刚刚"，掩盖滞后问题。
             "time": tick.get("time"),
             "_pushed_at": tick.get("_pushed_at"),
+            # 【2026-09-26 PM-EVOLVE R9】快照新鲜度。见 SNAPSHOT_STALE_SEC 注释：
+            # 只打标记不丢弃，由引擎决定是否停止按该价格建仓。
+            "stale_age_sec": (round(age, 1) if age is not None else None),
+            "_stale": bool(age is not None and age > self.SNAPSHOT_STALE_SEC),
         }
 
     def get_ticks(self, codes: Iterable[str]) -> Dict[str, dict]:
@@ -209,7 +252,7 @@ class _XtdClient:
                 if pushed_at and (now - pushed_at) > self.PUSH_STALE_SEC:
                     missing.append(code)
                     continue
-                n = self._normalize(code, p)
+                n = self._normalize(code, p, now)
                 if n:
                     result[code] = n
                 else:
@@ -222,7 +265,7 @@ class _XtdClient:
                     tick = snap.get(code) if snap else None
                     if not tick:
                         continue
-                    n = self._normalize(code, tick)
+                    n = self._normalize(code, tick, now)
                     if n:
                         result[code] = n
             except Exception as e:

@@ -388,6 +388,11 @@ class EventEngine:
         self._last_risk_snap_ts: float = 0.0
         # 【2026-09-02 #E】日线决策节流戳：上次调 on_daily_features 的时间。
         self._last_entry_decision_ts: float = 0.0
+        # 【2026-09-26 R9】行情陈旧守卫状态（见 MARKET_STALE_SEC 注释）
+        self._market_stale: bool = False          # 行情源整体是否失效
+        self._market_stale_codes: List[str] = []  # 本轮陈旧的标的
+        self._market_stale_max_age: float = 0.0   # 最大陈旧秒数
+        self._last_market_stale_warn_ts: float = 0.0
 
         # 自动重连
         self._auto_reconnect_enabled = auto_reconnect
@@ -1445,6 +1450,80 @@ class EventEngine:
             "last_refresh": self.dynamic_universe.last_refresh_str,
         }
 
+    # ============================================================ 行情陈旧守卫
+
+    # 【2026-09-26 PM-EVOLVE R9 · 缺陷修复通道】
+    # 背景（实盘铁证，见 core/qmt_client.py::SNAPSHOT_STALE_SEC 注释）：
+    #   ``get_full_tick`` 返回的是 miniQMT **本地缓存的最后一份快照**。行情源
+    #   停止更新时它不会报错，只是把同一份快照一遍遍返回。原实现对该路径
+    #   **没有新鲜度校验**，于是 2026-09-25 全天引擎拿着 09-24 15:30 的价格
+    #   建仓 17.4 万元，总资产恒定不动，日志却零告警。
+    # 机制：
+    #   · 标的级：单只行情年龄 > MARKET_STALE_SEC 判为陈旧（非交易时段属正常）
+    #   · 账户级：陈旧占比 ≥ MARKET_STALE_RATIO 判为「行情源整体失效」→
+    #     ① 告警（节流 MARKET_STALE_WARN_SEC，页面可见）
+    #     ② **禁止建仓**（_handle_buy 阻断）——用 N 小时前的冻结价下单等于盲打，
+    #        成交价可能偏离真实市价数个百分点
+    #   · 退出/盯市不受影响：持仓市值仍按可得的最好价格计（否则总资产会突变），
+    #     且真实下跌时宁可继续持有保护，不因量测问题放松风控
+    # 零行为变化保证：行情新鲜时（``stale_age_sec`` 缺失或 < 阈值）``_market_stale``
+    #   恒为 False，_handle_buy 的阻断分支永不进入 ⇒ 与修复前逐位一致。
+    # 可逆：把 MARKET_STALE_RATIO 设为 >1.0（或删除 _handle_buy 的阻断分支）即
+    #   完全恢复旧行为；恢复手段为**改代码**，不是调参（本修复不含任何参数）。
+    MARKET_STALE_SEC = 120.0
+    MARKET_STALE_RATIO = 0.6
+    MARKET_STALE_WARN_SEC = 300.0
+
+    def _update_market_staleness(self, raw: Dict[str, dict]) -> None:
+        """按本轮 tick 快照的交易所时间，判定行情源是否整体失效。"""
+        if not raw:
+            return
+        stale: List[str] = []
+        max_age = 0.0
+        judged = 0
+        for code, r in raw.items():
+            age = r.get("stale_age_sec") if isinstance(r, dict) else None
+            if age is None:
+                # 数据源未提供行情时间（mock / 旧版 xtdata）→ 无法判定，不计入分母
+                continue
+            judged += 1
+            if age > max_age:
+                max_age = age
+            if age > self.MARKET_STALE_SEC:
+                stale.append(code)
+        self._market_stale_codes = stale
+        self._market_stale_max_age = max_age
+        self._market_stale = bool(judged) and (
+            len(stale) / max(1, judged) >= self.MARKET_STALE_RATIO)
+        if self._market_stale:
+            self._warn_market_stale()
+
+    def _warn_market_stale(self) -> None:
+        """行情失效告警（节流 MARKET_STALE_WARN_SEC，避免每轮刷屏）。"""
+        now = time.time()
+        if now - self._last_market_stale_warn_ts < self.MARKET_STALE_WARN_SEC:
+            return
+        self._last_market_stale_warn_ts = now
+        age_min = self._market_stale_max_age / 60.0
+        msg = (f"行情源失效：{len(self._market_stale_codes)} 只标的快照已陈旧 "
+               f"{age_min:.0f} 分钟（阈值 {self.MARKET_STALE_SEC / 60:.0f} 分钟），"
+               f"已暂停建仓——价格不可信时下单等于盲打，请检查 miniQMT 行情连接")
+        logger.warning("%s；样例=%s", msg, self._market_stale_codes[:5])
+        try:
+            system_notice("ERROR", "行情", msg)
+        except Exception:
+            pass
+
+    def market_staleness(self) -> dict:
+        """行情新鲜度（供前端/复盘诊断，不影响任何交易决策）。"""
+        return {
+            "stale": self._market_stale,
+            "stale_codes_n": len(self._market_stale_codes),
+            "stale_codes": self._market_stale_codes[:10],
+            "max_age_sec": round(self._market_stale_max_age, 1),
+            "threshold_sec": self.MARKET_STALE_SEC,
+        }
+
     # ============================================================ 单轮
 
     def _run_once(self, codes: List[str]) -> None:
@@ -1467,6 +1546,8 @@ class EventEngine:
         _mark("ticks")
         if not raw:
             return
+        # 【2026-09-26 R9】行情陈旧守卫：必须在任何用价决策之前判定（见注释）
+        self._update_market_staleness(raw)
         ticks = {c: _to_tick(c, r) for c, r in raw.items()
                  if (r.get("lastPrice") or 0) > 0}
         # 【2026-09-22】补 ts：Tick 本身带 ts，但这里序列化时漏掉了，
@@ -2105,6 +2186,13 @@ class EventEngine:
             return
         price = float(getattr(tick, "price", 0) or 0)
         if price <= 0:
+            return
+        # 【2026-09-26 R9】行情陈旧阻断：价格若是 N 小时前的冻结快照（典型是
+        # miniQMT 停止推送而 get_full_tick 反复返回同一份缓存），按它建仓等于
+        # 盲打——成交价可能偏离真实市价数个百分点。此分支在行情新鲜时永不进入。
+        if self._market_stale:
+            self._log_reject_once(
+                sig.code, "market_stale(行情快照陈旧，暂停按失效价格建仓)")
             return
         # 账户级硬阻断先查（熔断 / 日内次数打满）——放在昂贵的 ATR+仓位
         # 计算之前，避免每轮白算一遍再被同一理由拒掉。

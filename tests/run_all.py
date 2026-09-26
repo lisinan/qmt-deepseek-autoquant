@@ -67,7 +67,12 @@ def _collect_tests():
             "tests.test_sector_heat",
             "tests.test_risk_consec_batch",
             "tests.test_daily_stale_fallback",
-            "tests.test_universe_data_validity"]
+            "tests.test_universe_data_validity",
+            # 【2026-09-26 R9】补注册：这两个文件此前**从未被执行**（不在 mods 里
+            # ⇒ 用例隐形未执行，详见 run_all 顶部注释）。test_qmt_client_stale
+            # 守的是行情新鲜度阈值，与本轮新增的陈旧守卫同源。
+            "tests.test_qmt_client_stale",
+            "tests.test_market_staleness_guard"]
     tests = []
     import_errors = []
     for m in mods:
