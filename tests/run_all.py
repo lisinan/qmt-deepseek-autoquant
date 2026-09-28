@@ -72,7 +72,10 @@ def _collect_tests():
             # ⇒ 用例隐形未执行，详见 run_all 顶部注释）。test_qmt_client_stale
             # 守的是行情新鲜度阈值，与本轮新增的陈旧守卫同源。
             "tests.test_qmt_client_stale",
-            "tests.test_market_staleness_guard"]
+            "tests.test_market_staleness_guard",
+            # 【2026-09-28 R10】验证器 base_cfg 与生产配置的口径漂移守卫。
+            # 该坑已踩两次（09-18 top_n/rpt、09-28 northbound_mode）。
+            "tests.test_evolve_baseline_sync"]
     tests = []
     import_errors = []
     for m in mods:

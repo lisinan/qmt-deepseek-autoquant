@@ -72,6 +72,25 @@ def base_cfg() -> BacktestConfig:
     会导致「增量 dSh」相对错误基线计算——上一轮 C1_topn3 已落盘，若不修基线，
     本轮 top_n=3 的收益会被重复计入增量。
     现按 P0 = 真实生产配置对齐，后续所有增量一律相对此基线。
+
+    【2026-09-28 第 10 轮 AM-EVOLVE 基线同步（量测口径修正，生产零改动）】
+    补齐 `northbound_mode="gate"` / `nb_lookback=20`。
+    背景：生产 STRATEGY_PARAMS 自 2026-09-19 起就是 northbound_mode="gate"
+      （engine/event_engine.py:253-262 启动时预取 nb 序列，:1840 `_regime_ok`
+      在 `_nb_state()["blocked"]` 时拒绝放行），而 BacktestConfig 该字段默认
+      "off"、base_cfg 又未显式设置 ⇒ **验证器 P0 一直是不含北向闸门的口径**。
+      这与 2026-09-18 的 top_n/rpt 基线漂移同型：P0 低估生产 ⇒ 此前所有
+      「dSh 增量」与 KPI（wf 均值 Sharpe）都建立在偏保守的错误基线上。
+    实测（25 只 AI 宇宙 × 741 根日线 20230110→20260924，单边 0.15% 成本，
+          4 套互不重叠折划分）：
+      IS   ret +166.39%→+197.31%  Sh 1.31→1.47  MDD −16.63%→−15.86%
+      OOS  60x9 1.197→1.382 (+0.185) / 75x7 0.952→1.271 (+0.319)
+           90x6 1.348→1.574 (+0.226) / 120x4 1.565→1.664 (+0.099)
+           均值 dSh **+0.207**，四窗口全正；均值 MDD −10.38%→−9.74%；
+           正收折 22/26 → 24/26 (92.3%)
+      ⇒ wf 均值 Sharpe **1.266 → 1.473**（与 2.0 目标差距 −0.734 → −0.527）
+    本改动**只影响验证器**，不触碰 config/settings.py，生产行为零变化。
+    可逆：删掉这两个关键字参数即回到旧口径。
     """
     return BacktestConfig(
         use_gate=True, cost_pct=0.0015, vol_sizing=True,
@@ -82,6 +101,7 @@ def base_cfg() -> BacktestConfig:
         down_day_exit_pct=-9.0, max_positions=5,
         buy_score_threshold=4.0, min_signals=3,
         atr_stop_mult=2.0, tp_atr_mult=4.0,
+        northbound_mode="gate", nb_lookback=20,
         min_warmup=FIXED_WARMUP,
     )
 

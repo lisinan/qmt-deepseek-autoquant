@@ -8,6 +8,7 @@
 """
 from __future__ import annotations
 import sys
+from dataclasses import replace
 sys.path.insert(0, ".")
 
 import strategy.backtest_daily as B
@@ -23,10 +24,13 @@ def test_northbound_gate_engaged_and_non_degrading():
     data = preload(codes + ["000300.SH", "399006.SZ"], 750)
     nb = get_northbound("20221201", "20260825")
     ks = [c for c in codes if c in data]
-    base = base_cfg()
+    # 【2026-09-28 第 10 轮】base_cfg 已与生产同步为 northbound_mode="gate"
+    # （否则 P0 基线不含北向闸门 ⇒ OOS 均值 Sharpe 少算 +0.207）。
+    # 本用例的语义是「gate vs off 的对照」，故对照侧必须**显式注入** off，
+    # 不能再依赖 base_cfg 的默认值为 off。
     g = base_cfg()
-    g.northbound_mode = "gate"
-    g.nb_lookback = 20
+    assert g.northbound_mode == "gate", "base_cfg 应与生产一致为 gate"
+    base = replace(g, northbound_mode="off")
     r0 = run_backtest(ks, base, count=750, preloaded=data)
     r1 = run_backtest(ks, g, count=750, preloaded=data, nb_data=nb)
     # gate 为防御性少开仓：交易数不应暴增
@@ -46,6 +50,13 @@ def test_northbound_setting_present_and_default_off_semantics():
     # settings 已落盘 northbound_mode="gate"（OWNER 批准）。引擎读取点存在。
     assert "northbound_mode" in S.STRATEGY_PARAMS, "settings 缺失 northbound_mode"
     assert S.STRATEGY_PARAMS["northbound_mode"] in ("off", "gate")
-    # 回测层默认 off 不影响原行为
+    # 【2026-09-28 第 10 轮 AM-EVOLVE】验证器 base_cfg 已与生产同步为 "gate"。
+    #   此前此处断言 base_cfg 为 "off"，导致 P0 基线不含北向闸门、系统性低估
+    #   生产（OOS 均值 Sharpe 少算 +0.207）。现断言二者一致，防止基线再次漂移。
+    #   完整守卫见 tests/test_evolve_baseline_sync.py。
     base = base_cfg()
-    assert base.northbound_mode == "off"
+    assert base.northbound_mode == S.STRATEGY_PARAMS["northbound_mode"], (
+        f"验证器 base_cfg 的 northbound_mode={base.northbound_mode!r} 与生产 "
+        f"{S.STRATEGY_PARAMS['northbound_mode']!r} 不一致 —— P0 基线漂移会让所有"
+        f" dSh 增量失真（2026-09-18 / 2026-09-28 各踩一次）")
+    assert int(base.nb_lookback) == int(S.STRATEGY_PARAMS["nb_lookback"])

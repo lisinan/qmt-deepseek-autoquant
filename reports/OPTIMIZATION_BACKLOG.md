@@ -60,4 +60,18 @@
 >
 > - [P0/安全/err] 触发 1 次熔断 ｜ 证据：原因分布 consec_loss=5×1；最大连亏 9 ｜ 建议：确认冷却窗口（连亏/日亏 1 日、回撤 5 日）后已自动 resume ｜ 定位：core/risk_manager.py；settings max_drawdown_pct/dd_recover_days
 > - [P0/准确/err] 账户真实当日亏损 -16.40%（跨日口径） ｜ 证据：961,286→803,680，亏 -157,605.82 ｜ 建议：趋势策略下跌市连续止损/隔夜重估，属收益特征非缺陷；勿改参数（参数高原已证无调参空间） ｜ 定位：equity_snapshots；core/risk_manager.py
-> - [P1/稳定/err] 当日 12 条 ERROR/异常 ｜ 证据：系统提示 ERROR/Traceback 共 12 条 ｜ 建议：查 logs/quant_system.log 与当日 traceback，优先修根因（DLL/网络/数据可得性） ｜ 定位：engine/event_engine.py 主循环异常隔离；core/notices.py
+> - [P1/稳定/err] 当日 12 条 ERROR/异常 ｜ 证据：系统提示 ERROR/Traceback 共 12 条 ｜ 建议：查 logs/quant_system.log 与当日 traceback，优先修根因（DLL/网络/数据可达性） ｜ 定位：engine/event_engine.py 主循环异常隔离；core/notices.py
+
+---
+
+## 2026-09-25
+
+稳定 75 / 安全 100 / 准确 100 / 高效 100 ｜ 综合 94
+
+- [P1/稳定/warn] 券商连接断开/重连 28 次 ｜ 证据：notices 含 disconnected/重连关键词 28 次 ｜ 建议：复查断线自修复是否真正复用单一 XtQuantTrader 实例，避免 force 重连自伤 ｜ 定位：core/broker.py / core/auto_reconnect.py
+- [P2/准确/info] AI 已给出方向性观点 ｜ 证据：AI 立场分布：{'bearish': 3} ｜ 建议：观察 bullish/bearish 与实际盈亏是否吻合，逐步校准（勿直接作交易 gate，避免侵蚀已验证动量 alpha） ｜ 定位：ai/analyst.py
+
+> **上午周期实证（EVOLUTION_DECISIONS.md § 2026-09-25 第8轮 AM-EVOLVE @11:40）**：上午周期对「新鲜数据全参数网格复核（9 维×44 值）」+「结构性扩宇宙（5 种子同池抽样）」两项均做完，**全部 REJECTED、config/settings.py diff 空、零参数落盘**（仅新增 `strategy/_evolve_universe.py` 实验器与 5 例守卫测试，tests 256→261）。故上午**未改任何生产参数，无需证实/证伪参数效果**。
+> 但上午交接的两条事实经今日全日真实数据**双向证实**：① 前序缺陷修复线上生效——`halt_count=0`、`max_consecutive_losses=1`、`position_scale=1.0`、账户未冻结（09-24 AM 同批退出合并计数 + 09-23 PM 观察篮防反手均持续命中）；② **P0 工程缺陷「盯市价格未刷新」被坐实**：全日 258 个权益快照总资产恒定 991,309.60、`market_value=173,840` 恒等于建仓成本、`unrealized=0.0` 尽管持 3 只 live 仓 ⇒ paper 账户无法产生浮动盈亏，日内归因失真。结论：**上午未落盘参数（数据不足/不适用）；其交接的 P0 盯市缺陷与「修复已生效」判断均被当日真实表现证实，数据充分。** 该 P0 盯市缺陷已交 09-25 18:00 PM-EVOLVE 优先处置。
+
+> **度量账本**：record_ledger 幂等，本日 2026-09-25 真实收益 0.0% / 累计 -0.87% / 综合 94 已追加（md=新增、jsonl=新增）。注：真实收益 0.0% 本身受 P0 盯市缺陷影响（已实现 -3,088 被新建仓成本抵消、浮盈恒 0），须先修盯市再谈归因；累计 -0.87% 为 09-22 复位 100 万 → 991,309.60。账本供 18:00 PM-EVOLVE 与次日 11:40 AM-EVOLVE 消费。
