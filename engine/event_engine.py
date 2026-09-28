@@ -252,6 +252,12 @@ class EventEngine:
         # 北向资金协同闸门（全新正交轴，2026-09-19 落盘）：引擎启动时预热北向序列
         self.northbound_mode = STRATEGY_PARAMS.get("northbound_mode", "off")
         self.nb_lookback = int(STRATEGY_PARAMS.get("nb_lookback", 20))
+        # 可信度守卫（2026-09-28 第 11 轮）：序列陈旧/退化时 fail-open，
+        # 避免用「恒正成交额序列」或「5 周前旧数据」冒充净买入拦截建仓。
+        self.nb_guard = bool(STRATEGY_PARAMS.get("nb_credibility_guard", True))
+        self.nb_stale_days = int(STRATEGY_PARAMS.get("nb_stale_days", 10))
+        self.nb_degenerate_days = int(
+            STRATEGY_PARAMS.get("nb_degenerate_days", 60))
         self.nb_series = {}
         self.nb_dates = []
         if self.northbound_mode != "off":
@@ -1813,6 +1819,10 @@ class EventEngine:
             "rolling_sum": None,
             "latest": None,
             "blocked": False,
+            # 可信度守卫（2026-09-28 第 11 轮）：credible=False ⇒ 强制 fail-open
+            "credible": False,
+            "guard_reason": "empty",
+            "guard_on": self.nb_guard,
         }
         if not self.nb_series:
             return out
@@ -1823,8 +1833,42 @@ class EventEngine:
             out["rolling_sum"] = round(
                 sum(self.nb_series.get(d, 0.0) for d in win), 2)
             out["latest"] = round(self.nb_series.get(win[-1], 0.0), 2)
-            out["blocked"] = bool(mode == "gate" and out["rolling_sum"] < 0)
+            # ---- 可信度守卫：陈旧 / 退化 → 不可信 → fail-open 并告警 ----
+            if self.nb_guard:
+                try:
+                    from data.northbound_cache import nb_gate_credible
+                    ok, why = nb_gate_credible(
+                        self.nb_series, self.nb_dates, _today,
+                        stale_days=self.nb_stale_days,
+                        degenerate_days=self.nb_degenerate_days)
+                except Exception as e:      # 守卫自身出错 → 保守取「可信」
+                    logger.debug("北向可信度守卫异常，按可信处理: %s", e)
+                    ok, why = True, "ok"
+                out["credible"] = bool(ok)
+                out["guard_reason"] = why
+                if not ok:
+                    self._nb_notice_once(
+                        f"北向闸门已 fail-open（{why}）：序列末端 "
+                        f"{out['end_date']}，不作为建仓拦截依据")
+            else:
+                out["credible"] = True
+                out["guard_reason"] = "guard_off"
+            out["blocked"] = bool(mode == "gate" and out["credible"]
+                                  and out["rolling_sum"] < 0)
         return out
+
+    def _nb_notice_once(self, msg: str) -> None:
+        """北向守卫告警按日去重（与 T+1/保护期拦截去重同款约定）。"""
+        _today = datetime.now().strftime("%Y%m%d")
+        if getattr(self, "_nb_notice_day", None) != _today:
+            self._nb_notice_day = _today
+            self._nb_notice_set = set()
+        s = getattr(self, "_nb_notice_set", None) or set()
+        if msg in s:
+            return
+        s.add(msg)
+        self._nb_notice_set = s
+        system_notice("WARNING", "风控", msg)
 
     def _regime_ok(self) -> bool:
         """市场环境是否允许交易（与回测 regime_ok 一致）。

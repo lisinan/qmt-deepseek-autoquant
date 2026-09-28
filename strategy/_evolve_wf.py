@@ -64,6 +64,45 @@ def slice_by_index(data: dict, lo: int, hi: int) -> dict:
     return {c: {k: list(v[lo:hi]) for k, v in d.items()} for c, d in data.items()}
 
 
+def aligned_universe(data: dict, codes: list) -> tuple:
+    """★★ 先把全宇宙对齐到统一交易日轴，再交给折划分切。
+
+    【2026-09-28 第 11 轮 PM-EVOLVE 修复：折窗口跨标的日期错位 + 近 11 个月从未入折】
+
+    原实现直接用**未对齐的原始数组**按索引切片造折
+    （``n = min(len(d["close"]))`` → ``slice_by_index(data, lo, hi)``）。
+    各标的历史长度不同（900/888/883/841/809/748/744/741），索引 i 在
+    不同标的上指向**不同日期** —— 实测 F6（索引 580..670）：
+
+        000977.SZ 等 17 只（900 根）： 20250609 → 20251020
+        300476.SZ          （741 根）： 20260128 → 20260616   ← 错位约 8 个月
+        603986.SH          （748 根）： 20260112 → 20260601
+        688008.SH          （744 根）： 20260305 → 20260720
+
+    切片后 ``run_backtest`` 内的 ``align_panel`` 取各标的日期**并集**，
+    于是每折实际横跨 ~250 根、各票在不同时点"登场"，横截面动量排名在
+    比较**不同日期**的标的 ⇒ 折内结果既不是 OOS 也不是 IS，是无意义混合。
+
+    附带后果：``n`` 被最短的 300476.SZ（741 根）钉住，折只排到索引 670，
+    而长历史标的索引 670 = 20251021 ⇒ **20251022 ~ 20260924 共 229 根
+    （近 11 个月，恰恰是 live paper 亏损期）从未进入任何折**。
+
+    修复：先 ``align_panel``（按日期对齐 + 停牌前向填充 + valid 标记），
+    再按**面板索引**切片 ⇒ 所有标的逐折共享同一日期窗口。
+    面板里补回 ``date`` 字段，使 ``run_backtest`` 内的二次 align 仍走
+    「按日期对齐」分支（否则会退化成尾部截断、日期变 "0,1,2…" 导致
+    北向序列 dates[_i] 查不到而闸门静默失效）。
+    """
+    from strategy.backtest_daily import align_panel
+    ks = [k for k in data.keys() if k not in INDEX_CODES]
+    dates, panel = align_panel({k: data[k] for k in ks})
+    if not dates:
+        return [], {}
+    for code in panel:
+        panel[code]["date"] = list(dates)
+    return dates, panel
+
+
 def base_cfg() -> BacktestConfig:
     """当前生产配置（与已验证基线同口径）。
 
@@ -338,9 +377,15 @@ def main():
     if not data:
         print("无数据，退出")
         return
-    n = min(len(d["close"]) for d in data.values())
-    d0 = data[codes[0]]["date"]
-    print(f"[数据] {len(data)} 只 × {n} 根  {d0[0]} -> {d0[-1]}  载入 {time.time()-t0:.1f}s")
+    # 【2026-09-28 第 11 轮】折划分必须建立在**已对齐**的面板上（见 aligned_universe）
+    d0, panel = aligned_universe(data, codes)
+    if not d0:
+        print("无数据（对齐失败），退出")
+        return
+    data = panel
+    n = len(d0)
+    print(f"[数据] {len(data)} 只 × {n} 根（已按日期对齐）  "
+          f"{d0[0]} -> {d0[-1]}  载入 {time.time()-t0:.1f}s")
 
     def bt(cfg, dset):
         ks = [k for k in dset.keys() if k not in INDEX_CODES]

@@ -636,6 +636,13 @@ class BacktestConfig:
     # 后才并入生产。数据来自 data/northbound_cache（本地磁盘缓存，零网络重复消耗）。
     northbound_mode: str = "off"    # "off" | "gate"
     nb_lookback: int = 20           # gate 用的北向滚动窗口（交易日）
+    # ---- 北向闸门「可信度守卫」（2026-09-28 第 11 轮，与 engine/_nb_state 同款）----
+    # 序列自 2024-08-19 起是恒正成交额口径（非净买入），且本地缓存永不刷新。
+    # 守卫开启时：截至当日若「陈旧」或「退化(trailing N 日全正)」⇒ fail-open，
+    # 使回测与实盘同口径（回测不再白拿 2023-2024 已废止披露制度下的拦截收益）。
+    nb_credibility_guard: bool = True
+    nb_stale_days: int = 10
+    nb_degenerate_days: int = 60
     # ---- 业绩预告上修（盈利修正，全新基本面数据轴，研究用）----
     # 与 moneyflow（资金流，对价格动量仅弱相关ρ≈0.36）不同：这是**公司自身披露的
     # 前瞻盈利指引上修**（同一报告期、后一次指引高于前一次），属"盈利动量 / 预告
@@ -1024,6 +1031,26 @@ def run_backtest(codes: List[str], cfg: BacktestConfig,
                 if _v is not None:
                     _s += _v
             nb_roll[_i] = _s
+        # 可信度守卫（与 engine/_nb_state 同款）：不可信的 bar 一律 fail-open，
+        # 保证回测口径 == 实盘口径（守卫自身异常时保守取「可信」= 旧行为）。
+        if cfg.nb_credibility_guard:
+            try:
+                from data.northbound_cache import nb_gate_credible
+            except Exception:                      # pragma: no cover
+                nb_gate_credible = None
+            if nb_gate_credible is not None:
+                _nb_keys = sorted(nb_series.keys())
+                nb_ok = [True] * n
+                for _i in range(n):
+                    try:
+                        nb_ok[_i] = nb_gate_credible(
+                            nb_series, _nb_keys, dates[_i],
+                            stale_days=cfg.nb_stale_days,
+                            degenerate_days=cfg.nb_degenerate_days)[0]
+                    except Exception:
+                        nb_ok[_i] = True
+                nb_roll = [(s if nb_ok[_k] else 0.0)
+                           for _k, s in enumerate(nb_roll)]
         regime_ok = [a and (nb_roll[_k] >= 0.0)
                      for _k, a in enumerate(regime_ok)]
 

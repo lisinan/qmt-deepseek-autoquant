@@ -75,7 +75,11 @@ def _collect_tests():
             "tests.test_market_staleness_guard",
             # 【2026-09-28 R10】验证器 base_cfg 与生产配置的口径漂移守卫。
             # 该坑已踩两次（09-18 top_n/rpt、09-28 northbound_mode）。
-            "tests.test_evolve_baseline_sync"]
+            "tests.test_evolve_baseline_sync",
+            # 【2026-09-28 R11】① 北向闸门可信度守卫（数据是恒正成交额 ⇒ 死闸门）；
+            # ② walk-forward 折窗口跨标的日期错位守卫（切片必须建立在已对齐面板上）。
+            "tests.test_northbound_credibility",
+            "tests.test_evolve_fold_alignment"]
     tests = []
     import_errors = []
     for m in mods:

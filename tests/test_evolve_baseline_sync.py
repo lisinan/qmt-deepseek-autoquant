@@ -39,6 +39,11 @@ MUST_MATCH = {
     "min_signals": None,          # 3
     "northbound_mode": None,      # "gate"（2026-09-28 同步）
     "nb_lookback": None,          # 20
+    # 2026-09-28 第 11 轮：北向闸门可信度守卫（两侧同语义、必须同步，否则
+    # 回测会用「恒正成交额序列」白拿 2023-2024 的拦截收益而实盘拿不到）
+    "nb_credibility_guard": None,
+    "nb_stale_days": None,
+    "nb_degenerate_days": None,
     "min_daily_bias": None,       # 2.0（bias 通道关闭，2026-09-22 落盘）
     "regime_mode": None,          # "off"
     "regime_index": None,

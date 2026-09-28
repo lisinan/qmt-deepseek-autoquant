@@ -96,3 +96,75 @@ def preload_northbound(start: str = "20221201",
                        end: Optional[str] = None) -> Dict[str, float]:
     """批量预加载（与 get_northbound 同义，供回测一次性复用）。"""
     return get_northbound(start, end)
+
+
+# ---------------------------------------------------------------------------
+# 可信度守卫（2026-09-28 PM-EVOLVE 第 11 轮落盘）
+#
+# 背景（实盘铁证）：本序列取自 tushare `moneyflow_hsgt.north_money`
+# (= hgt + sgt)。**自 2024-08-19 起沪深港通已停止披露每日净买入额**，实测：
+#   ┌──────────────────────┬────┬──────┬──────────┬──────────┐
+#   │ 区间                 │ n  │ 正占比│ 均值      │ 标准差    │
+#   ├──────────────────────┼────┼──────┼──────────┼──────────┤
+#   │ 2023-01~2024-08-16   │235 │ 0.44 │     -53   │    5,987  │  ← 真净买入
+#   │ 2024-08-19~2026-08-25│365 │ 1.00 │  272,396  │   92,996  │  ← 非净买入
+#   └──────────────────────┴────┴──────┴──────────┴──────────┘
+#   断点前最长连续正值仅 **8 天**（235 天样本）；断点后 **365/365 天全正**。
+#   ⇒ 断点后是「恒正、窄带」序列（成交额口径），**不是净买入**。
+#   ⇒ 滚动 20 日累计 < 0 在 2025 年 0/128 天、2026 年 0/132 天成立
+#     ⇒ **实盘 nb gate 是「死闸门」，自 2025 年起从未真正拦截过任何建仓**。
+#
+# 危害：① 用「恒正序列」冒充净买入，闸门形同虚设却让人误以为有保护；
+#      ② 本地缓存一旦写入**永不再刷新**（get_northbound 命中即 return），
+#         实测末端停在 2026-08-25（陈旧 34 天），一旦符号恢复就会用
+#         **5 周前的旧数据**拦截当日建仓。
+#
+# 守卫：任一为真即判定**不可信 → fail-open（不拦截）**并告警：
+#   (a) 陈旧：序列末端交易日距评估日 > nb_stale_days 个自然日；
+#   (b) 退化：截至评估日的 trailing nb_degenerate_days 个交易日**全为正**
+#             （真实净买入序列不可能连涨 60 日：断点前实测最长仅 8 天、
+#              60 日滚动全正窗口数 0/175 ⇒ 误判率为 0）。
+# ---------------------------------------------------------------------------
+NB_STALE_DAYS = 10
+NB_DEGENERATE_DAYS = 60
+
+
+def _days_between(a: str, b: str) -> Optional[int]:
+    """两个 YYYYMMDD 之间相差的自然日数（b - a）；解析失败返回 None。"""
+    try:
+        from datetime import date
+        da = date(int(a[:4]), int(a[4:6]), int(a[6:8]))
+        db = date(int(b[:4]), int(b[4:6]), int(b[6:8]))
+        return (db - da).days
+    except Exception:
+        return None
+
+
+def nb_gate_credible(series: Dict[str, float],
+                     dates_sorted: Optional[List[str]],
+                     eval_day: str,
+                     stale_days: int = NB_STALE_DAYS,
+                     degenerate_days: int = NB_DEGENERATE_DAYS) -> tuple:
+    """判定「截至 eval_day，该序列能否当作真实净买入来驱动闸门」。
+
+    返回 ``(credible: bool, reason: str)``。``reason`` ∈
+    ``ok`` / ``empty`` / ``stale`` / ``degenerate``。
+    调用方在 ``credible=False`` 时必须 **fail-open**（不拦截建仓）。
+    """
+    if not series:
+        return False, "empty"
+    keys = dates_sorted if dates_sorted is not None else sorted(series.keys())
+    past = [d for d in keys if d <= eval_day]
+    if not past:
+        return False, "empty"
+
+    if stale_days > 0:
+        gap = _days_between(past[-1], eval_day)
+        if gap is not None and gap > stale_days:
+            return False, "stale"
+
+    if degenerate_days > 0 and len(past) >= degenerate_days:
+        win = past[-degenerate_days:]
+        if all(series.get(d, 0.0) > 0 for d in win):
+            return False, "degenerate"
+    return True, "ok"
