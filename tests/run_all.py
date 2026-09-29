@@ -67,6 +67,9 @@ def _collect_tests():
             "tests.test_sector_heat",
             "tests.test_risk_consec_batch",
             "tests.test_daily_stale_fallback",
+            # 【2026-09-29 R13】日线陈旧度必须是**交易日**口径（自然日阈值隔个周末
+            # 就放过 3 个交易日；实盘铁证：末根 09-24 / now 09-29 判为"新鲜"）。
+            "tests.test_daily_stale_trading_days",
             "tests.test_universe_data_validity",
             # 【2026-09-26 R9】补注册：这两个文件此前**从未被执行**（不在 mods 里
             # ⇒ 用例隐形未执行，详见 run_all 顶部注释）。test_qmt_client_stale

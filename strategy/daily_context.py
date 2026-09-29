@@ -49,6 +49,25 @@ FEATURE_TTL_SEC = 6 * 3600
 #   但后果只是「多试一次 tushare」，tushare 同样没有新数据 ⇒ 回退本地，行为不变。
 DAILY_STALE_DAYS = 5
 
+# ★★【2026-09-29 PM-EVOLVE 第 13 轮 P0 修复】上面的阈值是**自然日**，而数据是按
+#   **交易日**老的 ⇒ 只要隔一个周末就必然漏判：
+#     实盘铁证（2026-09-29 18:26 收盘后实测，本地 miniQMT）：
+#       xtdata 1d 末根 = **20260924**（缺失 09-25 周五 / 09-28 周一 / 09-29 周二
+#       共 **3 个交易日**），而自然日差 = 5 ⇒ ``5 > 5`` 为假 ⇒ **判为新鲜，不补拉**。
+#       手动 download_history_data 后立刻补齐到 20260929：
+#         300394.SZ 09-28 单日 **-8.63%**（267.93→244.80）
+#         300308.SZ 09-28 单日 **-9.03%**（895.86→815.00）
+#       ⇒ 全部日线特征（MA60/trend_up/bias/ATR/动量排名）以及**刚落盘的
+#         down_day_exit_pct=-5.0 单日暴跌退出**（DailyFeatures.day_change_pct）
+#         都在用 3 个交易日前的行情判断「今天」该不该买/该不该卖。300394 在
+#         09-28 跌 -8.63% 本应触发 -5% 暴跌退出，而引擎看到的是 09-24 的 -2.71%。
+#   新判定：**按交易日**——期望末根 = 今日（收盘 15:05 后）或上一交易日（盘中），
+#   末根日期早于期望 ⇒ 陈旧。周末与盘中被自然排除（不再产生无谓补拉），
+#   长假会误判陈旧，但后果仍只是「多试一次补拉/tushare」，拿不到即回退本地。
+DAILY_STALE_TDAYS = 1      # 缺失 >= 1 个完整交易日即视为陈旧
+DAILY_CLOSE_HOUR = 15      # 收盘时刻（含 5 分钟容差）：此后当日日线应可拿到
+DAILY_CLOSE_MIN = 5
+
 
 @dataclass
 class DailyFeatures:
@@ -154,8 +173,31 @@ class DailyContext:
             logger.debug("DailyContext tushare 失败 %s: %s", code, e)
         return None
 
-    def _is_stale_bars(self, raw: List[dict]) -> bool:
-        """本地日线是否陈旧：最后一根交易日距今超过 DAILY_STALE_DAYS 个自然日。"""
+    @staticmethod
+    def _expected_last_trade_date(now: Optional[datetime] = None) -> "date":
+        """「此刻应该能拿到的最后一根日线」的日期（**交易日**口径）。
+
+        收盘（15:05）后 = 今日；盘中 = 上一个交易日；周末/周日自动回退到周五。
+        只用周一~周五近似交易日历：法定假日会高估期望日 ⇒ 判定为陈旧，
+        后果仅是多试一次补拉（拿不到即回退本地），不会误伤数据。
+        """
+        from datetime import date as _date
+        now = now or datetime.now()
+        d = now.date()
+        if (now.hour, now.minute) < (DAILY_CLOSE_HOUR, DAILY_CLOSE_MIN):
+            d = d - timedelta(days=1)
+        while d.weekday() >= 5:          # 5=周六 6=周日
+            d = d - timedelta(days=1)
+        return _date(d.year, d.month, d.day)
+
+    def _is_stale_bars(self, raw: List[dict],
+                       now: Optional[datetime] = None) -> bool:
+        """本地日线是否陈旧。
+
+        【2026-09-29 第 13 轮】主判据由「自然日 > DAILY_STALE_DAYS」改为
+        「**末根日期 < 期望交易日**」（缺 1 个完整交易日即陈旧）；自然日阈值
+        降级为兜底（> DAILY_STALE_DAYS 仍判陈旧，覆盖时钟异常等情形）。
+        """
         if not raw:
             return True
         last = raw[-1].get("ts")
@@ -163,7 +205,11 @@ class DailyContext:
             return True
         try:
             d = last.date() if hasattr(last, "date") else last
-            return (datetime.now().date() - d).days > DAILY_STALE_DAYS
+            expect = self._expected_last_trade_date(now)
+            if d < expect:
+                return True
+            n = now or datetime.now()
+            return (n.date() - d).days > DAILY_STALE_DAYS
         except Exception:
             return False      # 判不出来就当新鲜，保持原行为
 

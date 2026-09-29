@@ -94,15 +94,24 @@ def test_stale_days_constant_sane():
 
 
 def test_fresh_local_is_not_stale():
+    """末根 = 期望交易日（收盘后为今日、盘中/周末为上一交易日）⇒ 不陈旧。
+
+    【2026-09-29 第 13 轮】原断言用「自然日差 = DAILY_STALE_DAYS ⇒ 不陈旧」，
+    那正是漏判 3 个交易日的旧语义（见 DAILY_STALE_TDAYS 注释里的实盘铁证），
+    已改为**交易日**口径：只有「末根 >= 期望交易日」才算新鲜。
+    """
     dc = DailyContext()
     today = _dt.date.today()
     assert dc._is_stale_bars(_bars(today)) is False
-    assert dc._is_stale_bars(_bars(today - _dt.timedelta(days=DAILY_STALE_DAYS))) is False
+    expect = DailyContext._expected_last_trade_date()
+    assert dc._is_stale_bars(_bars(expect)) is False
 
 
 def test_old_local_is_stale():
+    """末根早于期望交易日（缺 1 个完整交易日）⇒ 陈旧。"""
     dc = DailyContext()
-    old = _dt.date.today() - _dt.timedelta(days=DAILY_STALE_DAYS + 1)
+    expect = DailyContext._expected_last_trade_date()
+    old = expect - _dt.timedelta(days=7)
     assert dc._is_stale_bars(_bars(old)) is True
 
 

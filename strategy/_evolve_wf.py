@@ -145,7 +145,12 @@ def base_cfg() -> BacktestConfig:
         #   （09-18 top_n/rpt、09-28 northbound_mode、09-29 本项）。
         down_day_exit_pct=-5.0, max_positions=5,
         buy_score_threshold=4.0, min_signals=3,
-        atr_stop_mult=2.0, tp_atr_mult=4.0,
+        # 【2026-09-29 第 13 轮 PM-EVOLVE】2.0 → **2.9，与生产对齐**（原为本文件
+        #   唯一残留的 KNOWN_DIVERGENCE：回测 2.0 / 生产 2.5，属第 5 次同型漂移）。
+        #   裁决依据：相对**生产现状 2.5** 的 4 窗口 dSh = +0.171/+0.202/+0.119/+0.162，
+        #   均值 +0.164、最差窗口 +0.119（2.8~3.2 连续正高原，2.9 为均值与最差双 argmax）。
+        #   本字段已由 KNOWN_DIVERGENCE 移入 MUST_MATCH（见 test_evolve_baseline_sync.py）。
+        atr_stop_mult=2.9, tp_atr_mult=4.0,
         northbound_mode="gate", nb_lookback=20,
         min_warmup=FIXED_WARMUP,
     )
@@ -192,6 +197,27 @@ def candidates_final() -> dict:
     # E1b = -4.0 剂量对照（检验 -3~-5 是否构成高原而非尖峰）。
     out["E0_dd99_生产现状"] = replace(b, down_day_exit_pct=-99.0)
     out["E1b_dd4"] = replace(b, down_day_exit_pct=-4.0)
+    # ---- 2026-09-29 PM-EVOLVE（第 13 轮）：ATR 止损倍数（重裁）----
+    # 为什么重跑：09-21 判定「杠杆旋钮、Sharpe 几乎不变」，但那是**错基线**结论
+    #   （折错位 + 缺 nb 闸门 + down_day 关闭三重缺陷之上做的）。新基线（down_day
+    #   -5.0 已启用）下 90x6 网格出现 2.4~3.2 的连续高原：
+    #     2.0(基线) +0.000 / 2.4 +0.123 / 2.6 +0.092 / 2.8 +0.170
+    #     3.0 +0.182 / 3.2 +0.188 / 3.4 -0.114  ⇒ 非尖峰（5 个邻值连续为正）
+    # 机理：仓位 ∝ risk_per_trade / (atr% * mult) ⇒ 放宽止损 = 同步缩小仓位、
+    #   单笔风险不变，但换手与成本下降、被洗出去的次数减少 ⇒ 收益降（21.1%→14.5%）
+    #   而波动降得更多 ⇒ Sharpe 升、MDD 显著改善（-6.86%→-4.66%）。
+    #   ★ 这不是纯缩放：纯缩放下 Sharpe 不变；此处 Sharpe 升说明省下的摩擦是真实 alpha。
+    # ★ 注意口径：验证器 base_cfg 是 2.0，而**生产是 2.5**（登记在案的
+    #   KNOWN_DIVERGENCE）。故必须单独跑 J0（=生产现状 2.5）才能量出相对生产的真增量。
+    # ★ 口径更新（2026-09-29 第 13 轮）：生产已由 2.5 改为 **2.9**，base_cfg 同步
+    #   为 2.9 ⇒ 本候选不再是「生产现状」，仅作剂量对照保留（相对新 P0 的 dSh
+    #   应约为 -0.16，即改回 2.5 会损失多少）。
+    out["J0_atr25_旧生产值"] = replace(b, atr_stop_mult=2.5)
+    # 剂量邻居：2.8 / 3.0 / 3.1 / 3.2（4 窗口最差分别为 +0.069/+0.097/+0.092/-0.001）
+    out["J1_atr28"] = replace(b, atr_stop_mult=2.8)
+    out["J2_atr30"] = replace(b, atr_stop_mult=3.0)
+    out["J3_atr31"] = replace(b, atr_stop_mult=3.1)
+    out["J4_atr32"] = replace(b, atr_stop_mult=3.2)
     # ---- 2026-09-22 PM-EVOLVE：日线偏置闸门 min_daily_bias ----
     # 实盘入场闸门是 ``trend_up or bias >= min_daily_bias``（trend_strategy.py:151，
     # 生产 0.2），而回测历史只有 trend_up 一路（等价于 2.0=关闭）。
