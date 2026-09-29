@@ -79,7 +79,8 @@ def _collect_tests():
             # 【2026-09-28 R11】① 北向闸门可信度守卫（数据是恒正成交额 ⇒ 死闸门）；
             # ② walk-forward 折窗口跨标的日期错位守卫（切片必须建立在已对齐面板上）。
             "tests.test_northbound_credibility",
-            "tests.test_evolve_fold_alignment"]
+            "tests.test_evolve_fold_alignment",
+            "tests.test_down_day_exit_daily_scale"]
     tests = []
     import_errors = []
     for m in mods:

@@ -78,6 +78,13 @@ class DailyFeatures:
     # 解决了“分钟级回测实测负收益、live 路径从未被验证”这件事。
     score: float = 0.0
     factors: dict = field(default_factory=dict)
+    # 【2026-09-29 AM-EVOLVE 第 12 轮】日涨跌幅（**相邻两根日线**收盘价比）。
+    # 存在的理由：回测 backtest_daily.py:1271 的「单日暴跌」判定用的是日线口径
+    #   (close[i] / close[i-1] - 1) * 100 <= down_day_exit_pct；
+    #   而实盘 TrendStrategy.on_exit 原先拿的是引擎的 **1 分钟 bar** 缓冲，
+    #   量到的是 1 分钟涨跌幅（差两个数量级）⇒ 阈值在任何取值下实盘都近乎不触发。
+    #   补此字段后实盘才能与回测同口径（详见 trend_strategy._day_change_pct）。
+    day_change_pct: float = 0.0
     updated_at: float = 0.0
 
     def to_dict(self) -> dict:
@@ -251,6 +258,10 @@ class DailyContext:
         vwap = I.last(I.vwap(typ, vols)) or 0.0
         vol_avg5 = (sum(vols[-6:-1]) / 5) if len(vols) >= 6 else 0.0
         close = closes[-1]
+        # 日涨跌幅（日线口径）：与 backtest_daily.py:1271 的 crash 判定同口径
+        day_change_pct = 0.0
+        if len(closes) >= 2 and closes[-2] > 0:
+            day_change_pct = closes[-1] / closes[-2] - 1.0
         above_ma20 = bool(ma20 and close > ma20)
         above_ma60 = bool(ma60 and close > ma60)
         atr_pct = (atr / close) if close > 0 else 0.0
@@ -349,6 +360,7 @@ class DailyContext:
             vwap=vwap, vol_avg5=vol_avg5,
             above_ma20=above_ma20, above_ma60=above_ma60, bias=bias,
             trend_up=trend_up, score=score, factors=factors,
+            day_change_pct=day_change_pct,
             updated_at=time.time(),
         )
 
@@ -460,6 +472,18 @@ class DailyContext:
         with self._lock:
             f = self._feats.get(code)
         return f.atr_pct if f else 0.0
+
+    def day_change_pct(self, code: str) -> Optional[float]:
+        """日涨跌幅（**日线**口径），与 backtest_daily 的 crash 判定对齐。
+
+        返回 None 表示取不到日线（此时调用方应放弃暴跌退出，而不是退化到
+        分钟 bar —— 分钟涨跌幅与日线阈值差两个数量级，会静默改变语义）。
+        """
+        with self._lock:
+            f = self._feats.get(code)
+        if not f:
+            return None
+        return float(getattr(f, "day_change_pct", 0.0) or 0.0)
 
     def trend_broken(self, code: str, exit_ma: int = 60) -> bool:
         """趋势破位判定（趋势骑行退出用）。

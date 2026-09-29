@@ -219,11 +219,23 @@ class TrendStrategy(BaseStrategy):
                     return self._exit_signal(code, position.name, current_price,
                                              f"超时{hold_days}天")
             # 4) 单日暴跌（崩溃保护，不参与趋势判断）
-            if len(bars) >= 2 and bars[-1].close and bars[-2].close:
-                day_chg = (bars[-1].close - bars[-2].close) / bars[-2].close
-                if day_chg * 100 <= self.p.get("down_day_exit_pct", -99.0):
+            #    【2026-09-29 AM-EVOLVE 第 12 轮 · 量测口径修正】
+            #    回测（backtest_daily.py:1271）用的是**日线**口径：
+            #        (close[i] / close[i-1] - 1) * 100 <= down_day_exit_pct
+            #    而此处原先取 ``bars``——即引擎的 **1 分钟 bar** 缓冲
+            #    （event_engine.py:1687 `bars = list(self._bars.get(code, []))`）
+            #    ⇒ 实盘量的是「相邻两分钟」涨跌幅，与回测差约两个数量级。
+            #    后果：单分钟跌 5% 极罕见，故无论阈值设成多少，实盘该分支都
+            #    近乎永不触发（等价于生产当时的 -99.0 关闭）。若只改阈值而不
+            #    补实现，就会制造「回测有效、实盘无效」的口径背离（项目铁律禁止）。
+            #    修正：优先用 DailyContext 的日涨跌幅；取不到日线时放弃该退出
+            #    （不退化到分钟 bar，避免语义静默漂移）。
+            _thr = float(self.p.get("down_day_exit_pct", -99.0))
+            if _thr > -99.0:
+                _chg = self._day_change_pct(code)
+                if _chg is not None and _chg * 100 <= _thr:
                     return self._exit_signal(code, position.name, current_price,
-                                             f"暴跌 {day_chg*100:.2f}%")
+                                             f"暴跌 {_chg*100:.2f}%")
             return None
 
         # ---- 剥头皮模式（原逻辑）----
@@ -263,6 +275,18 @@ class TrendStrategy(BaseStrategy):
         return None
 
     # ============================================================ 内部
+
+    def _day_change_pct(self, code: str) -> Optional[float]:
+        """日涨跌幅（日线口径），供「单日暴跌」退出使用。
+
+        与回测 backtest_daily.py:1271 同口径。取不到日线返回 None。
+        """
+        if self.daily is None:
+            return None
+        try:
+            return self.daily.day_change_pct(code)
+        except Exception:      # 日线上下文异常时宁可不出场，也不按错误尺度判断
+            return None
 
     def _compute_indicators(self, bars: List[Bar]) -> dict:
         closes, highs, lows, vols = _bars_from_dicts(bars)

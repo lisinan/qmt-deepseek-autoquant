@@ -137,7 +137,13 @@ def base_cfg() -> BacktestConfig:
         trend_max_hold_days=120,
         momentum_rank=True, momentum_top_n=3, momentum_lookback=60,
         risk_per_trade=0.012, fixed_amount=300000.0,
-        down_day_exit_pct=-9.0, max_positions=5,
+        # 【2026-09-29 第 12 轮 AM-EVOLVE】-9.0 → **-5.0，与生产对齐**。
+        #   此前两侧是登记在案的 KNOWN_DIVERGENCE（回测 -9.0 / 生产 -99.0），
+        #   本轮裁决为「启用单日暴跌退出」，生产已改为 -5.0 ⇒ 基线同步改为 -5.0，
+        #   并把该字段从 KNOWN_DIVERGENCE 移入 MUST_MATCH（见
+        #   tests/test_evolve_baseline_sync.py）。这是该漂移第 4 次同型复现
+        #   （09-18 top_n/rpt、09-28 northbound_mode、09-29 本项）。
+        down_day_exit_pct=-5.0, max_positions=5,
         buy_score_threshold=4.0, min_signals=3,
         atr_stop_mult=2.0, tp_atr_mult=4.0,
         northbound_mode="gate", nb_lookback=20,
@@ -177,6 +183,15 @@ def candidates_final() -> dict:
     # → 疑似尖峰。此处纳入 4 窗口共识做终局裁决（防窗口运气）。
     out["E1_dd5"] = replace(b, down_day_exit_pct=-5.0)
     out["E2_dd6"] = replace(b, down_day_exit_pct=-6.0)
+    # ---- 2026-09-29 AM-EVOLVE（第 12 轮）重裁 ----
+    # 为什么重跑：09-21 的共识是在**两项已证伪的量测缺陷**之上做的——
+    #   ① 折窗口跨标的日期错位（09-28 PM 修复）；② 基线漏掉 northbound_mode
+    #   （09-28 AM 修复）。两者合计改变 OOS 约 0.17~0.27 ⇒ 旧结论不可继承。
+    # E0 = **生产现状**（-99.0 关闭）。注意 base_cfg 的 P0 基线取 -9.0，与生产不符
+    #   （已登记为 KNOWN_DIVERGENCE），故必须单独跑 E0 才能量出「相对生产」的真增量。
+    # E1b = -4.0 剂量对照（检验 -3~-5 是否构成高原而非尖峰）。
+    out["E0_dd99_生产现状"] = replace(b, down_day_exit_pct=-99.0)
+    out["E1b_dd4"] = replace(b, down_day_exit_pct=-4.0)
     # ---- 2026-09-22 PM-EVOLVE：日线偏置闸门 min_daily_bias ----
     # 实盘入场闸门是 ``trend_up or bias >= min_daily_bias``（trend_strategy.py:151，
     # 生产 0.2），而回测历史只有 trend_up 一路（等价于 2.0=关闭）。
