@@ -379,6 +379,36 @@ def candidates_final() -> dict:
     out["L3_重启后abs1"] = replace(
         b, consec_loss_scale=True, consec_loss_batch=True,
         daily_loss_halt=True, daily_loss_abs_pct=0.01, daily_loss_pct=-0.03)
+    # ---- 2026-09-30 PM-EVOLVE（第 15 轮）：★ 结构性候选「日线突破追涨入场」----
+    # 来源：本轮首选方向是「信号质量」——主路径近 8 个交易日仅 1 笔成交，
+    #   而 14 轮单参数网格已难再出 +0.10，故转结构性入场。
+    # 语义（backtest_daily.py 分支 entry_mode=="trend"）：
+    #   入场条件由「6 因子评分 ≥ buy_score_threshold(4.0) 且 ≥3 个正因子」
+    #   换成「trend_up（日线主升）且 收盘 ≥ 近 20 日最高 × 0.98」。
+    #   注意：动量前 N 名的候选池过滤（momentum_top_n=3）**照旧先于**本分支生效，
+    #   所以不是放宽到全宇宙，只是把「评分质量门」换成「新高确认门」。
+    # 90x6 单窗：dSh **+0.147**（Sh 1.795→1.942）、正收 6/6、均值 MDD −4.82%→−4.76%、
+    #   最差折 +1.2%→+2.2%；代价是收益降（IS 110.0%→103.2%，累计 −11.2pt）
+    #   ⇒ 典型的「降波动多于降收益」型风险调整改善，而非纯缩放。
+    # ⚠ 口径提示（见 §7 纪律）：`entry_mode` 目前**只存在于回测侧**，实盘
+    #   trend_strategy 无对应分支。若共识通过，必须先补实盘实现再落盘，
+    #   否则就是「回测有效、实盘无效」的背离。
+    out["M1_突破入场_098"] = replace(b, entry_mode="trend")
+    # 剂量邻居（查高原、拒绝尖峰）：0.95 更宽 / 1.00 必须创 20 日新高
+    out["M2_突破入场_095"] = replace(
+        b, entry_mode="trend", trend_breakout_near_high=0.95)
+    out["M3_突破入场_100"] = replace(
+        b, entry_mode="trend", trend_breakout_near_high=1.00)
+    # 新高窗口剂量（检验「越严格越好」是真实剂量反应还是 20 日窗口的巧合）
+    out["M4_突破入场_100_窗40"] = replace(
+        b, entry_mode="trend", trend_breakout_near_high=1.00,
+        trend_breakout_window=40)
+    out["M5_突破入场_100_窗60"] = replace(
+        b, entry_mode="trend", trend_breakout_near_high=1.00,
+        trend_breakout_window=60)
+    out["M6_突破入场_100_窗10"] = replace(
+        b, entry_mode="trend", trend_breakout_near_high=1.00,
+        trend_breakout_window=10)
     return out
 
 

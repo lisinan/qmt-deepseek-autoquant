@@ -500,6 +500,18 @@ class BacktestConfig:
     # 详见 strategy/daily_context.py::trend_broken 的证伪注释。
     hard_stop_pct: float = -0.18     # 趋势模式宽幅硬止损（灾难保护）
     trend_max_hold_days: int = 120   # 趋势模式最长持仓
+    # ---- 突破入场的「贴近阶段新高」容差【2026-09-30 PM-EVOLVE 第 15 轮】----
+    # 仅 entry_mode="trend"（日线突破追涨）生效：要求收盘价 >= 近 20 日最高 × 本系数。
+    # 原实现把 0.98 硬编码在分支里，无法做剂量扫描（无法区分「真高原」与「单值尖峰」），
+    # 违反本项目「单窗网格必须细扫查高原、拒绝尖峰」的纪律。现提升为可配置字段，
+    # 默认 **0.98 与原硬编码逐位相同** ⇒ 零行为变化，不破坏任何历史结论与测试。
+    # 1.00 = 必须创 20 日新高（最严）；0.95 = 距高点 5% 内即可（最宽）。
+    trend_breakout_near_high: float = 0.98
+    # 同一分支的「新高观察窗口」长度（交易日）。原实现硬编码 20 日，
+    # 默认 **20 与原实现逐位相同** ⇒ 零行为变化。用于检验「越严格越好」
+    # 是否真是剂量反应（0.95 −0.218 → 0.98 +0.082 → 1.00 +0.104 单调）
+    # 还是只在 20 日这个特定窗口上的巧合。
+    trend_breakout_window: int = 20
     momentum_rank: bool = False      # 只交易 60 日动量前 N 名
     momentum_top_n: int = 6
     momentum_lookback: int = 60
@@ -1439,8 +1451,8 @@ def run_backtest(codes: List[str], cfg: BacktestConfig,
                     # 日线突破追涨：处于日线主升 + 价格逼近 20 日新高
                     if not trend_up_arr[code][i]:
                         continue
-                    hi20 = max(c[max(0, i - 20):i + 1])
-                    if c[i] < hi20 * 0.98:
+                    hi20 = max(c[max(0, i - int(cfg.trend_breakout_window)):i + 1])
+                    if c[i] < hi20 * cfg.trend_breakout_near_high:
                         continue
                     score = 10.0
                 else:
