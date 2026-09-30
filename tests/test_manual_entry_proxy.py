@@ -37,6 +37,10 @@ TOL_RET = 0.02
 TOL_SH = 0.05
 TOL_MDD = 0.01
 
+# 固定测试篮（**不依赖生产配置**）：全部取自回测宇宙，且是历史上真实用过
+# 的观察篮成员。用于锁死「代理接上了」这件事本身。
+TEST_BASKET = ("300502.SZ", "300308.SZ", "002415.SZ", "000977.SZ", "603986.SH")
+
 
 def _is_result(cfg):
     """全样本 IS 回测（复用验证器的预加载与对齐逻辑）。"""
@@ -64,9 +68,13 @@ def test_default_empty_basket_keeps_validated_baseline():
 
 
 def test_basket_proxy_actually_changes_behavior():
-    """门锁 2：篮子打开后必须真的改变结果（防止代理被无声断开成死代码）。"""
-    basket = W.PROD_MANUAL_ENTRY_CODES
-    assert basket, "生产篮子为空则本项无意义（见 test_production_basket_not_empty）"
+    """门锁 2：篮子打开后必须真的改变结果（防止代理被无声断开成死代码）。
+
+    ★ 用**固定的测试篮**而不是生产篮：2026-09-30 第 15 轮生产篮已清空，
+    若本用例依赖生产篮就会变成空转 —— 而"代理有没有被接上"这件事
+    与"生产当前是否启用篮子"**必须解耦**，否则一清空就失去了防退化的能力。
+    """
+    basket = TEST_BASKET
     base_r = _is_result(W.base_cfg())
     bkt_r = _is_result(replace(W.base_cfg(), manual_entry_codes=basket,
                                manual_entry_exit_exempt=True))
@@ -97,8 +105,17 @@ def test_every_production_basket_code_is_in_universe():
         f"以下观察篮标的不在回测宇宙内 ⇒ 建模时被静默跳过：{missing}")
 
 
-def test_production_basket_not_empty():
-    """门锁 5：篮子非空（清空是 OWNER 的有意动作，清空时须同步更新说明）。"""
-    assert len(W.PROD_MANUAL_ENTRY_CODES) > 0, (
-        "生产观察篮已为空 ⇒ 本轮「清空观察篮」的建议已被执行，"
-        "请同步改写本守卫与门锁 1 的语义说明")
+def test_production_basket_is_empty_after_r15():
+    """门锁 5：2026-09-30 第 15 轮 OWNER 授权**清空**观察篮后，本守卫改为钉住「空」。
+
+    为什么钉住而不是删掉：观察篮是 OWNER 于 2026-09-18 为观察 LLM 选股设立的机制，
+    日后很可能被重新启用。**一旦有人往生产塞回任何代码，本用例立即变红**，
+    强制其先回测量一遍代价（实测 Sharpe -0.69 / 收益 -26pt / 回撤翻倍），
+    而不是悄悄把这块从未验证过的仓位来源加回去。
+    """
+    assert tuple(W.PROD_MANUAL_ENTRY_CODES or ()) == (), (
+        f"生产观察篮非空：{W.PROD_MANUAL_ENTRY_CODES}。"
+        f"重新启用前请先跑："
+        f"python strategy/_evolve_wf.py --mode consensus --track defect "
+        f"--baseline N1_观察篮实盘现状_豁免，确认代价可接受后再启用，"
+        f"并同步更新本守卫与 docs/AUTOMATIONS.md 的铁律表")

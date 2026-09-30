@@ -84,8 +84,12 @@ KNOWN_DIVERGENCE = {
     # ⇒ 代价：这两个字段现在是「回测无、实盘有」的第 8 次登记差异，
     #   演进时会用 `--track defect --baseline N1_观察篮实盘现状_豁免` 反向对照，
     #   使 dSh 直接读出「关闭观察篮/豁免」的修复收益。
-    "manual_entry_codes": ((), ("300502.SZ", "300308.SZ", "002415.SZ",
-                                "000977.SZ", "603986.SH")),
+    # 【2026-09-30 第 15 轮·已裁决】OWNER 授权清空观察篮 ⇒ 两侧**均为空**，
+    #   差异已消除。之所以仍留在 KNOWN_DIVERGENCE 而不是删掉或移入 MUST_MATCH：
+    #   MUST_MATCH 的逐字段比较是为数值设计的，对 tuple 语义不稳；
+    #   留在此处则保留「任一侧变动必须显式登记」的保护 ——
+    #   日后若有人往生产塞回观察篮，本用例立即变红并提示先回测代价。
+    "manual_entry_codes": ((), ()),
     "manual_entry_exit_exempt": (True, True),
 }
 
