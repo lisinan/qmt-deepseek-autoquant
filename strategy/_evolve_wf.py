@@ -30,7 +30,17 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from config.settings import STOCK_CODES, SECTOR_CONFIG, INDEX_CODES, MARKET_INDEX_CODE  # noqa: E402
+from config.settings import (  # noqa: E402
+    STOCK_CODES, SECTOR_CONFIG, INDEX_CODES, MARKET_INDEX_CODE,
+    # 【2026-09-30 第 15 轮】观察篮清单**直接从生产配置读取**，不在验证器里
+    # 复制一份常量——硬编码第二份清单正是本项目踩了 7 次口径漂移的根因。
+    STRATEGY_PARAMS as _PROD_STRATEGY_PARAMS,
+)
+# 生产观察篮（may be empty tuple if not configured）
+PROD_MANUAL_ENTRY_CODES = tuple(
+    _PROD_STRATEGY_PARAMS.get("manual_entry_codes") or ())
+PROD_MANUAL_ENTRY_EXEMPT = bool(
+    _PROD_STRATEGY_PARAMS.get("manual_entry_exit_exempt", True))
 from strategy.backtest_daily import BacktestConfig, run_backtest, load_daily  # noqa: E402
 
 FIXED_WARMUP = 130
@@ -406,9 +416,32 @@ def candidates_final() -> dict:
     out["M5_突破入场_100_窗60"] = replace(
         b, entry_mode="trend", trend_breakout_near_high=1.00,
         trend_breakout_window=60)
-    out["M6_突破入场_100_窗10"] = replace(
-        b, entry_mode="trend", trend_breakout_near_high=1.00,
-        trend_breakout_window=10)
+    # ---- 2026-09-30 PM-EVOLVE（第 15 轮）：★★ 观察篮（manual_entry）代理建模 ----
+    # **为什么现在才做**：这是本项目最贵的一条「实盘有、回测无」分支。
+    #   实盘 2026-09-29 收盘 5 只持仓里 3 只来自观察篮，而回测器历史上对
+    #   `manual_entry_codes` / `manual_entry_exit_exempt` **完全零建模**（grep 零命中）
+    #   ⇒ 最大的一块实盘仓位来源**从未被任何回测验证过**，而 2026-09-28 当日
+    #   实盘亏损几乎全部来自观察篮（`down_day_exit_pct` 对它无效、
+    #   趋势破位也无效，因为它 `manual_entry_exit_exempt=True` 只保留 −18% 硬止损）。
+    # 建模内容（strategy/backtest_daily.py）：篮子票绕过动量/日线/评分闸门、
+    #   **优先**占用 max_positions 槽位，剩余槽位才给动量候选；
+    #   exempt=True 时豁免 trend_break / crash / timeout，只留 hard_stop。
+    # 用法：`--mode consensus --track defect --baseline N1_观察篮实盘现状`，
+    #   则 N2 的 dSh 直接就是「关闭退出豁免」的修复收益（正数=有效）。
+    out["N1_观察篮实盘现状_豁免"] = replace(
+        b, manual_entry_codes=PROD_MANUAL_ENTRY_CODES,
+        manual_entry_exit_exempt=True)
+    out["N2_观察篮_关闭退出豁免"] = replace(
+        b, manual_entry_codes=PROD_MANUAL_ENTRY_CODES,
+        manual_entry_exit_exempt=False)
+    # N3 = 「清空观察篮」的理论上限：回测基线 P0 本身即等于该情形，
+    #   但显式建一列才能在同一张表里直接读出「篮子的净成本」。
+    out["N3_观察篮_仅2槽"] = replace(
+        b, manual_entry_codes=PROD_MANUAL_ENTRY_CODES[:2],
+        manual_entry_exit_exempt=True)
+    out["N4_观察篮_关豁免_留20上限"] = replace(
+        b, manual_entry_codes=PROD_MANUAL_ENTRY_CODES,
+        manual_entry_exit_exempt=False, max_positions=5)
     return out
 
 

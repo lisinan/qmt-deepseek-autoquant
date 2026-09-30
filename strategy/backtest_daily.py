@@ -499,6 +499,23 @@ class BacktestConfig:
     # 说明二值破位已是最优退出时点。**实现已撤回，勿重试**；
     # 详见 strategy/daily_context.py::trend_broken 的证伪注释。
     hard_stop_pct: float = -0.18     # 趋势模式宽幅硬止损（灾难保护）
+    # ---- 观察篮（manual_entry）代理建模【2026-09-30 PM-EVOLVE 第 15 轮】----
+    # ★ 又一条「实盘有、回测无」的分支，而且是**最贵的一条**：
+    #   实盘 2026-09-29 收盘 5 只持仓里 **3 只来自观察篮**（300502/300308/002415/
+    #   000977/603986 中的若干只），而回测器历史上对 `manual_entry_codes` 与
+    #   `manual_entry_exit_exempt` **完全零建模**（grep 零命中）⇒
+    #   本项目最大的一块**实盘仓位来源**从来没有被任何回测验证过。
+    # 实盘语义（config/settings.py:357-369 + engine/event_engine.py）：
+    #   ① 篮子里的代码**绕过**动量排名 / 日线闸门 / buy_score_threshold / min_signals 建仓；
+    #   ② 仍走 `_handle_buy` ⇒ 风控熔断、现金夹紧、max_positions、单标的金额上限照旧生效；
+    #   ③ `manual_entry_exit_exempt=True` 时**豁免**趋势破位 / 超时 / 单日暴跌退出，
+    #      只保留 −18% 硬止损。
+    # 经济上的疑问（本代理要度量的核心）：豁免退出意味着这些票在下跌市里**无人止损**，
+    #   而它们又多是 MA60 下方的弱势标的 ⇒ 2026-09-28 当日实盘亏损几乎全部来自观察篮。
+    # 默认 **空元组 = 关闭**（逐位保持既有回测行为，零行为变化，不破坏历史结论与测试）。
+    manual_entry_codes: tuple = ()
+    manual_entry_exit_exempt: bool = True   # 与生产 ``manual_entry_exit_exempt`` 同名同义
+    manual_entry_slots: int = 5             # 篮子最多占用多少个持仓槽位
     trend_max_hold_days: int = 120   # 趋势模式最长持仓
     # ---- 突破入场的「贴近阶段新高」容差【2026-09-30 PM-EVOLVE 第 15 轮】----
     # 仅 entry_mode="trend"（日线突破追涨）生效：要求收盘价 >= 近 20 日最高 × 本系数。
@@ -1265,6 +1282,11 @@ def run_backtest(codes: List[str], cfg: BacktestConfig,
             cl = panel[code]["close"][i]
             entry = pos["entry"]
             pos["peak"] = max(pos["peak"], hi)
+            # 【2026-09-30 第 15 轮】观察篮「退出豁免」标记：exempt 的仓位只保留
+            # 硬止损，豁免趋势破位 / 单日暴跌 / 超时（实盘 manual_entry_exit_exempt
+            # 语义）。放在此处定义而非分支内，保证任何 exit_mode 下都有值。
+            _exempt = (cfg.manual_entry_exit_exempt
+                       and code in cfg.manual_entry_codes)
             exit_price = None
             reason = ""
             # 组合权益回撤硬止损（防御态）：清仓全部持仓转现金
@@ -1272,15 +1294,16 @@ def run_backtest(codes: List[str], cfg: BacktestConfig,
                     and eq_dd_active):
                 exit_price, reason = cl, "equity_dd_stop"
             if cfg.exit_mode == "trend":
+                # 【2026-09-30 第 15 轮】观察篮豁免（_exempt 定义见本遍历更早处）
                 # 趋势骑行：MA20 下穿 exit_ma 或 收盘跌破 exit_ma → 离场
                 _m20 = I.last(ma20_arr[code][:i + 1])
                 _mex = I.last(ma_exit_arr[code][:i + 1])
-                if ((_m20 and _mex and _m20 < _mex)
-                        or (cl < _mex if _mex else False)):
+                if not _exempt and ((_m20 and _mex and _m20 < _mex)
+                                    or (cl < _mex if _mex else False)):
                     exit_price, reason = cl, "trend_break"
                 elif (cl / entry - 1) <= cfg.hard_stop_pct:
                     exit_price, reason = cl, "hard_stop"
-                elif (i >= 1 and panel[code]["close"][i - 1] > 0
+                elif not _exempt and (i >= 1 and panel[code]["close"][i - 1] > 0
                       and (cl / panel[code]["close"][i - 1] - 1) * 100
                       <= cfg.down_day_exit_pct):
                     exit_price, reason = cl, "crash"
@@ -1329,7 +1352,9 @@ def run_backtest(codes: List[str], cfg: BacktestConfig,
             # 超时（趋势模式放长到 trend_max_hold_days）
             _hold_cap = (cfg.trend_max_hold_days if cfg.exit_mode == "trend"
                          else cfg.max_hold_days)
-            if exit_price is None and (i - pos["entry_day"]) >= _hold_cap:
+            # 观察篮豁免：也不受最长持仓天数约束（实盘同语义）
+            if (exit_price is None and not _exempt
+                    and (i - pos["entry_day"]) >= _hold_cap):
                 exit_price, reason = cl, "timeout"
             if exit_price is not None:
                 cash += pos["qty"] * exit_price * (1 - cfg.cost_pct)
@@ -1367,6 +1392,24 @@ def run_backtest(codes: List[str], cfg: BacktestConfig,
         if (len(positions) < cfg.max_positions and i < n - 1 and regime_ok[i]
                 and not (cfg.equity_dd_stop_enable and eq_dd_active)
                 and not rm_halted):
+            # ---- 【2026-09-30 第 15 轮】观察篮代理：绕过一切信号闸门优先占槽 ----
+            # 实盘语义：篮子里的代码不经过动量排名 / 日线闸门 / 评分阈值 /
+            # min_signals，直接调用 _handle_buy ⇒ 只受现金、max_positions、
+            # 单标的金额上限、风控熔断约束。此处按同一优先级建模：
+            # 先定篮子要占的槽位，再把**剩下的**槽位留给动量候选。
+            _basket_todo: list = []
+            if cfg.manual_entry_codes:
+                _rem_cap = cfg.max_positions - len(positions)
+                for _c in cfg.manual_entry_codes:
+                    if len(_basket_todo) >= min(cfg.manual_entry_slots, _rem_cap):
+                        break
+                    if _c not in panel or _c in positions:
+                        continue
+                    if not panel[_c]["valid"][i]:
+                        continue                     # 停牌不入
+                    _basket_todo.append(_c)
+            _mom_slots = (cfg.max_positions - len(positions)
+                          - len(_basket_todo))
             # 动量闸门：只交易动量前 N 名（且动量>0）
             allowed = None
             mom_val: Dict[str, float] = {}
@@ -1562,7 +1605,7 @@ def run_backtest(codes: List[str], cfg: BacktestConfig,
                     _s = SECTOR_OF.get(_c)
                     _held_sec[_s] = _held_sec.get(_s, 0) + 1
                 _sel_sec: Dict[str, int] = {}
-                _slots = cfg.max_positions - len(positions)
+                _slots = _mom_slots
                 for _score, _code in scored:
                     if len(picks) >= _slots:
                         break
@@ -1573,7 +1616,12 @@ def run_backtest(codes: List[str], cfg: BacktestConfig,
                     picks.append((_score, _code))
                     _sel_sec[_s] = _sel_sec.get(_s, 0) + 1
             else:
-                picks = scored[:cfg.max_positions - len(positions)]
+                picks = scored[:max(0, _mom_slots)]
+            # 观察篮追加到 picks 末尾：与实盘一致地绕过信号闸门建仓。
+            # score 置 0.0 仅为占位（篮子不参与 momentum_weight / risk_parity 的
+            # 语义排序，wf / weight 会取 getattr 默认值 1.0）。
+            for _bc in _basket_todo:
+                picks.append((0.0, _bc))
             # 动量排名加权：在前 N 名新入选里，按动量降序赋 rank-weight
             # （最强者更大、最弱者更小，均值=1），把资本集中于动量最确定的名字。
             wf_map: Dict[str, float] = {}

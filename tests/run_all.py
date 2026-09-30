@@ -89,7 +89,11 @@ def _collect_tests():
             "tests.test_mock_data_trading_guard",
             # 【2026-09-30 R15】账本断供守卫：账本只依赖 OBSERVE 的 review JSON
             # ⇒ 三级单点故障让 KPI #4 连续 4 个交易日静默无法计算。
-            "tests.test_ledger_db_fallback"]
+            "tests.test_ledger_db_fallback",
+            # 【2026-09-30 R15】观察篮（manual_entry）回测代理守卫：这是本项目
+            # 最贵的一条「实盘有、回测无」分支（IS Sh 1.71→1.02、MDD 翻倍）。
+            # 门锁 2 专门防止它退化成「看起来建模了、其实没生效」的死代码。
+            "tests.test_manual_entry_proxy"]
     tests = []
     import_errors = []
     for m in mods:

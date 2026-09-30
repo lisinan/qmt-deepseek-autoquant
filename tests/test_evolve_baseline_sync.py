@@ -73,8 +73,20 @@ MUST_MATCH = {
 KNOWN_DIVERGENCE = {
     # （空）2026-09-29 第 12 轮：down_day_exit_pct 裁决为 -5.0，移入 MUST_MATCH。
     # （空）2026-09-29 第 13 轮：atr_stop_mult 裁决为 2.9，移入 MUST_MATCH。
-    # 至此两侧**再无任何登记在案的差异**。新增同名参数必须二选一归类，
-    # 不允许再出现"默默不同"的字段——这是本项目已踩 5 次的同型坑。
+    # 【2026-09-30 第 15 轮】观察篮首次建模，两个字段**刻意保留不同**：
+    #   manual_entry_codes      生产 = 5 只观察篮 / 回测基线 = () 空元组
+    #   manual_entry_exit_exempt 生产 = True                  / 回测基线 = True
+    # 为什么不同：**P0 基线的定义就是「已验证的纯动量路径」**，
+    #   它代表「观察篮存在之前」的那条被走完 15 轮验证的策略；
+    #   观察篮是**叠加在其上的一层实盘行为**，必须作为**显式候选**（N1/N2/N3/N4）
+    #   与基线对比，而不是悄悄并进 P0——否则所有历史 dSh 都会因为基线里多塞了
+    #   一块从未验证过的仓位来源而整体失真。
+    # ⇒ 代价：这两个字段现在是「回测无、实盘有」的第 8 次登记差异，
+    #   演进时会用 `--track defect --baseline N1_观察篮实盘现状_豁免` 反向对照，
+    #   使 dSh 直接读出「关闭观察篮/豁免」的修复收益。
+    "manual_entry_codes": ((), ("300502.SZ", "300308.SZ", "002415.SZ",
+                                "000977.SZ", "603986.SH")),
+    "manual_entry_exit_exempt": (True, True),
 }
 
 # 两侧同名但**不参与本守卫**：回测侧的研究旋钮 / 已废弃字段 / 语义不同的同名项。
@@ -139,11 +151,23 @@ def test_known_divergences_are_pinned():
     b = base_cfg()
     for k, (back_v, prod_v) in KNOWN_DIVERGENCE.items():
         assert k in S.STRATEGY_PARAMS, f"生产 STRATEGY_PARAMS 缺失 {k}"
-        assert abs(float(getattr(b, k)) - float(back_v)) < 1e-9, (
-            f"{k}: 验证器侧已从 {back_v} 变为 {getattr(b, k)!r}，"
+        # 【2026-09-30 第 15 轮】原实现只认数值（float 强转），加入观察篮这类
+        # **非数值**字段后会直接 TypeError ⇒ 比较改为类型无关。
+        # 语义不变：任一侧改值都必须显式更新本表并说明原因。
+        got_b, got_p = getattr(b, k), _prod(k)
+        if isinstance(back_v, (tuple, list)):
+            ok_b = tuple(got_b) == tuple(back_v)
+            ok_p = tuple(got_p or ()) == tuple(prod_v)
+        elif isinstance(back_v, bool) or isinstance(got_b, bool):
+            ok_b, ok_p = bool(got_b) == bool(back_v), bool(got_p) == bool(prod_v)
+        else:
+            ok_b = abs(float(got_b) - float(back_v)) < 1e-9
+            ok_p = abs(float(got_p) - float(prod_v)) < 1e-9
+        assert ok_b, (
+            f"{k}: 验证器侧已从 {back_v} 变为 {got_b!r}，"
             f"须显式更新 KNOWN_DIVERGENCE 并说明原因")
-        assert abs(float(_prod(k)) - float(prod_v)) < 1e-9, (
-            f"{k}: 生产侧已从 {prod_v} 变为 {_prod(k)!r}，"
+        assert ok_p, (
+            f"{k}: 生产侧已从 {prod_v} 变为 {got_p!r}，"
             f"须显式更新 KNOWN_DIVERGENCE 并说明原因")
 
 
