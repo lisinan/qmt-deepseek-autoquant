@@ -85,8 +85,35 @@ IGNORED = {
 }
 
 
+# 【2026-09-30 第 14 轮】RISK_PARAMS 侧的同名同步字段。
+#   ★ 旧守卫**只比对 STRATEGY_PARAMS**，于是 ``max_single_position_pct``
+#   （生产 0.19 / 回测 0.30）默默漂移了很久无人察觉——这是第 6 次同型漂移，
+#   也是第一次「漂移发生在守卫视野之外」。故把 RISK_PARAMS 也纳入比对。
+RISK_MUST_MATCH = {
+    "max_single_position_pct": None,   # 0.19
+    "daily_stop_flatten_pct": None,    # -0.06（同批第 7 次漂移，剂量扫描零差异）
+}
+
+
 def _prod(key):
     return S.STRATEGY_PARAMS[key]
+
+
+def _prod_risk(key):
+    return S.RISK_PARAMS[key]
+
+
+def _compare(b, key, pv):
+    """返回 None 表示一致，否则返回描述串。"""
+    assert hasattr(b, key), f"验证器 base_cfg 缺失字段 {key}"
+    bv = getattr(b, key)
+    if isinstance(pv, bool) or isinstance(bv, bool):
+        ok = bool(pv) == bool(bv)
+    elif isinstance(pv, (int, float)) and isinstance(bv, (int, float)):
+        ok = abs(float(pv) - float(bv)) < 1e-9
+    else:
+        ok = str(pv) == str(bv)
+    return None if ok else f"{key}: 生产={pv!r} 验证器={bv!r}"
 
 
 def test_validator_baseline_matches_production():
@@ -94,17 +121,14 @@ def test_validator_baseline_matches_production():
     bad = []
     for k in MUST_MATCH:
         assert k in S.STRATEGY_PARAMS, f"生产 STRATEGY_PARAMS 缺失 {k}"
-        assert hasattr(b, k), f"验证器 base_cfg 缺失字段 {k}"
-        pv, bv = _prod(k), getattr(b, k)
-        # bool/int/float/str 混用时的稳健比较
-        if isinstance(pv, bool) or isinstance(bv, bool):
-            ok = bool(pv) == bool(bv)
-        elif isinstance(pv, (int, float)) and isinstance(bv, (int, float)):
-            ok = abs(float(pv) - float(bv)) < 1e-9
-        else:
-            ok = str(pv) == str(bv)
-        if not ok:
-            bad.append(f"{k}: 生产={pv!r} 验证器={bv!r}")
+        d = _compare(b, k, _prod(k))
+        if d:
+            bad.append(d)
+    for k in RISK_MUST_MATCH:
+        assert k in S.RISK_PARAMS, f"生产 RISK_PARAMS 缺失 {k}"
+        d = _compare(b, k, _prod_risk(k))
+        if d:
+            bad.append(d)
     assert not bad, (
         "验证器 base_cfg 与生产配置漂移（P0 基线失真会让所有 dSh 增量与 KPI 失真，"
         "2026-09-18 / 2026-09-28 各踩一次）：" + "; ".join(bad))
@@ -124,15 +148,22 @@ def test_known_divergences_are_pinned():
 
 
 def test_no_undocumented_shared_params():
-    """同时存在于两侧、却既不在 MUST_MATCH 也不在 KNOWN_DIVERGENCE 的字段 = 漏登记。"""
+    """两侧同名却未登记的字段 = 漏登记（STRATEGY_PARAMS **和** RISK_PARAMS 都要查）。
+
+    【2026-09-30 第 14 轮扩展】原实现只扫 ``STRATEGY_PARAMS``，于是
+    ``max_single_position_pct``（RISK_PARAMS 0.19 / BacktestConfig 0.30）在守卫
+    视野之外默默漂移——第 6 次同型漂移第一次发生在 RISK 侧。这里一并覆盖。
+    """
     from dataclasses import fields as dc_fields
     from strategy.backtest_daily import BacktestConfig
 
     bt_fields = {f.name for f in dc_fields(BacktestConfig)}
-    shared = {k for k in S.STRATEGY_PARAMS if k in bt_fields}
-    covered = set(MUST_MATCH) | set(KNOWN_DIVERGENCE) | set(IGNORED)
-    missing = sorted(shared - covered)
+    covered = (set(MUST_MATCH) | set(KNOWN_DIVERGENCE) | set(IGNORED)
+               | set(RISK_MUST_MATCH))
+    missing = sorted(
+        ({k for k in S.STRATEGY_PARAMS if k in bt_fields}
+         | {k for k in S.RISK_PARAMS if k in bt_fields}) - covered)
     assert not missing, (
-        "以下字段同时存在于 STRATEGY_PARAMS 与 BacktestConfig，但未登记到本守卫"
-        "（必须归入 MUST_MATCH 或 KNOWN_DIVERGENCE，避免口径无声漂移）："
-        + ", ".join(missing))
+        "以下字段同时存在于生产配置与 BacktestConfig，但未登记到本守卫"
+        "（必须归入 MUST_MATCH / RISK_MUST_MATCH / KNOWN_DIVERGENCE，"
+        "避免口径无声漂移）：" + ", ".join(missing))

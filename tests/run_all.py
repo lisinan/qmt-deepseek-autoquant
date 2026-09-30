@@ -83,7 +83,10 @@ def _collect_tests():
             # ② walk-forward 折窗口跨标的日期错位守卫（切片必须建立在已对齐面板上）。
             "tests.test_northbound_credibility",
             "tests.test_evolve_fold_alignment",
-            "tests.test_down_day_exit_daily_scale"]
+            "tests.test_down_day_exit_daily_scale",
+            # 【2026-09-30 R14】合成行情（mock）禁止交易闸门守卫：
+            # 夜间启动落 mock ⇒ 整个交易日按假价格成交（09-30 假亏 21 万元）。
+            "tests.test_mock_data_trading_guard"]
     tests = []
     import_errors = []
     for m in mods:

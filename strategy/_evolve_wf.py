@@ -152,6 +152,25 @@ def base_cfg() -> BacktestConfig:
         #   本字段已由 KNOWN_DIVERGENCE 移入 MUST_MATCH（见 test_evolve_baseline_sync.py）。
         atr_stop_mult=2.9, tp_atr_mult=4.0,
         northbound_mode="gate", nb_lookback=20,
+        # 【2026-09-30 AM-EVOLVE 第 14 轮】0.30 → **0.19，与生产 RISK_PARAMS 对齐**。
+        #   这是**第 6 次同型口径漂移**，且是本守卫首次漏检的：它属于 RISK_PARAMS
+        #   而非 STRATEGY_PARAMS，旧守卫只比对后者 ⇒ 默默漂移无人知晓。
+        #   剂量扫描（90×6）：0.14 +0.002 / 0.16~0.40 全 +0.000 ⇒ **当前仓位由
+        #   risk_per_trade/(ATR%×2.9) 决定，上限根本不绑定**，故本次对齐零行为变化
+        #   （IS/OOS 逐位相同）。但它是**潜伏陷阱**：一旦日后放宽 atr_stop_mult 或
+        #   提高 risk_per_trade 使单仓膨胀，回测会自动允许 30% 而实盘被夹到 19%，
+        #   两侧在无人察觉的情况下分叉。故现在就对齐并纳入守卫。
+        #   同时把 test_evolve_baseline_sync.py 的漏登记检查扩展到 RISK_PARAMS。
+        max_single_position_pct=0.19,
+        # 【2026-09-30 AM-EVOLVE 第 14 轮】-99.0（关闭）→ **-0.06，与生产对齐**。
+        #   这是同一守卫扩展后**第二次**抓到的漂移（第 7 次同型漂移）。生产自
+        #   2026-09-16 起就有「当日账户亏损 ≤ -6% 强平全部可卖持仓」，而 P0 基线
+        #   从未建模。剂量扫描（90×6）：-0.10 / -0.08 / -0.06 / -0.05 与关闭态
+        #   **逐位完全相同**，仅 -0.04 有 -0.005 差异 ⇒ 日线上日内权益跌 6% 极罕见，
+        #   该闸门在回测中几乎不触发 ⇒ 对齐零行为变化。
+        #   意义同样在防潜伏陷阱：若日后有人收紧该阈值到 -0.03 量级，回测会继续
+        #   「无此闸门」而实盘会真的强平，两侧静默分叉。
+        daily_stop_flatten_pct=-0.06,
         min_warmup=FIXED_WARMUP,
     )
 

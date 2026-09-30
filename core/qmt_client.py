@@ -71,6 +71,10 @@ class _MockClient:
                 "lastClose": lc,
                 "volume": random.randint(1_000_000, 80_000_000),
                 "amount": random.randint(100_000_000, 8_000_000_000),
+                # 【2026-09-30 AM-EVOLVE R14】合成价标记：下游（引擎/风控/盯市）
+                # 据此逐 tick 判「这是假的」，不再只看客户端整体 mode。mock 价
+                # 与真实价可差 1~6 倍（见 BASE_PRICES），绝不可用于成交。
+                "_mock": True,
             }
         return out
 
@@ -372,6 +376,41 @@ class QMTClient:
     @property
     def mode(self) -> str:
         return self._mode
+
+    def reattach(self) -> bool:
+        """【2026-09-30 AM-EVOLVE R14】重新尝试接入真实 xtdata。
+
+        为什么需要它：``qmt_client`` 是**模块级单例**，在 import 时就一次性决定
+        xtdata / mock。引擎常在**夜间或收盘后**启动（实测 2026-09-29 21:56），
+        此时 miniQMT 的 tick 缓存为空，``_XtdClient`` 的探活（get_full_tick
+        000001.SH）失败 ⇒ 单例永久落到 mock，**整个次日交易时段都在用合成价**
+        ——实盘铁证：2026-09-30 上午 5 笔卖出全部按 ``_MockClient.BASE_PRICES``
+        （300394=90 / 000977=45 / 300308=130 / 688008=100默认 / 002415=32）附近的
+        随机游走价成交，而真实收盘是 255.99 / 67.18 / 813.01 / 212.60 / 32.11，
+        偏差 −16.7% ~ −83.7% ⇒ 凭空实现 −213,354.20 元假亏损并触发熔断。
+
+        本方法只做「再试一次」，成功则**就地换掉 ``_impl``**（所有调用方经
+        ``qmt_client.get_ticks`` 转发，无需重绑定引用），失败保持 mock 不变。
+        返回是否成功。零风险：仅在明确调用时执行，不影响既有启动路径。
+        """
+        if self._mode == "xtdata":
+            return True
+        try:
+            impl = _XtdClient()
+        except Exception as e:  # noqa: BLE001 - 探活失败即保持 mock
+            logger.info("行情源重连未成功，继续 mock: %s: %s",
+                        type(e).__name__, e)
+            return False
+        try:
+            old_codes = getattr(self._impl, "subscribed", None)
+            if old_codes:
+                impl.subscribe(list(old_codes))
+        except Exception:  # noqa: BLE001 - 订阅失败不影响数据源已切换
+            pass
+        self._impl = impl
+        self._mode = "xtdata"
+        logger.info("行情源已重连至 miniQMT(xtdata)，退出 mock 模式")
+        return True
 
     def subscribe(self, codes: Iterable[str]) -> None:
         self._impl.subscribe(codes)

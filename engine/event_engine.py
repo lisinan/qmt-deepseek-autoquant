@@ -32,7 +32,8 @@ from datetime import date, datetime, timedelta, time as dtime
 from typing import Deque, Dict, List, Optional, Tuple
 
 from config.settings import (
-    BAR_WARMUP, BAR_WARMUP_BUDGET_SEC, BAR_WARMUP_DOWNLOAD,
+    ALLOW_MOCK_TRADING, BAR_WARMUP, BAR_WARMUP_BUDGET_SEC,
+    BAR_WARMUP_DOWNLOAD,
     BAR_WARMUP_MAX_STALE_DAYS, EXECUTION_MODE, IDLE_REFRESH_INTERVAL,
     INDEX_CODES, INITIAL_CASH, LOG_DIR, MARKET_INDEX_CODE,
     PERSIST_HOLD_SIGNALS, PORTFOLIO_CONFIG, REFRESH_INTERVAL, RISK_PARAMS,
@@ -62,6 +63,21 @@ from strategy.sector_scorer import SectorScorer, sector_scorer
 from strategy.trend_strategy import TrendStrategy
 
 logger = logging.getLogger(__name__)
+
+
+def mock_trade_block_reason(engine) -> Optional[str]:
+    """合成行情下禁止成交的判定（模块级，兼容裸对象/桩）。
+
+    为什么是模块级函数而不是纯方法：``_handle_sell`` / ``_handle_buy`` 的既有测试
+    桩用 ``types.SimpleNamespace`` 冒充引擎（见 ``tests/test_t1_sell_guard.py``），
+    没有引擎方法。用 ``getattr`` 兜底 + 模块级函数，既能在桩上零回归，又保证真实
+    引擎（``__init__`` 必设 ``data_mode``）闸门一定生效。
+    """
+    if getattr(engine, "data_mode", "xtdata") != "mock":
+        return None
+    if getattr(engine, "allow_mock_trading", False):
+        return None
+    return "mock_data(合成行情，拒绝按假价格成交)"
 
 
 def is_t1_locked(open_date, trade_date: date) -> bool:
@@ -344,6 +360,19 @@ class EventEngine:
         self.SECTOR_EVAL_EVERY_N_ROUNDS = 1
         self.data_mode = qmt_client.mode
         self.broker_mode = qmt_broker.mode
+        # ---- 合成行情（mock）交易闸门（2026-09-30 AM-EVOLVE R14 · P0）----
+        # 见 config/settings.py::ALLOW_MOCK_TRADING 的实盘铁证：mock 价与真实价
+        # 可差 1~6 倍，旧行为在 mock 下仍照常成交 ⇒ 2026-09-30 上午凭空实现
+        # −213,354.20 元假亏损并熔断。此处默认**一律拒绝成交**，并在交易时段
+        # 开启时重试接入真实 xtdata。
+        self.allow_mock_trading = bool(ALLOW_MOCK_TRADING)
+        self._last_mock_block_notice_ts = 0.0
+        if self.data_mode == "mock" and not self.allow_mock_trading:
+            system_notice(
+                "ERROR", "风控",
+                "数据源=mock（合成行情）：已禁止全部买卖成交。"
+                "夜间/收盘后启动时 miniQMT 探活失败会落入本模式；"
+                "交易时段开启时将自动重试接入 xtdata。")
 
         # 内存状态
         self._bars: Dict[str, Deque[Bar]] = defaultdict(
@@ -413,6 +442,51 @@ class EventEngine:
         if self.exec_mode == "paper":
             self._restore_engine_state()
             self._apply_pending_reset()
+
+    # ============================================================ 合成行情闸门
+    # 【2026-09-30 AM-EVOLVE R14 · P0 缺陷】见 config/settings.py::ALLOW_MOCK_TRADING
+
+    def _reattach_market_data(self) -> bool:
+        """交易时段开启时重试接入真实 xtdata（见 ``qmt_client.reattach``）。
+
+        ``qmt_client`` 是模块级单例，在 import 时就定型。引擎常在夜间/收盘后启动
+        （实测 2026-09-29 21:56），此时 miniQMT 探活失败 ⇒ 整个次日交易时段都用
+        合成价，实盘铁证见 settings 注释表。此处补一次重连机会。
+        """
+        if qmt_client.mode == "xtdata":
+            self.data_mode = "xtdata"
+            return True
+        try:
+            ok = qmt_client.reattach()
+        except Exception as e:  # noqa: BLE001 - 重连失败不得拖垮主循环
+            logger.debug("行情源重连异常(忽略): %s", e)
+            return False
+        self.data_mode = qmt_client.mode
+        if ok:
+            system_notice(
+                "SUCCESS", "系统",
+                "行情源已重连 miniQMT(xtdata)，退出 mock 模式，恢复正常交易。")
+        else:
+            system_notice(
+                "ERROR", "风控",
+                "行情源重连失败：仍处于 mock（合成行情），本时段全部买卖已禁用。")
+        return ok
+
+    def _mock_block_reason(self) -> Optional[str]:
+        """当前是否因合成行情而禁止成交；返回阻断原因或 ``None``（放行）。"""
+        return mock_trade_block_reason(self)
+
+    def _warn_mock_blocked(self, code: str) -> None:
+        """节流告警：60s 内只提示一次，避免每轮刷屏。"""
+        now = time.time()
+        if now - self._last_mock_block_notice_ts < 60.0:
+            return
+        self._last_mock_block_notice_ts = now
+        logger.error("[mock 闸门] 拦截 %s 成交：数据源=mock（合成行情）", code)
+        system_notice(
+            "ERROR", "风控",
+            f"[mock 闸门] 拦截 {code} 成交：行情源为合成数据（mock），"
+            f"价格与真实市价可差数倍，已禁用全部买卖。")
 
     def _apply_pending_reset(self) -> None:
         """应用待处理的 paper 账本复位（一次性、幂等）。
@@ -1178,6 +1252,12 @@ class EventEngine:
         self._session_state = now_open
         if now_open:
             logger.info("交易时段开启（%s）：恢复行情轮询", session_label())
+            # 【2026-09-30 AM-EVOLVE R14 · P0】单例在 import 时（常在夜间）就已
+            # 定型为 mock；开盘时补一次重连，否则整个交易日都在合成价上运行。
+            try:
+                self._reattach_market_data()
+            except Exception as e:  # noqa: BLE001 - 不得因重连拖垮开盘
+                logger.debug("开盘行情重连异常(忽略): %s", e)
             # 开盘即给出一次「市场分析结论」系统提示：把当前市场状态 /
             # 候选池 / 资金状况浓缩成一条清晰可读的提示，便于巡检。
             try:
@@ -2224,6 +2304,16 @@ class EventEngine:
 
     def _handle_buy(self, sig: Signal, tick, current_prices: Dict) -> None:
         # 持仓名称解析为规范中文名（兜底回退代码），避免仪表板持仓只显示代码
+        # 【2026-09-30 AM-EVOLVE R14】合成行情闸门（P0）：mock 价与真实市价可差
+        # 1~6 倍，按它成交会凭空制造盈亏（2026-09-30 实盘铁证：假亏 −213,354.20
+        # 元）。必须**先于**后面的 T+1 / 保护期检查，因为「卖出被拦截」的判断
+        # 顺序本身会影响是否继续走到下游分支。
+        _mock = mock_trade_block_reason(self)
+        if _mock:
+            self._warn_mock_blocked(sig.code)
+            self._log_reject_once(sig.code, _mock)
+            return
+
         disp_name = get_stock_name(sig.code)
         scale = self.risk.position_scale
         if scale <= 0:
@@ -2424,6 +2514,15 @@ class EventEngine:
         返回值为既有全部调用点提供「卖出是否生效」的可判定信号；旧调用方忽略
         返回值不受影响（None 语义等价于 False，行为不变）。
         """
+        # ---- 合成行情闸门（2026-09-30 AM-EVOLVE R14 · P0）----
+        # 卖出与买入同等危险：2026-09-30 上午 5 笔「硬止损」全部由 mock 价触发，
+        # 真实价偏离最大 −83.7%，凭空实现 −213,354.20 元假亏损。故此处同样阻断。
+        # 返回 False = 卖出未发生，与 T+1 / 保护期拦截语义一致（不释放槽位）。
+        _mock = mock_trade_block_reason(self)
+        if _mock:
+            self._warn_mock_blocked(pos.code)
+            return False
+
         # ---- A 股 T+1 约束（2026-09-14 修复）----
         # 当日买入的仓位当日不可卖出，否则会生成实盘不可能成交的「同日 round-trip」
         # （如 2026-09-08 300394 于 10:21:14 买入、10:21:17 即被「趋势破位」卖出）。
