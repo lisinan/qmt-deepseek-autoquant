@@ -160,9 +160,16 @@ def test_day_change_pct_helper_returns_none_without_daily():
 # ------------------------------------------------ 5) 阈值两侧同步
 
 def test_production_threshold_is_enabled():
-    """生产必须已启用（-5.0），且验证器基线同值（防再次无声漂移）。"""
-    assert STRATEGY_PARAMS["down_day_exit_pct"] == -5.0, \
-        f"生产阈值应为 -5.0，实际 {STRATEGY_PARAMS['down_day_exit_pct']}"
+    """生产必须已启用（**-3.25**），且验证器基线同值（防再次无声漂移）。
+
+    【2026-09-29 第 12 轮】-99.0（关闭）→ -5.0 启用。
+    【2026-10-03 第 16 轮】-5.0 → **-3.25**：atr_stop_mult 由 2.5 放宽到 2.9 后，
+      两条并行的左尾截断路径（单日暴跌清仓 / ATR 止损）相对权重改变 ⇒ 重裁该轴。
+      四窗共识（末端锚定修正后的稳定口径）dSh +0.248/+0.225/+0.246/+0.142，
+      最差窗 **+0.142 ≥ +0.10** 唯一过闸（-3.0 +0.065 / -3.5 +0.048 / -4.5 -0.008）。
+    """
+    assert STRATEGY_PARAMS["down_day_exit_pct"] == -3.25, \
+        f"生产阈值应为 -3.25，实际 {STRATEGY_PARAMS['down_day_exit_pct']}"
     from strategy._evolve_wf import base_cfg
-    assert base_cfg().down_day_exit_pct == -5.0, \
+    assert base_cfg().down_day_exit_pct == -3.25, \
         "验证器基线必须与生产同值（见 test_evolve_baseline_sync）"

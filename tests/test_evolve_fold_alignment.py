@@ -85,6 +85,39 @@ def test_fold_windows_share_one_date_axis():
         assert len(set(ln.values())) == 1, f"F{i+1} 折内长度不一致: {set(ln.values())}"
 
 
+def test_folds_are_end_anchored_and_stable():
+    """★ 折划分必须**末端锚定**：n 变化 1 根时各折只平移 1 根，不得整体跳一折。
+
+    【2026-10-03 PM-EVOLVE 第 16 轮量测缺陷】旧实现
+    ``range(FIXED_WARMUP, n - fold + 1, fold)[-nfolds:]`` 是**首端锚定**，
+    折集合是 n 的阶梯函数 ⇒ 实测 n=900 与 n=901 两套折划分下，
+    O1_dd325 的最差窗口 +0.146(PASS) 与 +0.088(REJECT) **裁决翻转**、
+    M3 突破入场 +0.131(PASS) 与 +0.056(REJECT) 同样翻转。
+    本用例钉死修复后的契约：末折必须止于最后一根，且 n±1 时起点只差 1。
+    """
+    import strategy._evolve_wf as W
+
+    def starts_for(n, fold=90, nfolds=6):
+        return [s for s, _e, _d in
+                W.make_folds({}, [], n, fold, nfolds)]
+
+    s900 = starts_for(900)
+    s901 = starts_for(901)
+    assert s900, "n=900 未生成任何折"
+    assert len(s900) == len(s901) == 6, "折数应恒为 nfolds"
+    # 末端锚定：最后一折的终点 = n（覆盖到最新数据）
+    for n in (900, 901):
+        subs = W.make_folds({}, [], n, 90, 6)
+        assert subs[-1][1] == n, (
+            f"末折止于 {subs[-1][1]} / n={n} ⇒ 折未锚定到末端（最近 "
+            f"{n - subs[-1][1]} 根从未进入任何折）")
+    # 平滑性：n+1 时每个起点只应 +1（旧实现会整体 +fold）
+    deltas = {b - a for a, b in zip(s900, s901)}
+    assert deltas == {1}, (
+        f"n 增加 1 根后折起点位移为 {sorted(deltas)}（应为 {{1}}）"
+        " ⇒ 折划分仍随数据长度整体跳折，OOS 裁决不可复现")
+
+
 def test_folds_cover_recent_data():
     """折必须覆盖到近期数据（修复前最近 11 个月从未入折）。"""
     try:

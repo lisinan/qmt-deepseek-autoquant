@@ -153,7 +153,14 @@ def base_cfg() -> BacktestConfig:
         #   并把该字段从 KNOWN_DIVERGENCE 移入 MUST_MATCH（见
         #   tests/test_evolve_baseline_sync.py）。这是该漂移第 4 次同型复现
         #   （09-18 top_n/rpt、09-28 northbound_mode、09-29 本项）。
-        down_day_exit_pct=-5.0, max_positions=5,
+        # 【2026-10-03 第 16 轮 PM-EVOLVE】-5.0 → **-3.25，与生产对齐**
+        #   （第 8 次同型基线同步；-5.0 是 atr=2.5 时代的旧最优值）。
+        #   注意：本轮同时修复了 `make_folds` 的「首端锚定」缺陷（折集合随数据长度
+        #   整体平移 ⇒ 闸门裁决不可复现），故本口径下的 KPI 与历史不可直接比较：
+        #     P0 四窗均值 Sh：**1.457**（旧口径报 1.770，属阶梯跳变下的偶然取值，
+        #       与 1.305/1.473/1.561/1.6025 一并**作废**，勿再引用）
+        #     正收 22/26、最差 MDD −4.93%、最差折 −4.4%、IS +110.23%/1.71/−8.45%
+        down_day_exit_pct=-3.25, max_positions=5,
         buy_score_threshold=4.0, min_signals=3,
         # 【2026-09-29 第 13 轮 PM-EVOLVE】2.0 → **2.9，与生产对齐**（原为本文件
         #   唯一残留的 KNOWN_DIVERGENCE：回测 2.0 / 生产 2.5，属第 5 次同型漂移）。
@@ -416,6 +423,26 @@ def candidates_final() -> dict:
     out["M5_突破入场_100_窗60"] = replace(
         b, entry_mode="trend", trend_breakout_near_high=1.00,
         trend_breakout_window=60)
+    # ---- 2026-10-03 PM-EVOLVE（第 16 轮）：★ down_day_exit_pct × atr_stop_mult 交互复查 ----
+    # 来源：09-29 PM 优先级队列遗留项「down_day_exit_pct 与 atr 放宽后的交互复查」。
+    #   `down_day_exit_pct=-5.0` 是 09-29 AM 在 **atr_stop_mult=2.0/2.5** 的基线上
+    #   量出来的最优值；同日 PM 把 atr 放宽到 2.9（仓位同步缩小、换手下降）后，
+    #   「单日暴跌清仓」与「ATR 止损」这两条**同时存在的左尾截断路径**的相对权重
+    #   已改变 ⇒ 原最优阈值不必然仍是最优。本轮在新基线上重扫该轴。
+    # 90x6 单窗细扫（dSh，当前 -5.0 为 0）：
+    #   -2.0 -0.271 / -2.5 -0.269 / -3.0 +0.012 / -3.25 **+0.146** / -3.5 **+0.116**
+    #   -3.75 -0.056 / -4.0 -0.008 / -4.5 +0.052 / -5.0 0.000
+    #   -5.5 -0.198 / -6.0 -0.271 / -7.0 -0.195
+    # ⇒ 宽侧（-5.0 以外）单调劣化，说明「截断左尾」方向为真；
+    #   紧侧 -3.0~-5.0 之间**相邻格符号翻转**（-3.25+ / -3.75- / -4.0- / -4.5+）
+    #   ⇒ 单窗已是尖峰特征，**必须以四窗口最差窗裁决**，不得按单窗 argmax 落盘。
+    # ⚠ 代价（须与收益同读）：-3.25 的 IS 收益 110.2% → 90.7%（−19.5pt）、
+    #   OOS 累计差 −11.8pt，换 IS MDD −8.45%→−5.42%。属「降收益换降波动」型。
+    out["O1_dd325"] = replace(b, down_day_exit_pct=-3.25)
+    out["O2_dd35"] = replace(b, down_day_exit_pct=-3.5)
+    # 剂量终点对照（检验「越紧越好」是否成立）：-3.0 与 -4.5
+    out["O3_dd30"] = replace(b, down_day_exit_pct=-3.0)
+    out["O4_dd45"] = replace(b, down_day_exit_pct=-4.5)
     # ---- 2026-09-30 PM-EVOLVE（第 15 轮）：★★ 观察篮（manual_entry）代理建模 ----
     # **为什么现在才做**：这是本项目最贵的一条「实盘有、回测无」分支。
     #   实盘 2026-09-29 收盘 5 只持仓里 3 只来自观察篮，而回测器历史上对
@@ -448,7 +475,36 @@ def candidates_final() -> dict:
 # ============================================================ 通用评估
 
 def make_folds(data, codes, n, fold, nfolds):
-    starts = list(range(FIXED_WARMUP, n - fold + 1, fold))[-nfolds:]
+    # ★【2026-10-03 PM-EVOLVE 第 16 轮】折划分由「首端锚定」改为「**末端锚定**」。
+    #
+    # 【旧实现（缺陷）】``starts = range(FIXED_WARMUP, n - fold + 1, fold)[-nfolds:]``
+    #   起点固定在 FIXED_WARMUP + k×fold，只由 ``n`` 决定**末端能取到第几个**。
+    #   ⇒ 折集合是``n`` 的**阶梯函数**：n 每跨过一个 fold 步长，末端的 ``[-nfolds:]``
+    #     切片就整体**平移一整折**，而 n 只变 1 根时也可能触发（当 n-fold+1 恰好
+    #     跨过某个起点时）。
+    #
+    # 【实测铁证（本轮发现）】同一候选在 n=900 与 n=901（同样止于 20260930，
+    #   仅首端差 1 根 20230112）两套折划分下，**闸门裁决整体翻转**：
+    #     O1_dd325（down_day_exit_pct -5.0→-3.25）
+    #        900: +0.189/+0.469/+0.146/+0.182 → 最差 **+0.146  PASS**
+    #        901: +0.143/+0.413/+0.088/+0.210 → 最差 **+0.088  REJECT**
+    #     M3_突破入场_100（09-30 暂存候选）
+    #        900: +0.131/+0.328/+0.248/+0.160 → 最差 **+0.131  PASS**
+    #        901: +0.056/+0.098/+0.127/+0.137 → 最差 **+0.056  REJECT**
+    #   ⇒ 「多窗口共识」本意是防窗口运气，但**整组窗口本身**随数据长度跳变时，
+    #     共识也会整体漂移：同一天跑两次可能给出相反的落盘/否决裁决。
+    #     这与 09-28 的「折跨标的日期错位」同型（量测通道缺陷优先于 alpha）。
+    #
+    # 【新实现（末端锚定）】折 = 以最后一根为终点、向前连续 nfolds 个 fold 窗口：
+    #     starts = [n - fold*k for k in range(nfolds, 0, -1)]
+    #   ⇒ ① OOS 恒为「最近 nfolds×fold 根」；② n 变 1 根时各折只**平滑移动 1 根**，
+    #     不再整体跳一折；③ 覆盖到最新数据（旧实现末端可能离 n 差近一折）。
+    # 【影响】仅影响验证器，config/settings.py 零改动、实盘零行为变化。
+    # 【可逆】改回 ``range(FIXED_WARMUP, n - fold + 1, fold)[-nfolds:]`` 即恢复。
+    starts = [n - fold * k for k in range(nfolds, 0, -1)]
+    # 预热长度不足的折（理论上不会发生：n >> FIXED_WARMUP + nfolds*fold）直接丢弃，
+    # 避免 lo<0 导致切片从尾部反向取值（静默产生错误窗口）。
+    starts = [s for s in starts if s - FIXED_WARMUP >= 0]
     subs = []
     for s in starts:
         lo, hi = s - FIXED_WARMUP, min(s + fold, n)
