@@ -26,7 +26,7 @@ print(f"[数据] {len(data)} 只 × {n} 根 (末日 {dates[-1]})  载入 {time.t
 # 生产配置（与 settings.STRATEGY_PARAMS 对应）
 cfg = base_cfg()
 # 实盘断路器建模：收益兑现能力的最终判据
-prod = replace(cfg, rm_dd_pause_pct=-0.25, rm_dd_pause_recoverable=True)
+prod = replace(cfg, rm_dd_pause_pct=-0.20, rm_dd_pause_recoverable=True)  # 2026-10-03 对齐生产 max_drawdown_pct=-0.20
 raw = replace(cfg, rm_dd_pause_pct=0.0)
 ks = [k for k in data if k not in INDEX_CODES]
 

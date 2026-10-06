@@ -400,6 +400,37 @@ class BacktestConfig:
     # 是否连评分门槛（buy_score_threshold / min_signals）一起豁免。
     #   True = 完整复现实盘轮动语义；False = 只豁免日线闸门（默认）。
     breakout_bypass_score: bool = False
+    # ---- ★★ 板块轮动（rotation）主体代理建模【2026-10-06 AM-EVOLVE 第 17 轮】----
+    # 【为什么现在才建模】G/H 系列只建模了轮动的**两个副作用**（绕日线闸门 / 超仓），
+    #   轮动**本体**——「补强空槽」与「弱换强」两条**建仓分支**——在回测器里仍是
+    #   零命中（grep 'rotation' 零结果）。而实盘 `enable_rotation=True` 且
+    #   `rotation_fill_empty_slot=True`、`rotation_hot_top_n=15` 一直在跑：
+    #   热板块候选（LLM rerank top ∪ 板块推荐池 top15）**显式绕过动量闸门**
+    #   （event_engine.py:774-777）⇒ 实盘真正持有的可能是动量第 4~18 名的名字，
+    #   而不是回测验证过的动量前 3 名。这是与观察篮同型的「实盘有、回测无」。
+    # 【为什么怀疑它是收益杀手（先验证方向再动手）】
+    #   本轮 60×9 / 90×6 网格实测「放宽动量池」的 Sharpe 代价：
+    #     top_n 3(现状) → 4 −0.398/−0.494、6 −0.494/−0.180、15 −0.641/−0.279
+    #     ⇒ 每放进一只动量榜更弱的名字，Sharpe 就系统性下降。轮动正是这条路径。
+    # 【代理口径（保守下界，忠实度说明）】
+    #   ① hot 池：实盘是 LLM/板块热度，回测无法复现 ⇒ 用**动量榜 top_n 之后的
+    #      hot_top_n 只**代理（同为「有趋势但不在前 N」的一批名字），且同样绕过闸门；
+    #    ② 触发条件、日线闸门、突破/BUY 双判定、评分差、批量换仓数均与实盘同名参数同义；
+    #   ③ 换出在**次日开盘**与换入**同时**成交（实盘是盘中，日线粒度无法再细）；
+    #   ④ 只换出**已持仓**（不含当日 picks）⇒ 低估了 churn，是**效应下界**。
+    # 默认 **False = 关闭**（逐位保持既有回测行为，零行为变化，不破坏历史结论与测试）。
+    rotation_enabled: bool = False
+    rotation_hot_top_n: int = 15          # 实盘 rotation_hot_top_n
+    rotation_fill_empty_slot: bool = True  # 实盘 rotation_fill_empty_slot
+    rotation_weak_to_strong: bool = True   # 是否建模「卖出最弱持仓」一侧
+    rotation_intraday_breakout_pct: float = 1.5   # 实盘 rotation_intraday_breakout_pct
+    rotation_min_score_gap: float = 2.0    # 实盘 rotation_min_score_gap
+    rotation_min_score_gap_hot: float = 0.0  # 实盘 rotation_min_score_gap_hot
+    rotation_max_swaps_per_eval: int = 3   # 实盘 rotation_max_swaps_per_eval
+    rotation_require_daily_gate: bool = True  # 实盘 09-23 已落盘 True
+    # 实盘 09-23 PM 已修复的旧缺陷：换出被 T+1 拦下却仍买入 ⇒ 净超仓。
+    #   回测默认 False = 复现**修复后**行为（H 系列曾用 max_positions=6/7 代理旧行为）。
+    rotation_oversize_on_t1_block: bool = False
     # ---- 连亏降仓（position_scale）代理建模【2026-09-24 AM-EVOLVE 第 6 轮】----
     # ★ 又一条「实盘有、回测无」的分支。实盘 RiskManager.on_fill 对每笔 SELL 判定盈亏：
     #     亏 → _consec_loss += 1；盈 → _consec_loss = 0
@@ -1088,6 +1119,7 @@ def run_backtest(codes: List[str], cfg: BacktestConfig,
     positions: Dict[str, dict] = {}   # code -> {qty, entry, entry_day, peak}
     last_exit_day: Dict[str, int] = {}  # code -> 最后离场日（再入场冷静期用）
     pending: List[dict] = []          # 待明日开盘执行的买单
+    rot_sell_pend: List[str] = []     # 待明日开盘执行的「轮动换出」卖单（见 rotation_*）
     equity_curve: List[float] = [equity]
     trades: List[dict] = []
     daily_rets: List[float] = []
@@ -1220,6 +1252,44 @@ def run_backtest(codes: List[str], cfg: BacktestConfig,
                     _dl_day_pnl += (_net - _fp["entry"]) * _qty
                 last_exit_day[_fc] = i
                 del positions[_fc]
+        # ---- 轮动「weak→strong」换出：与换入同为「次日开盘」成交 ----
+        # 排在 _pending_exec（换入买单）**之前**执行 ⇒ 槽位与现金先释放，
+        # 与实盘 _maybe_rotate「先卖最弱、再买候选」的时序一致（event_engine.py:873+）。
+        if rot_sell_pend:
+            for _rc in list(rot_sell_pend):
+                _rp = positions.get(_rc)
+                if _rp is None:          # 已因破位/止损提前离场
+                    continue
+                if cfg.t1_restriction and _rp["entry_day"] == i:
+                    continue             # T+1：当日建仓不可卖（与 _handle_sell 同语义）
+                if not panel[_rc]["valid"][i]:
+                    continue
+                _px = panel[_rc]["open"][i]
+                if _px <= 0:
+                    continue
+                _net = _px * (1 - cfg.cost_pct)
+                _qty = _rp["qty"]
+                cash += _net * _qty
+                trades.append({
+                    "code": _rc,
+                    "pnl_pct": (_net - _rp["entry"]) / _rp["entry"],
+                    "hold": i - _rp["entry_day"], "reason": "rotation_swap",
+                })
+                if cfg.consec_loss_scale and not cfg.consec_loss_batch:
+                    if _net < _rp["entry"]:
+                        _consec_loss += 1
+                    elif _net > _rp["entry"]:
+                        _consec_loss = 0
+                    if (_consec_loss >= cfg.consec_loss_halt
+                            and _halt_bar is None):
+                        _halt_bar = i
+                elif cfg.consec_loss_scale and cfg.consec_loss_batch:
+                    _batch_pnl += (_net - _rp["entry"]) * _qty
+                if cfg.daily_loss_halt:
+                    _dl_day_pnl += (_net - _rp["entry"]) * _qty
+                last_exit_day[_rc] = i
+                del positions[_rc]
+            rot_sell_pend = []
         for order in _pending_exec:
             code = order["code"]
             if code in positions or len(positions) >= cfg.max_positions:
@@ -1622,6 +1692,88 @@ def run_backtest(codes: List[str], cfg: BacktestConfig,
             # 语义排序，wf / weight 会取 getattr 默认值 1.0）。
             for _bc in _basket_todo:
                 picks.append((0.0, _bc))
+            # ---- ★ 板块轮动代理（rotation_enabled；默认关闭，零行为变化）----
+            # 语义对齐 engine/event_engine.py::_maybe_rotate：
+            #   仅在持仓 >= max_positions-1 时介入；(a) 差一仓 → 补强空槽；
+            #   (b) 满仓 → 批量「弱换强」（换出评分最低的持仓，换入热板块候选）。
+            #   候选 = hot 池（动量榜 top_n 之后 hot_top_n 只，**绕过动量闸门**）
+            #   ∩ 通过日线闸门（rotation_require_daily_gate=True，09-23 已落盘）
+            #   ∩ （日内突破 或 日线 BUY）。
+            if cfg.rotation_enabled and len(positions) >= cfg.max_positions - 1:
+                if cfg.momentum_rank:
+                    _hot = [c for _v, c in moms[
+                        cfg.momentum_top_n:
+                        cfg.momentum_top_n + int(cfg.rotation_hot_top_n)]]
+                else:
+                    _hot = [c for _s, c in sorted(
+                        ((score_arr[c][i][0], c) for c in panel
+                         if c in score_arr and i < len(score_arr[c])),
+                        reverse=True)]
+                _picked = set(c for _s, c in picks)
+                _rot_cands = []
+                for _hc in _hot:
+                    if _hc in positions or _hc in _picked:
+                        continue
+                    _d = panel.get(_hc)
+                    if _d is None or not _d["valid"][i]:
+                        continue
+                    # 日线闸门（实盘 _rotation_daily_gate_ok）
+                    if cfg.rotation_require_daily_gate and not (
+                            trend_up_arr[_hc][i]
+                            or bias_arr[_hc][i] >= cfg.min_daily_bias):
+                        continue
+                    _cc = _d["close"]
+                    _brk = (i > 0 and _cc[i - 1] > 0
+                            and (_cc[i] / _cc[i - 1] - 1.0) * 100.0
+                            >= cfg.rotation_intraday_breakout_pct)
+                    _sc, _fac = score_arr[_hc][i]
+                    _buy = (_sc >= cfg.buy_score_threshold
+                            and sum(1 for x in _fac.values() if x > 0)
+                            >= cfg.min_signals)
+                    if not (_brk or _buy):
+                        continue
+                    _rot_cands.append((_sc, _hc, _brk))
+                _rot_cands.sort(key=lambda x: x[0], reverse=True)
+                # (a) 补强空槽：把普通路径**没填满**的槽位用热板块候选补上
+                if cfg.rotation_fill_empty_slot:
+                    _rem = cfg.max_positions - len(positions) - len(picks)
+                    for _sc, _hc, _brk in _rot_cands[:max(0, _rem)]:
+                        if _hc in _picked:
+                            continue
+                        picks.append((_sc, _hc))
+                        _picked.add(_hc)
+                # (b) 弱换强：换出评分最低的可卖持仓（T+1），换入更强候选
+                if cfg.rotation_weak_to_strong:
+                    _swaps = 0
+                    _queued = set(rot_sell_pend)
+                    for _sc, _hc, _brk in _rot_cands:
+                        if _swaps >= int(cfg.rotation_max_swaps_per_eval):
+                            break
+                        if _hc in _picked:
+                            continue
+                        _weak, _wsc = None, float("inf")
+                        for _pc, _pp in positions.items():
+                            if _pc in _queued:
+                                continue
+                            if (cfg.t1_restriction and _pp["entry_day"] == i
+                                    and not cfg.rotation_oversize_on_t1_block):
+                                continue     # T+1 锁死，不能换出
+                            _psc = (score_arr[_pc][i][0]
+                                    if _pc in score_arr
+                                    and i < len(score_arr[_pc]) else 0.0)
+                            if _psc < _wsc:
+                                _wsc, _weak = _psc, _pc
+                        if _weak is None:
+                            break
+                        _gap = (cfg.rotation_min_score_gap_hot if _brk
+                                else cfg.rotation_min_score_gap)
+                        if _sc - _wsc < _gap:
+                            continue
+                        rot_sell_pend.append(_weak)
+                        _queued.add(_weak)
+                        picks.append((_sc, _hc))
+                        _picked.add(_hc)
+                        _swaps += 1
             # 动量排名加权：在前 N 名新入选里，按动量降序赋 rank-weight
             # （最强者更大、最弱者更小，均值=1），把资本集中于动量最确定的名字。
             wf_map: Dict[str, float] = {}

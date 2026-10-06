@@ -127,9 +127,15 @@ def base_cfg() -> BacktestConfig:
         trend_max_hold_days=120,
         momentum_rank=True, momentum_top_n=3, momentum_lookback=60,
         risk_per_trade=0.012, fixed_amount=300000.0,
-        down_day_exit_pct=-9.0, max_positions=5,  # 2026-08-27 并入：IS/OOS+多折双验证优于8
+        # 【2026-10-03 SYNTHESIZE 基线同步】原 down_day_exit_pct=-9.0 / atr_stop_mult=2.0
+        #   / 缺 northbound_mode 三处全部漂移自生产（生产已落盘 -3.25 / 2.9 / "gate"）。
+        #   _evolve_wf.py::base_cfg 在 09-29/10-03 已同步，但本函数（被权威复验
+        #   _verify_live_quality.py 使用）漏同步 ⇒ 复验报告的「当前状态」不反映线上策略。
+        #   现对齐生产，使其真正权威；零生产行为变化。
+        down_day_exit_pct=-3.25, max_positions=5,  # 2026-08-27 并入：IS/OOS+多折双验证优于8
         buy_score_threshold=4.0, min_signals=3,
-        atr_stop_mult=2.0, tp_atr_mult=4.0,
+        atr_stop_mult=2.9, tp_atr_mult=4.0,
+        northbound_mode="gate", nb_lookback=20,  # 2026-09-19 落盘，原漏同步
         min_warmup=FIXED_WARMUP,
     )
 

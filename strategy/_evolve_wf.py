@@ -463,6 +463,26 @@ def candidates_final() -> dict:
         manual_entry_exit_exempt=False)
     # N3 = 「清空观察篮」的理论上限：回测基线 P0 本身即等于该情形，
     #   但显式建一列才能在同一张表里直接读出「篮子的净成本」。
+    # ---- 2026-10-06 AM-EVOLVE（第 17 轮）：★★ 板块轮动（rotation）本体代理 ----
+    # 来源：R16 交接第 4 条 —— 「实盘有、回测无」三路径中，只剩轮动**本体**
+    #   （补强空槽 / 弱换强）从无回测建模；G/H 系列只建模了它的两个副作用。
+    # 实盘语义（event_engine.py::_maybe_rotate，enable_rotation=True）：
+    #   持仓 >= max_positions-1 时介入；候选 = 热板块池（LLM top ∪ 板块推荐池 top15）
+    #   **显式绕过动量闸门**（"日线滞后不该挡 AI 已确认的热度"）；
+    #   差一仓 → 补强空槽；满仓 → 批量弱换强（最多 3 只/轮）。
+    # 回测代理（backtest_daily.rotation_*，默认关闭 ⇒ 零行为变化）：
+    #   hot 池用「动量榜 top_n 之后 hot_top_n 只」代理（同为趋势强但不在前 N 的一批）。
+    # ★ 先验方向（本轮先量、非先猜）：放宽动量池的 Sharpe 代价实测
+    #     60×9: top_n 4 −0.398 / 6 −0.494 / 15 −0.641；90×6: 4 −0.494 / 6 −0.180
+    #   ⇒ 轮动把「动量第 4~18 名」放进组合，与观察篮同型，预期是**拖累**。
+    # 用法：--mode consensus --track defect --baseline R1_实盘现状_轮动开启
+    #   ⇒ P0（轮动关闭）的 dSh 即「关闭轮动」的修复收益。
+    out["R1_实盘现状_轮动开启"] = replace(b, rotation_enabled=True)
+    out["R2_轮动_仅补空槽"] = replace(
+        b, rotation_enabled=True, rotation_weak_to_strong=False)
+    out["R3_轮动_hot5"] = replace(b, rotation_enabled=True, rotation_hot_top_n=5)
+    out["R4_轮动_绕日线闸门"] = replace(
+        b, rotation_enabled=True, rotation_require_daily_gate=False)
     out["N3_观察篮_仅2槽"] = replace(
         b, manual_entry_codes=PROD_MANUAL_ENTRY_CODES[:2],
         manual_entry_exit_exempt=True)

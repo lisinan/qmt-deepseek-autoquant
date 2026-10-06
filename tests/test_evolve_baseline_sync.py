@@ -23,6 +23,7 @@ sys.path.insert(0, ".")
 
 import config.settings as S
 from strategy._evolve_wf import base_cfg
+from strategy.opt_harness import base_cfg as oh_base_cfg
 
 # 验证器必须与生产逐字段一致（这些都是有实盘读取点、且回测/实盘同语义的参数）
 MUST_MATCH = {
@@ -67,6 +68,18 @@ MUST_MATCH = {
     # 注意：变更生产值前必须用「相对生产现状」的 dSh 决策，而不是相对 base_cfg，
     # 否则 KNOWN_DIVERGENCE 会让增量算错（本轮 2.5 vs 2.0 差 0.06 个 Sharpe）。
     "atr_stop_mult": None,        # 2.9
+    # 【2026-10-06 第 17 轮 AM-EVOLVE】轮动（rotation）全套旋钮首次建模即**逐项对齐**
+    #   （这是第 9 次同型登记；与 09-30 RISK_PARAMS 扩展同源于「新增字段必须显式归类」）。
+    #   为什么必须 MUST_MATCH 而不是放任：轮动**绕过动量闸门**（event_engine.py:774-777），
+    #   一旦回测默认值与生产不一致，P0 基线就会静默地多/少一块从未验证的仓位来源，
+    #   所有历史 dSh 整体失真（观察篮已给我们上过一次课：Sh 1.71 → 1.02）。
+    "rotation_hot_top_n": None,            # 15
+    "rotation_fill_empty_slot": None,      # True
+    "rotation_intraday_breakout_pct": None,  # 1.5
+    "rotation_min_score_gap": None,        # 2.0
+    "rotation_min_score_gap_hot": None,    # 0.0
+    "rotation_max_swaps_per_eval": None,   # 3
+    "rotation_require_daily_gate": None,   # True（09-23 缺陷修复后生产值）
 }
 
 # 已知、尚未裁决的历史差异：(回测侧值, 生产侧值)。钉住数值 ⇒ 任一侧变动即红。
@@ -148,6 +161,36 @@ def test_validator_baseline_matches_production():
     assert not bad, (
         "验证器 base_cfg 与生产配置漂移（P0 基线失真会让所有 dSh 增量与 KPI 失真，"
         "2026-09-18 / 2026-09-28 各踩一次）：" + "; ".join(bad))
+
+
+# 【2026-10-03 SYNTHESIZE】opt_harness.base_cfg 守卫。
+#   _verify_live_quality.py（权威全量复验）直接 import 它作为「当前状态」基线，
+#   但本守卫此前只覆盖 _evolve_wf.base_cfg ⇒ opt_harness 侧的三处漂移
+#   （down_day_exit_pct=-9.0 / atr_stop_mult=2.0 / 缺 northbound_mode）长期无人察觉，
+#   2026-10-03 复验报告的数字根本不反映线上策略。现补锁。
+#   只检「历史上漂移过 + 有实盘读取点」的字段，不打全量（opt_harness 依赖 BacktestConfig
+#   默认值对齐生产，多数字段不显式设置）。
+OPT_HARNESS_MUST_MATCH = {
+    "down_day_exit_pct": None,   # -3.25（2026-09-29 落盘）
+    "atr_stop_mult": None,       # 2.9（2026-09-29 落盘）
+    "northbound_mode": None,     # "gate"（2026-09-19 落盘，原缺→默认 off 漂移）
+    "nb_lookback": None,         # 20
+    "min_daily_bias": None,      # 2.0（opt_harness 不显式设，靠 BacktestConfig 默认值对齐）
+}
+
+
+def test_opt_harness_baseline_matches_production():
+    b = oh_base_cfg()
+    bad = []
+    for k in OPT_HARNESS_MUST_MATCH:
+        assert k in S.STRATEGY_PARAMS, f"生产 STRATEGY_PARAMS 缺失 {k}"
+        d = _compare(b, k, _prod(k))
+        if d:
+            bad.append(d)
+    assert not bad, (
+        "opt_harness.base_cfg（权威复验 _verify_live_quality.py 所用）与生产漂移，"
+        "会令复验报告的「当前状态」失真（2026-10-03 已踩一次：-9.0/2.0/缺gate）："
+        + "; ".join(bad))
 
 
 def test_known_divergences_are_pinned():

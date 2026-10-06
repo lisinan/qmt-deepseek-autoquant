@@ -91,8 +91,11 @@ def test_live_buy_and_sell_tagged_live():
         eng._handle_buy(sig, _FakeTick(100.0, "中际旭创"), {"300308.SZ": 100.0})
         assert cap["orders"] == ["live"], "live 买入下单应标记 mode=live"
         pos = eng._positions["300308.SZ"]
-        # 持仓设为上一交易日买入：A 股 T+1 下当日买入不可卖，卖出标记验证须用可读仓
-        pos.open_date = datetime.now() - timedelta(days=1)
+        # 持仓设为足够久以前买入：A 股 T+1 下当日买入不可卖、且建仓保护期
+        # （首个可卖交易日早盘 30 分钟）会拦截退出。本测试只验证「卖出打 mode 标记」，
+        # 故 open_date 拉到 15 天前，任意星期分布下首个可卖日+保护窗都已在 now 之前，
+        # 既不触发 T+1 锁定也不触发保护期，卖出路径必走到 save_order（消除周末跑测脆弱性）。
+        pos.open_date = datetime.now() - timedelta(days=15)
         sig2 = Signal(ts=datetime.now(), code="300308.SZ", name="中际旭创",
                       side="SELL", price=110.0, reason="test")
         eng._handle_sell(sig2, pos)
@@ -111,8 +114,9 @@ def test_paper_buy_and_sell_tagged_paper():
         assert cap["orders"] == ["paper"], "paper 买入下单应标记 mode=paper"
         assert cap["fills"] == ["paper"], "paper 买入成交应标记 mode=paper"
         pos = eng._positions["300308.SZ"]
-        # 持仓设为上一交易日买入：A 股 T+1 下当日买入不可卖，卖出标记验证须用可读仓
-        pos.open_date = datetime.now() - timedelta(days=1)
+        # 持仓设为足够久以前买入：避开 T+1 锁定与建仓保护期（首个可卖日早盘 30 分钟），
+        # 使卖出路径必走到 save_order，仅验证「卖出打 mode=paper 标记」（消除周末跑测脆弱性）。
+        pos.open_date = datetime.now() - timedelta(days=15)
         sig2 = Signal(ts=datetime.now(), code="300308.SZ", name="中际旭创",
                       side="SELL", price=110.0, reason="test")
         eng._handle_sell(sig2, pos)

@@ -93,7 +93,10 @@ def _collect_tests():
             # 【2026-09-30 R15】观察篮（manual_entry）回测代理守卫：这是本项目
             # 最贵的一条「实盘有、回测无」分支（IS Sh 1.71→1.02、MDD 翻倍）。
             # 门锁 2 专门防止它退化成「看起来建模了、其实没生效」的死代码。
-            "tests.test_manual_entry_proxy"]
+            "tests.test_manual_entry_proxy",
+            # 【2026-10-06 R17】板块轮动（rotation）回测代理守卫：最后一条
+            # 「实盘有、回测无」的建仓分支（热板块候选显式绕过动量闸门）。
+            "tests.test_rotation_proxy"]
     tests = []
     import_errors = []
     for m in mods:
