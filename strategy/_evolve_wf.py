@@ -554,7 +554,8 @@ def main():
     ap.add_argument("--count", type=int, default=900)
     ap.add_argument("--fold", type=int, default=90)
     ap.add_argument("--folds", type=int, default=6)
-    ap.add_argument("--mode", default="grid", choices=["grid", "compare", "consensus"])
+    ap.add_argument("--mode", default="grid",
+                    choices=["grid", "compare", "consensus", "span"])
     ap.add_argument("--param", default="reentry_cooldown")
     ap.add_argument("--values", default="3,5,8,10,15,20")
     ap.add_argument("--json", default="")
@@ -601,6 +602,81 @@ def main():
           f"MDD={base_is['max_drawdown']*100:.2f}% | OOS 均值Sh={b_stats['mean_sharpe']:+.3f} "
           f"正收={b_stats['pos']}/{b_stats['n']} 均值MDD={b_stats['mean_mdd']*100:.2f}% "
           f"最差={b_stats['worst']*100:+.1f}%")
+
+    # ---------------- span（拼接口径 vs 折均值口径）----------------
+    # 【2026-10-06 PM-EVOLVE 第 18 轮】新增量测模式，参数零改动、实盘零影响。
+    #
+    # 【为什么需要它】KPI #1「wf 样本外均值 Sharpe」用的是**折均值口径**：
+    #   对每个折单独算 Sharpe，再取算术平均。但折只有 60~120 根日线、
+    #   3~36 笔成交，Sharpe 是「均值/标准差」型比率统计量，小样本下
+    #   估计噪声极大 ⇒ 口径本身会系统性偏离策略的真实样本外表现。
+    #
+    # 【铁证（本轮实测）】60×9 与 90×6 覆盖的是**完全相同**的 540 根
+    #   （20240712~20260930，末折终点相同、首折起点相同），即同一段行情、
+    #   同一套参数、同样的 146 笔成交。然而：
+    #     折均值口径：60×9 = 1.409 / 90×6 = 1.660   ← 相差 0.251
+    #     拼接口径  ：两者**完全相同** = 1.998
+    #   ⇒ 0.251 的差异**全部来自划分方式**，是统计假象而非策略差异。
+    #   极端个例：60×9 F9 仅 **3 笔成交** 却报出 Sharpe −4.11，
+    #   单折把 9 折均值拉低约 0.46，直接决定了 KPI #1 是否达标。
+    #
+    # 【拼接口径定义】把该窗口覆盖的连续区间当作**一条曲线**跑一次回测，
+    #   算其 Sharpe / 收益 / MDD。这才是「这套参数在这段行情上的实际表现」。
+    #
+    # 【用途】两者**必须同读**：折均值用于「防窗口运气」（最差窗裁决不变），
+    #   拼接用于「估计真实水平」。落盘裁决仍一律以多窗口最差窗为准，
+    #   本模式**不改变任何闸门**，只增加一层可读的事实。
+    if args.mode == "span":
+        print(f"\n{'=' * 118}")
+        print("拼接口径（span）vs 折均值口径（fold-mean）—— 同一段行情、同一套参数")
+        print("=" * 118)
+        print(f"{'窗口':<10}{'覆盖':>7}{'区间':<26}{'折均值Sh':>10}{'★拼接Sh':>10}"
+              f"{'拼接ret%':>10}{'拼接MDD%':>10}{'成交':>7}{'正收':>9}")
+        print("-" * 118)
+        spans = []
+        fmeans = []
+        for fold, nf in [(60, 9), (75, 7), (90, 6), (120, 4)]:
+            subs_w = make_folds(data, codes, n, fold, nf)
+            st, rs_w = oos_stats(base, subs_w, bt)
+            # 每折明细：小样本折的『成交笔数』是判断其 Sharpe 是否可信的关键
+            # （本轮 F9 仅 3 笔却报 Sharpe −4.11，单折把 9 折均值拉低约 0.46）。
+            print(f"\n  [{fold}x{nf}] 每折明细")
+            print(f"  {'折':<5}{'区间':<24}{'收益%':>9}{'Sharpe':>8}{'MDD%':>8}"
+                  f"{'成交':>7}{'胜率%':>8}{'暴露%':>8}{'持仓d':>8}")
+            for i, (s, e, _d) in enumerate(subs_w):
+                r = rs_w[i]
+                if not r or "error" in r:
+                    print(f"  F{i+1} ERROR")
+                    continue
+                print(f"  F{i+1:<4}{d0[s]}~{d0[min(e, n)-1]:<13}"
+                      f"{r['total_return']*100:>+8.2f}{r['sharpe']:>+8.2f}"
+                      f"{r['max_drawdown']*100:>8.2f}{r.get('n_trades', 0):>7}"
+                      f"{r.get('win_rate', 0)*100:>8.1f}"
+                      f"{r.get('exposure', 0)*100:>8.1f}"
+                      f"{r.get('avg_hold', 0):>8.1f}")
+            lo = min(s for s, _e, _d in subs_w) - FIXED_WARMUP
+            hi = max(e for _s, e, _d in subs_w)
+            r = bt(base, slice_by_index(data, lo, hi))
+            span_sh = r["sharpe"]
+            spans.append(span_sh)
+            fmeans.append(st["mean_sharpe"])
+            print(f"{fold}x{nf:<7}{nf * fold:>7}"
+                  f"{d0[min(s for s, _e, _d in subs_w)][:10]}"
+                  f"~{d0[min(hi, n) - 1][:10]:<15}{st['mean_sharpe']:>+10.3f}"
+                  f"{span_sh:>+10.3f}{r['total_return'] * 100:>+9.2f}"
+                  f"{r['max_drawdown'] * 100:>10.2f}{r.get('n_trades', 0):>7}"
+                  f"{st['pos']:>6}/{st['n']}")
+        print("-" * 118)
+        print(f"四窗『拼接 Sharpe』均值 = {sum(spans) / len(spans):+.3f}"
+              f"（对照：折均值口径四窗均值 = {sum(fmeans) / len(fmeans):+.3f}）")
+        print("★ 判定：60×9 与 90×6 的『拼接 Sh』若相同（同段 540 根），"
+              "则两者折均值之差 100% 是划分假象。")
+        if args.json:
+            Path(args.json).write_text(json.dumps(
+                dict(window=f"{d0[0]}-{d0[-1]}", n_bars=n, span_sharpe=spans),
+                ensure_ascii=False, indent=2), encoding="utf-8")
+            print(f"\n[保存] {args.json}")
+        return
 
     # ---------------- grid ----------------
     if args.mode == "grid":

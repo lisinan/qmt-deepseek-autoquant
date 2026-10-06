@@ -96,7 +96,11 @@ def _collect_tests():
             "tests.test_manual_entry_proxy",
             # 【2026-10-06 R17】板块轮动（rotation）回测代理守卫：最后一条
             # 「实盘有、回测无」的建仓分支（热板块候选显式绕过动量闸门）。
-            "tests.test_rotation_proxy"]
+            "tests.test_rotation_proxy",
+            # 【2026-10-06 R18】拼接口径（span）量测守卫：锁死「同一段行情的
+            # 拼接 Sharpe 唯一」，即折均值口径的差异 100% 是划分假象；
+            # 同时按代理守门锁死 entry_max_day_gain_pct 默认 off + 开启后真变。
+            "tests.test_span_measure"]
     tests = []
     import_errors = []
     for m in mods:

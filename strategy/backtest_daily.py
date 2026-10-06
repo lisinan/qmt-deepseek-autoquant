@@ -640,6 +640,19 @@ class BacktestConfig:
     # 动量每日重排名会在回调里把刚卖出的股票又买回，产生双向成本且易 whipaw；
     # 设冷静期可压缩换手、提升净 alpha。默认 0 = 关闭（需验证后启用）。
     reentry_cooldown: int = 0
+    # ---- 「不追高」入场过滤【2026-10-06 PM-EVOLVE 第 18 轮】----
+    # 动机（本轮诊断铁证）：26 折里 4 个负折的**共同特征**是「短持仓(3.1d) +
+    #   多笔数 + 胜率暴跌(0~36%) + 均笔微负(-0.06~-0.15%)」，而强折是
+    #   「长持仓(6~10.5d) + 少笔数 + 均笔 +1.0~+1.8%」⇒ 负折不是「换手太高」
+    #   （笔数与强折相当），而是**每笔都买在短期高点后回落被止损**。
+    # 反向证据：M 系列 `entry_mode="trend"`（要求逼近/创 20 日新高）四窗最差
+    #   −0.059 被 REJECTED ⇒ 「**要求追高**」方向已证伪；本过滤是其**反向剂量**。
+    # 附加证据：reentry_cooldown（限制重入）−0.40~−0.75 全负 ⇒ 策略靠「快速重入」
+    #   赚钱，故正确解法不是少交易，而是**不追在情绪高点买**。
+    # 语义：入场当日涨幅（close/prev_close−1）超过 entry_max_day_gain_pct 则
+    #   当日不予开仓。默认 1.0（=+100%）⇒ 恒不成立 ⇒ **零行为变化**。
+    # 实盘对应：engine 侧按同一语义过滤（当日 change_pct）。
+    entry_max_day_gain_pct: float = 1.0
     # ---- 动量排名加权仓位（横截面 alpha 杠杆，研究用）----
     # 选股仍用动量排名做闸门（只持前 N），但仓位不再等权：按动量大小对前 N
     # 名做 rank-weight（最强者更大、最弱者更小，均值=1），把资本集中于
@@ -1554,6 +1567,11 @@ def run_backtest(codes: List[str], cfg: BacktestConfig,
                 if not d["valid"][i]:
                     continue      # 停牌股不产生信号
                 c, h, l, v = d["close"], d["high"], d["low"], d["volume"]
+                # 「不追高」入场过滤（默认关闭，见 BacktestConfig 注释）
+                if (cfg.entry_max_day_gain_pct < 1.0 and i > 0
+                        and c[i - 1] > 0
+                        and (c[i] / c[i - 1] - 1.0) > cfg.entry_max_day_gain_pct):
+                    continue
                 # 量能突破确认（全新特征，研究用）：放量 + 贴近阶段高位
                 # 才视为有效突破，过滤无量假突破（whipsaw）。仅 factor 模式生效。
                 if cfg.vol_confirm and cfg.entry_mode != "trend":
