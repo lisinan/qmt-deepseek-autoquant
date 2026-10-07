@@ -428,6 +428,11 @@ class EventEngine:
         self._market_stale_codes: List[str] = []  # 本轮陈旧的标的
         self._market_stale_max_age: float = 0.0   # 最大陈旧秒数
         self._last_market_stale_warn_ts: float = 0.0
+        # 【2026-10-07 AM-EVOLVE R20】**标的级**陈旧集合（盯市冻结用，见
+        #   ``MARK_STALE_FREEZE_VALUATION`` 注释）。与 ``_market_stale_codes``
+        #   同源于 ``stale_age_sec``，但后者只在「账户级失效」判定中被赋值，
+        #   语义是「告警样本」而非「逐标的判定」⇒ 单独维护一份权威集合。
+        self._market_stale_code_set: set = set()
 
         # 自动重连
         self._auto_reconnect_enabled = auto_reconnect
@@ -1559,6 +1564,43 @@ class EventEngine:
     MARKET_STALE_SEC = 120.0
     MARKET_STALE_RATIO = 0.6
     MARKET_STALE_WARN_SEC = 300.0
+    # ★【2026-10-07 AM-EVOLVE 第 20 轮 · P0 缺陷修复】陈旧报价**不得参与盯市**
+    #
+    # 【实盘铁证】2026-10-07（国庆休市，A 股 10-01~10-07 无行情）09:15 引擎重启后，
+    #   同一组持仓（5 只，一股未动、零成交）的 ``market_value`` 由 09-30 收盘的
+    #   **491,347.0** 变成 **536,520.0**，凭空多出 **+45,173.0 元（+9.2%）**，
+    #   paper 总资产 975,273.6 → **1,020,446.6**。
+    #   逐票核对（真实 09-30 收盘 vs 引擎 last_price）：
+    #     300308.SZ  808.44 → **900.00**（+11.3%）｜ 688008.SH  202.31 → **232.50**（+14.9%）
+    #     002415.SZ   32.46 → **35.71**（+10.0%）｜ 000977.SZ   65.93 → **69.97**（+6.1%）
+    #     300394.SZ  260.77 →  260.80（+0.0%）
+    #   ``xtdata.get_full_tick`` 直读确认：这些报价的 ``timetag`` 是
+    #   **2026-10-06 11:30:00**——一个**根本没有交易**的休市日，其 ``open`` 字段
+    #   反而与真实 09-30 收盘一致（300308 open=808.44）。⇒ 报价来源是 miniQMT
+    #   本地缓存的**伪快照**：既非「冻结在旧值」，也非真实成交价，而是被
+    #   **系统性抬高**的脏数据。
+    #
+    # 【后果（为什么必须修，而不是「反正不交易就没事」）】
+    #   ① **KPI#4 符号翻转**：复位（2026-09-21，100 万）至今真实累计 −2.47%，
+    #      虚高后读作 **+2.04%** —— 考核项「近 4 周滚动收益 > 0%」被假数据判为达标。
+    #   ② **风控基线被抬高**：``peak_equity`` / ``day_open_asset`` 双双取到
+    #      1,020,446.6，回撤与日内强平的起算点虚高 4.6%。
+    #   ③ **闸门只管了买，没管盯市**：R9（09-26）的陈旧守卫**故意**写了
+    #      「退出/盯市不受影响，按可得的最好价格计」——当时的隐含假设是
+    #      「陈旧价 = 冻结的旧价，最坏只是不动」。本轮证明该假设**不成立**：
+    #      陈旧价可以是虚高的脏数据，用它盯市等于自己给自己发钱。
+    #
+    # 【修复（最小、可逆、方向安全）】
+    #   · 标的级冻结：本轮该标的行情陈旧（> MARKET_STALE_SEC）且已有盯市价时，
+    #     **不更新** ``last_price``、**不抬高** ``peak_price``；
+    #   · 首次建仓（``last_price<=0``）仍取价，避免市值变 0 的更坏后果；
+    #   · 止损价初始化逻辑**不受影响**（它只用 avg_cost / ATR，不用当前价）；
+    #   · 行情一旦恢复新鲜（10-08 09:30 首个真 tick），冻结立即解除、价格自动
+    #     校正到真实市价 ⇒ **自愈**，无需人工干预。
+    #   · 不放松风控：冻结期间价格不变 ⇒ 既不会误触发止损，也不会掩盖真实的
+    #     盘中断崖（真实断崖必然伴随**新鲜**报价，不受本开关影响）。
+    # 可逆：置 False 即完全恢复 R9 行为（仅改这一个常量，无需改逻辑）。
+    MARK_STALE_FREEZE_VALUATION = True
 
     def _update_market_staleness(self, raw: Dict[str, dict]) -> None:
         """按本轮 tick 快照的交易所时间，判定行情源是否整体失效。"""
@@ -1578,6 +1620,8 @@ class EventEngine:
             if age > self.MARKET_STALE_SEC:
                 stale.append(code)
         self._market_stale_codes = stale
+        # 【R20】逐标的权威集合（盯市冻结判据）
+        self._market_stale_code_set = set(stale)
         self._market_stale_max_age = max_age
         self._market_stale = bool(judged) and (
             len(stale) / max(1, judged) >= self.MARKET_STALE_RATIO)
@@ -1609,6 +1653,65 @@ class EventEngine:
             "max_age_sec": round(self._market_stale_max_age, 1),
             "threshold_sec": self.MARKET_STALE_SEC,
         }
+
+    def _day_open_baseline(self, total_asset: float) -> float:
+        """今日日内盈亏基线（供 ``risk.on_asset_update`` 使用）。
+
+        【2026-10-07 AM-EVOLVE R20】行情陈旧时**不建立**基线（返回 total_asset
+        自身 ⇒ 日内盈亏恒为 0）。理由见 ``_run_once`` 内的调用点注释：伪快照
+        会把起点抬高 4.63%，行情恢复后「量测修正」会被误读成日内暴跌、逼近
+        ``daily_stop_flatten_pct``(-6%) 强平线。抽出为方法是为了可测。
+        """
+        if self._day_open_asset is None and not self._market_stale:
+            self._day_open_asset = total_asset
+        return self._day_open_asset or total_asset
+
+    def _update_position_marks(self, ticks: dict) -> None:
+        """用本轮 tick 更新持仓盯市价 / 峰值价 / 止损价。
+
+        【2026-10-07 AM-EVOLVE R20】从 ``_run_once`` 中抽出为独立方法，唯一目的
+        是让「陈旧报价冻结盯市」这一 P0 语义可以被**单元测试直接钉住**
+        （``tests/test_stale_valuation_guard.py``）——原实现埋在 200 行的主循环里，
+        任何盯市缺陷都只能靠实盘付出真金白银才能发现（09-30 合成价、10-07 伪快照
+        两次都是如此）。抽出过程**未改动任何一行原逻辑**。
+        """
+        for code, pos in self._positions.items():
+            if code in ticks:
+                p = ticks[code].price
+                # ★【2026-10-07 AM-EVOLVE R20 · P0 缺陷修复：陈旧报价禁止盯市】
+                # 见上方 ``MARK_STALE_FREEZE_VALUATION`` 的完整证据与机理。
+                # 一句话：09-26 R9 只拦住了「用陈旧价**建仓**」，而**盯市/峰值/
+                # 权益**仍照单全收；2026-10-07 实盘证明陈旧价可以是**虚高**的
+                # （非「冻结在旧值」），于是 paper 权益被凭空抬高 +45,173 元。
+                if (self.MARK_STALE_FREEZE_VALUATION
+                        and code in getattr(self, "_market_stale_code_set", ())
+                        and pos.last_price > 0):
+                    # 冻结：既不更新盯市价，也**绝不抬高峰值价**
+                    # （峰值是移动止损与回撤基线的锚，抬高它等于放松风控）。
+                    pass
+                else:
+                    pos.last_price = p
+                    if pos.peak_price <= 0 or p > pos.peak_price:
+                        pos.peak_price = p
+                # 止损价更新（按退出范式分两类）
+                if STRATEGY_PARAMS.get("exit_mode", "scalp") == "scalp":
+                    # 吊灯止损：随峰值上移（峰 - atr_stop_mult×ATR），锁定趋势利润
+                    if self.daily is not None:
+                        ap = self.daily.atr_pct(code)
+                        if ap > 0:
+                            chand = pos.peak_price * (1 - STRATEGY_PARAMS["atr_stop_mult"] * ap)
+                            if pos.stop_price <= 0 or chand > pos.stop_price:
+                                pos.stop_price = chand
+                else:
+                    # 趋势骑行模式：止损价只设一次（宽幅硬止损，灾难保护），
+                    # 不随峰值上移，避免把趋势里的正常回撤误杀。
+                    if pos.stop_price <= 0:
+                        ap = self.daily.atr_pct(code) if self.daily else 0.0
+                        if ap <= 0:
+                            ap = abs(STRATEGY_PARAMS.get("stop_loss", -0.03))
+                        wide = max(abs(STRATEGY_PARAMS.get("hard_stop_pct", -0.18)),
+                                   ap * 6.0)
+                        pos.stop_price = round(pos.avg_cost * (1 - wide), 3)
 
     # ============================================================ 单轮
 
@@ -1668,37 +1771,18 @@ class EventEngine:
                 target=self._refresh_daily_async, args=(False,),
                 name="daily-refresh-day", daemon=True,
             ).start()
-        for code, pos in self._positions.items():
-            if code in ticks:
-                p = ticks[code].price
-                pos.last_price = p
-                if pos.peak_price <= 0 or p > pos.peak_price:
-                    pos.peak_price = p
-                # 止损价更新（按退出范式分两类）
-                if STRATEGY_PARAMS.get("exit_mode", "scalp") == "scalp":
-                    # 吊灯止损：随峰值上移（峰 - atr_stop_mult×ATR），锁定趋势利润
-                    if self.daily is not None:
-                        ap = self.daily.atr_pct(code)
-                        if ap > 0:
-                            chand = pos.peak_price * (1 - STRATEGY_PARAMS["atr_stop_mult"] * ap)
-                            if pos.stop_price <= 0 or chand > pos.stop_price:
-                                pos.stop_price = chand
-                else:
-                    # 趋势骑行模式：止损价只设一次（宽幅硬止损，灾难保护），
-                    # 不随峰值上移，避免把趋势里的正常回撤误杀。
-                    if pos.stop_price <= 0:
-                        ap = self.daily.atr_pct(code) if self.daily else 0.0
-                        if ap <= 0:
-                            ap = abs(STRATEGY_PARAMS.get("stop_loss", -0.03))
-                        wide = max(abs(STRATEGY_PARAMS.get("hard_stop_pct", -0.18)),
-                                   ap * 6.0)
-                        pos.stop_price = round(pos.avg_cost * (1 - wide), 3)
+        self._update_position_marks(ticks)
         total_asset = self._total_asset()
         _mark("positions")
         # 首次观测到总资产即作为今日日内盈亏基线（若 init 时未从 equity 快照取到）
-        if self._day_open_asset is None:
-            self._day_open_asset = total_asset
-        self.risk.on_asset_update(total_asset, self._day_open_asset or total_asset)
+        # 【2026-10-07 AM-EVOLVE R20】★ 基线**不得**在行情陈旧时建立。
+        #   否则「伪快照虚增的权益」会被当成今日起点，待行情恢复新鲜、权益校正回
+        #   真实值时，这一**量测修正**会被 risk 读成「日内暴跌」⇒ 可能误触发
+        #   daily_stop_flatten_pct(-6%) 强平真仓位。实测本次虚增 +4.63%，
+        #   已逼近 -6% 触发线的一半以上；行情再差一点就会把真仓位打掉。
+        #   行情新鲜前保持 None ⇒ on_asset_update 收到 (total, total)，
+        #   日内盈亏恒为 0（保守：既不误强平，也不放行新仓——建仓本就被 R9 拦着）。
+        self.risk.on_asset_update(total_asset, self._day_open_baseline(total_asset))
 
         # 4.4) 日内硬止损强平（2026-09-16 新增）：risk 判定当日亏损达
         #   daily_stop_flatten_pct 后置 flatten_requested，这里平掉全部可卖持仓。
