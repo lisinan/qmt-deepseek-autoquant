@@ -672,6 +672,19 @@ class BacktestConfig:
     vol_confirm_mult: float = 1.5     # 当日量 >= 1.5 × 近 ma 日均量
     vol_confirm_ma: int = 20          # 量/价窗口（日）
     vol_confirm_tol: float = 0.03     # 收盘价距阶段高位 <= 3% 视为突破区
+    # ---- 入场「宽度确认」闸门（信号质量层，研究用）------------------------
+    # 【2026-10-07 PM-EVOLVE 第 21 轮】来源：R18/R19/R20 连续三轮诊断出的唯一
+    #   跨窗口一致信号 —— **四套折划分的末端折全部偏弱**，且弱折有共同指纹：
+    #     暴露 31~43% + 成交 3~15 笔 + 胜率 0~30%（强折：暴露 77~92%、成交 20~36
+    #     笔、胜率 42~60%）。机理假设不是「止损太宽」，而是：弱市里日线闸门把
+    #   绝大多数名字挡在外面，只剩 1 只勉强通过 ⇒ 组合拿一张孤立低置信门票，
+    #   反复被打止损，形成「低暴露 + 极低成交 + 零胜率」的磨损态。
+    #   本闸门即对该机理的直接剂量测试：**当日通过全部入场门的名字少于 K 只时，
+    #   当日完全不开新仓**（退出逻辑不受影响）。
+    #   与已证伪轴的区别：regime/择时类看的是**指数状态**，本闸门看的是
+    #   **策略自身候选池的当日宽度**（截面一致性），且不动任何退出路径。
+    #   默认 0 = 关闭 ⇒ **零行为变化**（须四窗共识达标后才考虑｜含实盘读点补齐）。
+    min_passing_candidates: int = 0
     # ---- 横截面风险平价（资本倾斜，研究用，全新特征）----
     # 与 momentum_weight（按动量强弱集中资本）相反：按个股 ATR% 的**倒数**
     # 把新增资本分配给新入选名字（权重 = (1/atr_k) / Σ(1/atr)），让低波动(平静)
@@ -1554,10 +1567,15 @@ def run_backtest(codes: List[str], cfg: BacktestConfig,
                     allowed = set(c for _, c in moms[:cfg.momentum_top_n])
                 mom_val = {c: v for v, c in moms}
             scored = []
+            breadth_n = 0      # 全宇宙「通过全部入场门」的票数（宽度统计，研究用）
             for code, d in panel.items():
                 if code in positions:
                     continue
-                if allowed is not None and code not in allowed:
+                # ★ 宽度统计模式下**先看全宇宙**通过率（不计动量池限制）：
+                #   记广度票数后再按 ``allowed`` 决定是否真的能买（见下方 append）。
+                _need_breadth = cfg.min_passing_candidates > 0
+                _allowed_ok = allowed is None or code in allowed
+                if not _allowed_ok and not _need_breadth:
                     continue
                 # 再入场冷静期：近期刚离场的标的，间隔不足则不重新开仓，
                 # 降低动量重排名造成的无谓换手、削减交易成本侵蚀。
@@ -1604,7 +1622,12 @@ def run_backtest(codes: List[str], cfg: BacktestConfig,
                             trend_up_arr[code][i]
                             or bias_arr[code][i] >= cfg.min_daily_bias):
                         continue
-                scored.append((score, code))
+                # 宽度统计：无论是否在动量池内，只要通过全部入场门就算一票
+                # （默认关闭时本分支零开销、结果逐位不变）。
+                if _need_breadth:
+                    breadth_n += 1
+                if _allowed_ok:
+                    scored.append((score, code))
             scored.sort(key=lambda x: x[0], reverse=True)
 
             # ---- 主力资金流：入场质量门(gate) / 双因子重排(rank) ----
@@ -1682,6 +1705,15 @@ def run_backtest(codes: List[str], cfg: BacktestConfig,
                         rr = rev_rank.get(code, n_items)
                         return wt * rr + (1.0 - wt) * sr   # 名次小=好
                     scored = sorted(items, key=_blend_er)
+            # ---- 入场「宽度确认」闸门（min_passing_candidates>0 时生效）----
+            # 见 BacktestConfig.min_passing_candidates 注释：针对 R18~R20 反复
+            # 观测到的「弱段 = 低暴露 + 极少成交 + 零胜率」指纹。
+            # 只砍**新开仓**，不触碰任何退出判定 ⇒ 可与退出侧结论叠加阅读。
+            # 默认 0 → 恒不触发（零行为变化，守卫测试见
+            # tests/test_min_passing_candidates.py）。
+            if cfg.min_passing_candidates > 0 and breadth_n < int(
+                    cfg.min_passing_candidates):
+                scored = []
             # ---- 分行业分散持仓（max_per_sector>0 时生效）----
             # 在"总持仓上限"之内，进一步限制同一产业链环节最多持几只，
             # 强制组合跨环节铺开、降低环节内隐性集中风险。

@@ -78,6 +78,13 @@ def _collect_tests():
             "tests.test_market_staleness_guard",
             # 【2026-10-07 AM-EVOLVE R20】陈旧报价盯市冻结守卫（P0：伪快照虚增权益）
             "tests.test_stale_valuation_guard",
+            # 【2026-10-07 PM R21】账本「陈旧盯市污染」守卫：AM 已修「不再产生
+            # 新污染」，但已被污染的历史快照仍在库里 ⇒ 10-08 的 prev_asset 会
+            # 取到虚高的 1,020,446.6，账本将记一笔 −4.4% 的假亏损（同型 R14）。
+            "tests.test_ledger_stale_mark_guard",
+            # 【2026-10-07 PM R21】入场「宽度确认」闸门代理守卫：20 轮网格后第一个
+            # 过关候选；锁死「默认 off 零变化 / 开启后真变 / 方向一致 / 两侧同值」。
+            "tests.test_breadth_gate_proxy",
             # 【2026-09-28 R10】验证器 base_cfg 与生产配置的口径漂移守卫。
             # 该坑已踩两次（09-18 top_n/rpt、09-28 northbound_mode）。
             "tests.test_evolve_baseline_sync",

@@ -33,9 +33,14 @@ from strategy.backtest_daily import BacktestConfig, run_backtest  # noqa: E402
 
 # 【门锁 1】默认口径下 P0 基线的已验证数值（23 只 AI 宇宙 × 900 根，单边 0.15%）。
 # 与 tests/test_manual_entry_proxy.py 同源（down_day_exit_pct=-3.25 口径）。
-BASE_IS_RET = 0.9068        # +90.68%
-BASE_IS_SHARPE = 1.7925     # +1.79
-BASE_IS_MDD = -0.0542       # -5.42%
+# 【2026-10-07 第 21 轮 PM-EVOLVE 再重钉】生产新增 `min_passing_candidates`=2
+#   （入场「宽度确认」闸门，四窗共识最差 +0.202）⇒ P0 基线同步：
+#     IS ret +90.68%→**+87.86%**  Sh 1.79→**+1.94**  MDD −5.42%→**−4.28%**
+#     成交 176→**166** 笔、胜率 49.4%→**52.4%**、暴露 63.5%→58.2%
+#     OOS 四窗均值 Sh 1.672 → **1.927**（KPI#1 缺口 −0.328 → −0.073）
+BASE_IS_RET = 0.878624      # +87.86%
+BASE_IS_SHARPE = 1.941583   # +1.94
+BASE_IS_MDD = -0.042757     # -4.28%
 BASE_TRADES = 176           # 已验证成交笔数
 TOL_RET = 0.02
 TOL_SH = 0.05

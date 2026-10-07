@@ -155,7 +155,114 @@ def snapshot_days(path=None) -> list:
 
 
 def eod_asset(day: str, path=None) -> float | None:
-    """某日**最后一条**权益快照的总资产 = 当日 EOD 权益（跨日口径的锚）。"""
+    """某日**最后一条**权益快照的总资产 = 当日 EOD 权益（跨日口径的锚）。
+
+    【2026-10-07 PM-EVOLVE 第 21 轮】加入**陈旧盯市污染校正**：
+    若当日被 :func:`stale_mark_suspect_day` 判为污染（零成交 + 权益零波动 +
+    却相对前一日跳变 > 0.5%），则该日的「EOD」视为**不可信**，
+    回溯到最近一个可信交易日的 EOD（最多回退 10 天）。
+    语义：没有成交、盯市价也没动的日子，**不应产生任何盈亏** ⇒ 记为 0%。
+    """
+    if not Path(path or DB_PATH).exists():
+        return None
+    raw = eod_asset_raw(day, path)
+    if raw is None:
+        return None
+    if not stale_mark_suspect_day(day, path):
+        return raw
+    d = day
+    for _ in range(10):
+        d = prev_snapshot_day(d, path)
+        if not d:
+            return raw
+        if not stale_mark_suspect_day(d, path):
+            v = eod_asset_raw(d, path)
+            return v if v is not None else raw
+    return raw
+
+
+def day_stats(day: str, path=None) -> tuple:
+    """当日快照的 (条数, 最小权益, 最大权益, 成交笔数)。
+
+    用于「陈旧盯市污染」检测（见 :func:`stale_mark_suspect_day`）。
+    """
+    if not Path(path or DB_PATH).exists():
+        return (0, None, None, 0)
+    with _conn(path) as con:
+        r = con.execute(
+            "SELECT COUNT(*) c, MIN(total_asset) lo, MAX(total_asset) hi "
+            "FROM equity_snapshots WHERE substr(ts,1,10)=? "
+            "AND total_asset IS NOT NULL", (day,)
+        ).fetchone()
+        f = con.execute(
+            "SELECT COUNT(*) c FROM fills WHERE substr(ts,1,10)=?", (day,)
+        ).fetchone()
+    if r is None or not r["c"]:
+        return (0, None, None, int(f["c"]) if f else 0)
+    return (int(r["c"]), float(r["lo"]), float(r["hi"]),
+            int(f["c"]) if f else 0)
+
+
+def stale_mark_suspect_day(day: str, path=None, flat_tol: float = 1e-9,
+                           move_tol: float = 0.005) -> bool:
+    """当日权益是否被「陈旧盯市」污染（True = 不可用作 EOD 锚）。
+
+    【2026-10-07 PM-EVOLVE 第 21 轮】同伴缺陷：AM 时段才修完「陈旧报价
+    抬高盯市」的根因（`engine/event_engine.py` 的
+    ``MARK_STALE_FREEZE_VALUATION``），但**已被污染的历史快照仍然留在库里**：
+    2026-10-07（国庆休市、休市日）全天快照恒为 1,020,446.6，而 09-30 真实
+    EOD 是 975,273.6 ⇒ 虚增 +45,173（+4.63%）。若不拦截，10-08 的
+    ``prev_asset`` 会取到虚高值，账本会记一笔 **−4.4% 的假亏损**
+    （与 R14 合成行情假成交同型），KPI #4 符号再次失真。
+
+    判据（全部来自 DB 自身，不依赖任何外部行情源 ⇒ 稳定可测）：
+      ① 当日**零成交**（组合未变动）；
+      ② 当日快照权益**零波动**（max−min ≤ tol）——真实交易日里 5 只持仓
+         的市值不可能逐分钟完全相同 ⇒ 说明盯市价根本没在动（陈旧/休市）；
+      ③ 当日 EOD 相对**前一个可信日**偏离 > move_tol(0.5%)
+         ——零成交 + 零波动却「赚了钱」，只能是脏价格。
+    三者同时成立 ⇒ 判定为陈旧盯市污染。
+
+    判据的可证伪性：真实交易日即使全天涨停/跌停也会留下**成交**（①不成立），
+    且单日组合波动超过 0.5% 的极端日子几乎必然伴随成交或前一个交易日的
+    真实价格位移 ⇒ 不会误伤。极端情况下的代价是「当日记为 0% 并留痕」，
+    而非静默采用可疑数字——这正是本守卫的目的。
+    """
+    cnt, lo, hi, fills = day_stats(day, path)
+    if cnt < 2 or fills:
+        return False
+    if lo is None or hi is None or (hi - lo) > flat_tol:
+        return False
+    cur = eod_asset_raw(day, path)
+    anchor = _credible_anchor(day, path, cur)
+    if cur is None or anchor is None or anchor <= 0:
+        return False
+    return abs(cur / anchor - 1.0) > move_tol
+
+
+def _credible_anchor(day: str, path, cur: float | None) -> float | None:
+    """向前找到**取值不同**的最近一天的 EOD，作为对比锚。
+
+    为什么不能直接比「前一天」：污染可能**连续多日**（整个长假），此时每天都
+    与前一天逐位相同 ⇒ 互相掩护、谁都不显得异常（实测 10-06 / 10-07 双污染日
+    第一天会被抓到、第二天 100% 漏网）。这里跳过所有「与当前值相同」的日子，
+    一路回溯到真正发生位移的那天再比。
+    """
+    if cur is None:
+        return None
+    d = prev_snapshot_day(day, path)
+    for _ in range(10):
+        if not d:
+            return None
+        v = eod_asset_raw(d, path)
+        if v is not None and abs(v / cur - 1.0) > 1e-9:
+            return v
+        d = prev_snapshot_day(d, path)
+    return None
+
+
+def eod_asset_raw(day: str, path=None) -> float | None:
+    """某日最后一条快照的权益（**不**做污染校正，仅供内部/诊断使用）。"""
     if not Path(path or DB_PATH).exists():
         return None
     with _conn(path) as con:
@@ -202,6 +309,10 @@ def build_row_from_db(target: str, path=None, note: str = "") -> dict | None:
     eod = eod_asset(target, path)
     if eod is None:
         return None
+    # 陈旧盯市污染留痕：原文,dict 里必须能看出「这一天的原始快照被否决了」，
+    # 否则审计时无法区分「真的没波动」与「脏数据被中和」。
+    raw_eod = eod_asset_raw(target, path)
+    contaminated = (raw_eod is not None and abs(raw_eod - eod) > 1e-6)
     prev_day = prev_snapshot_day(target, path)
     prev = eod_asset(prev_day, path) if prev_day else None
 
@@ -232,7 +343,10 @@ def build_row_from_db(target: str, path=None, note: str = "") -> dict | None:
         # ★ 溯源标记：EVOLVE 消费时能一眼看出该行是 DB 直读而非复盘加工品，
         #   避免把「降级行」当成「完整行」使用。
         "source": "db_fallback",
-        "note": note or None,
+        "note": (note or ("" if not contaminated else ""))
+                + (f"陈旧盯市污染已中和：原始快照 {raw_eod:,.2f} 被判为脏值，"
+                   f"改用最近可信交易日 EOD {eod:,.2f}"
+                   if contaminated else ""),
     }
     return row
 
@@ -248,6 +362,9 @@ def missing_days(path=None, ledger_rows=None, limit: int = 40,
     rows = ledger_rows if ledger_rows is not None else read_ledger()
     have = {r.get("date") for r in rows}
     days = snapshot_days(path)
+    # 休市日/陈旧盯市日不产出账本行（2026-10-07 起）：它们没有真实盈亏，
+    # 补记只会制造「零成交却大涨/大跌」的假记录。
+    days = [d for d in days if not stale_mark_suspect_day(d, path)]
     out = [d for d in days[-limit:] if d not in have]
     if since:
         out = [d for d in out if d > since]

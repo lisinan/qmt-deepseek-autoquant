@@ -80,6 +80,11 @@ MUST_MATCH = {
     "rotation_min_score_gap_hot": None,    # 0.0
     "rotation_max_swaps_per_eval": None,   # 3
     "rotation_require_daily_gate": None,   # True（09-23 缺陷修复后生产值）
+    # 【2026-10-07 第 21 轮】入场「宽度确认」闸门首次落盘即两侧同值 2
+    #   （第 10 次同型登记）。为什么必须 MUST_MATCH：它是**入场侧**开关，
+    #   一旦回测默认 0 而生产 2，P0 基线的成交/暴露就会少一整块，
+    #   所有历史 dSh 与 KPI 失真（与观察篮、轮动同型）。
+    "min_passing_candidates": None,  # 2
 }
 
 # 已知、尚未裁决的历史差异：(回测侧值, 生产侧值)。钉住数值 ⇒ 任一侧变动即红。

@@ -2186,7 +2186,21 @@ class EventEngine:
         if not regime_ok:
             logger.debug("regime 门关闭，跳过单标的入场")
 
+        # ---- ★ 入场「宽度确认」闸门（min_passing_candidates，2026-10-07 PM 第 21 轮）----
+        # 回测侧（strategy/backtest_daily.py 同名旋钮，四窗共识 +0.258/+0.308/
+        #   +0.202/+0.251，最差 **+0.202**，IS Sh 1.79→1.94、MDD −5.42%→−4.28%、
+        #   成交 176→166 笔而胜率 49.4%→52.4%）针对的是 R18~R20 连续三轮观测到的
+        #   「弱段指纹」：暴露 31~43% + 成交 3~15 笔 + 胜率 0~30%。
+        # 机理：弱市里绝大多数名字被日线闸门挡住，只剩 1 只勉强通过 ⇒
+        #   组合拿一张孤立低置信门票反复被打止损。故**同日 BUY 信号少于 K 只时
+        #   完全不开新仓**（退出逻辑不受影响）。
+        # 实现口径：本轮评估中产生 BUY 信号的**全宇宙票数**（与回测的
+        #   「通过全部入场门的票数」同义；日线特征一天内不变 ⇒ 日内稳定）。
+        # 热读 STRATEGY_PARAMS（不在 __init__ 缓存）⇒ 改值**无需重启**即可验证。
+        _min_breadth = int(STRATEGY_PARAMS.get("min_passing_candidates", 0) or 0)
+
         best = None   # 本轮最高分候选（可观测性用）
+        pending_buys: List[tuple] = []
         for code in candidate_codes:
             if code in held_codes:
                 continue
@@ -2208,6 +2222,20 @@ class EventEngine:
             tick = ticks.get(code)
             if tick is None:
                 continue
+            pending_buys.append((sig, tick))
+
+        if _min_breadth > 0 and len(pending_buys) < _min_breadth:
+            if pending_buys:
+                logger.info("[宽度确认] 本轮 BUY 信号仅 %d 只 < %d ⇒ 当日不开新仓"
+                            "（%s）", len(pending_buys), _min_breadth,
+                            ",".join(s.code for s, _t in pending_buys[:5]))
+            pending_buys = []
+
+        for sig, tick in pending_buys:
+            # 与改造前同义：逐笔下单调优仓位上限（原循环内逐次判定）
+            if len([p for p in self._positions.values()
+                    if p.quantity > 0]) >= self.max_positions:
+                break
             self._handle_buy(sig, tick, current_prices)
 
         # 【2026-09-21】可观测性：本轮没有任何 BUY 时，节流输出一次诊断。
@@ -2281,6 +2309,14 @@ class EventEngine:
                 feat = self.daily.features(code) if self.daily else None
                 codes_to_features[code] = (name, feat)
             targets = self._portfolio.select_daily(codes_to_features)
+            # ★ 入场「宽度确认」闸门（与 single 模式同参数，见上方注释）
+            _min_breadth = int(STRATEGY_PARAMS.get("min_passing_candidates", 0) or 0)
+            if _min_breadth > 0:
+                _nb = sum(1 for s in targets if s.side == "BUY")
+                if _nb < _min_breadth:
+                    logger.info("[宽度确认] 组合模式 BUY 目标仅 %d 只 < %d ⇒ 不开新仓",
+                                _nb, _min_breadth)
+                    targets = [s for s in targets if s.side != "BUY"]
             for sig in targets:
                 self._save_signal(sig)
             current_prices = {c: t.price for c, t in ticks.items()}

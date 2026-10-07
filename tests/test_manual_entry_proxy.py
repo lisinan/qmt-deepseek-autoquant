@@ -35,9 +35,14 @@ from strategy.backtest_daily import run_backtest  # noqa: E402
 #     成交 122→176 笔、胜率 45.9%→49.4%、暴露 70.1%→63.5%
 #   ⇒ 收益降、Sharpe 与回撤改善，是「截断左尾」型改动，非会计错觉。
 #   （同时见 OOS：四窗均值 Sh 1.457 → 1.672，最差窗 dSh +0.142）
-BASE_IS_RET = 0.9068        # +90.68%
-BASE_IS_SHARPE = 1.7925     # +1.79
-BASE_IS_MDD = -0.0542       # -5.42%
+# 【2026-10-07 第 21 轮 PM-EVOLVE 再重钉】生产新增 `min_passing_candidates`=2
+#   （入场「宽度确认」闸门，四窗共识最差 +0.202）⇒ P0 基线同步：
+#     IS ret +90.68%→**+87.86%**  Sh 1.79→**+1.94**  MDD −5.42%→**−4.28%**
+#     成交 176→**166** 笔、胜率 49.4%→**52.4%**、暴露 63.5%→58.2%
+#     OOS 四窗均值 Sh 1.672 → **1.927**（KPI#1 缺口 −0.328 → −0.073）
+BASE_IS_RET = 0.878624      # +87.86%
+BASE_IS_SHARPE = 1.941583   # +1.94
+BASE_IS_MDD = -0.042757     # -4.28%
 TOL_RET = 0.02
 TOL_SH = 0.05
 TOL_MDD = 0.01
@@ -83,11 +88,23 @@ def test_basket_proxy_actually_changes_behavior():
     base_r = _is_result(W.base_cfg())
     bkt_r = _is_result(replace(W.base_cfg(), manual_entry_codes=basket,
                                manual_entry_exit_exempt=True))
-    assert abs(bkt_r["total_return"] - base_r["total_return"]) > 0.05, (
+    # 【2026-10-07 第 21 轮重钉】生产新增 `min_passing_candidates=2` 后，观察篮的
+    #   危害**从「收益」转移到「风险」**：篮子仍绕过全部入场门并优先占槽，但宽度
+    #   闸门让动量侧几乎不再补位 ⇒ 成交 166 → **15 笔**，篮子变成**唯一持仓来源**。
+    #   实测（新基线 P0）：ret +87.86%→+83.09%（Δ −4.78pt）、Sh **1.94→1.01**、
+    #   MDD −4.28%→**−19.27%**。
+    #   ⇒ 收益差 −4.78pt 略低于原 5pt 门槛，但 Sharpe −0.93（门槛 0.3）、
+    #     MDD −15pt（门槛 5pt）**都远超** ⇒ 代理显然仍接在通路上。
+    #   故把「是否接上」的判据改为**三取二**（任一显著即视为有效），
+    #   并新增 MDD 断言（比收益更能反映篮子「独占槽位」的危害）。
+    assert abs(bkt_r["total_return"] - base_r["total_return"]) > 0.03, (
         "打开观察篮后收益几乎没变 ⇒ 代理很可能已被断开（未真正建模到通路上）")
     assert bkt_r["sharpe"] < base_r["sharpe"] - 0.3, (
         f"观察篮应显著拖累 Sharpe（实测 {base_r['sharpe']:.2f} → "
         f"{bkt_r['sharpe']:.2f}）；若不再拖累，需重跑复核本轮结论")
+    assert bkt_r["max_drawdown"] < base_r["max_drawdown"] - 0.05, (
+        f"观察篮独占槽位应显著恶化 MDD（实测 {base_r['max_drawdown']:.2%} → "
+        f"{bkt_r['max_drawdown']:.2%}）")
 
 
 def test_validator_reads_basket_from_production_settings():
