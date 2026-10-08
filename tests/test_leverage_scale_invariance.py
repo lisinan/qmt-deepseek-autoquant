@@ -197,3 +197,58 @@ def test_typical_position_not_crushed_by_cap_at_rpt020():
         assert capped >= 0.60 * target, (
             f"atr={atr_pct:.1%}: 上限把 {target:,.0f} 压到 {capped:,.0f}（<60%）")
     assert sz.risk_per_trade == float(STRATEGY_PARAMS["risk_per_trade"])
+
+
+def test_scale_gate_promotes_monotonic_in_budget_sweep():
+    """第三通道 --track scale：单调 + 预算内 + 正收不退化 + 最差折>-15% ⇒ 通过。
+
+    这是 R23 落盘 risk_per_trade 0.012→0.020 的真实形态（收益单调放大、
+    MDD 从 -4.71% 扩到 -7.11% 仍远在 -20% 预算内、正收折 22/26 不退化）。
+    """
+    from strategy._evolve_wf import scale_gate
+    rows = [
+        dict(value=0.012, is_ret=1.11, is_mdd=-0.0471, pos=22, n=26, worst=-0.0194),
+        dict(value=0.016, is_ret=1.70, is_mdd=-0.0650, pos=22, n=26, worst=-0.0400),
+        dict(value=0.020, is_ret=2.11, is_mdd=-0.0711, pos=22, n=26, worst=-0.0497),
+    ]
+    r = scale_gate(rows, budget_pct=-0.20)
+    assert r is not None
+    assert r["s1"], "收益应随 k 单调上升"
+    assert r["s2"], "MDD 应在 -20% 预算内"
+    assert r["s3"], "正收折不应退化"
+    assert r["s4"], "最差单折应 > -15%"
+    assert r["pass_all"] is True
+    assert abs(r["usage"] - 0.0711 / 0.20) < 1e-9, "回撤预算使用率应为 |MDD|/|预算|"
+
+
+def test_scale_gate_rejects_non_monotonic_or_over_budget():
+    """尺度通道必须拦下『非单调』与『超预算』两类伪杠杆。"""
+    from strategy._evolve_wf import scale_gate
+    # 非单调：收益在中间档回落 ⇒ S1 FAIL
+    nonmono = [
+        dict(value=0.012, is_ret=0.50, is_mdd=-0.05, pos=22, n=26, worst=-0.02),
+        dict(value=0.016, is_ret=0.40, is_mdd=-0.06, pos=22, n=26, worst=-0.03),
+        dict(value=0.020, is_ret=0.60, is_mdd=-0.08, pos=22, n=26, worst=-0.05),
+    ]
+    r1 = scale_gate(nonmono, budget_pct=-0.20)
+    assert r1["s1"] is False and r1["pass_all"] is False
+
+    # 超预算：放大到最大时 IS MDD 突破 -20% ⇒ S2 FAIL + 使用率 > 100%
+    over = [
+        dict(value=0.012, is_ret=0.50, is_mdd=-0.05, pos=22, n=26, worst=-0.02),
+        dict(value=0.020, is_ret=1.10, is_mdd=-0.25, pos=22, n=26, worst=-0.06),
+    ]
+    r2 = scale_gate(over, budget_pct=-0.20)
+    assert r2["s2"] is False and r2["usage"] > 1.0
+    assert r2["pass_all"] is False
+
+
+def test_scale_gate_reads_production_budget_by_default():
+    """budget 缺省时须从生产 RISK_PARAMS.max_drawdown_pct 读取，避免第二份硬编码。"""
+    from strategy._evolve_wf import scale_gate
+    rows = [
+        dict(value=0.012, is_ret=0.50, is_mdd=-0.05, pos=22, n=26, worst=-0.02),
+        dict(value=0.020, is_ret=1.00, is_mdd=-0.09, pos=22, n=26, worst=-0.05),
+    ]
+    r = scale_gate(rows)
+    assert r["budget"] == abs(float(RISK_PARAMS["max_drawdown_pct"]))

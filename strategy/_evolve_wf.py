@@ -35,6 +35,7 @@ from config.settings import (  # noqa: E402
     # 【2026-09-30 第 15 轮】观察篮清单**直接从生产配置读取**，不在验证器里
     # 复制一份常量——硬编码第二份清单正是本项目踩了 7 次口径漂移的根因。
     STRATEGY_PARAMS as _PROD_STRATEGY_PARAMS,
+    RISK_PARAMS as _PROD_RISK_PARAMS,  # 尺度闸门 S2 需要 max_drawdown_pct
 )
 # 生产观察篮（may be empty tuple if not configured）
 PROD_MANUAL_ENTRY_CODES = tuple(
@@ -612,6 +613,49 @@ def oos_stats(cfg, subs, bt):
     ), rs
 
 
+def scale_gate(rows, budget_pct=None):
+    """尺度/杠杆型改动的晋升闸门（2026-10-08 R23 第三通道 ``--track scale``）。
+
+    与 alpha/defect 通道的根本区别：Sharpe 与 Calmar 都是**尺度不变量**——
+    整仓按 k 缩放 ⇒ 收益 k·R、波动 k·σ ⇒ 比值恒定。因此「最差窗 dSh ≥ +0.10」
+    会**系统性否决一切仓位放大**（这正是过去 20 轮 ``risk_per_trade`` 被反复
+    REJECT 的根因，R23 已用 test_leverage_scale_invariance 钉成数学恒等式）。
+    故决策变量改为「还剩多少回撤预算」，判据（AUTOMATIONS.md §8'）：
+
+      S1 收益随 k **单调**上升（确认是真杠杆而非噪声）
+      S2 MDD 仍在预算内，并给出回撤预算使用率 = |MDD| / |max_drawdown_pct|
+      S3 正收折数**不退化**（放大到最大时不比基线少）
+      S4 最差单折 > −15%
+      S5 风险底线（risk_per_trade ≤ 0.02 等）由调用方/守卫另行钉住
+
+    ``rows`` 为 grid 模式已算好的每档结果（dict 含 value/is_ret/is_mdd/pos/worst）。
+    """
+    if not rows:
+        return None
+    if budget_pct is None:
+        budget_pct = float(_PROD_RISK_PARAMS.get("max_drawdown_pct", -0.20))
+    s = sorted(rows, key=lambda r: float(r["value"]))
+    base, top = s[0], s[-1]
+    is_rets = [r["is_ret"] for r in s]
+    s1 = all(is_rets[i] >= is_rets[i - 1] - 1e-9
+             for i in range(1, len(is_rets)))
+    worst_mdd = min(r["is_mdd"] for r in s)
+    budget = abs(budget_pct)
+    usage = abs(worst_mdd) / budget if budget else float("inf")
+    s2 = worst_mdd >= -budget
+    s3 = top["pos"] >= base["pos"]
+    s4 = top["worst"] > -0.15
+    return dict(
+        s1=s1, s2=s2, s3=s3, s4=s4,
+        usage=usage, worst_mdd=worst_mdd, budget=budget,
+        base_value=base["value"], top_value=top["value"],
+        top_ret=top["is_ret"], top_mdd=top["is_mdd"],
+        top_pos=top["pos"], top_n=top["n"], top_worst=top["worst"],
+        base_pos=base["pos"],
+        pass_all=bool(s1 and s2 and s3 and s4),
+    )
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--count", type=int, default=900)
@@ -623,10 +667,16 @@ def main():
     ap.add_argument("--values", default="3,5,8,10,15,20")
     ap.add_argument("--json", default="")
     # 【2026-09-23 OWNER 授权】晋升双通道：alpha（默认，防 churn）/ defect（缺陷修复）
-    ap.add_argument("--track", default="alpha", choices=["alpha", "defect"],
+    # 【2026-10-08 R23】第三通道 scale（尺度/杠杆型改动）：Sharpe 是尺度不变量，
+    #   「最差窗 dSh≥+0.10」会系统性否决一切仓位放大；scale 通道改按
+    #   「收益单调 / 回撤预算使用率 / 正收不退化 / 最差折>-15%」裁决。
+    #   仅 --mode grid 有意义（剂量扫描），consensus 下会明确报错。
+    ap.add_argument("--track", default="alpha",
+                    choices=["alpha", "defect", "scale"],
                     help="alpha=闸门②要求最差窗口 dSh≥+0.10（防过拟合调参）；"
                          "defect=缺陷修复通道，闸门②放宽为『方向不劣化』"
-                         "（均值 dSh≥0 且最差窗口≥-0.05），其余闸门照旧")
+                         "（均值 dSh≥0 且最差窗口≥-0.05）；"
+                         "scale=尺度/杠杆通道（grid 模式，判据见 scale_gate）")
     # 反向对照：缺陷修复时「对照」应是实盘现状（如 G1/H1），「候选」是修复后的基线。
     # 默认以 P0 为对照会把修复收益算成负号、闸门①（IS 提升）也会判反。
     ap.add_argument("--baseline", default="P0_当前生产基线",
@@ -785,6 +835,24 @@ def main():
             print(f"\n  -> OOS 最优值 = {best['value']}  dSharpe={best['d_sharpe']:+.3f} "
                   f"累计差={best['cum_diff_pt']:+.1f}pt  "
                   f"{'【达到 +0.10 闸门】' if best['d_sharpe'] >= 0.10 else '【未达 +0.10 闸门】'}")
+        # ---- 【2026-10-08 R23】尺度/杠杆通道：决策变量是「还剩多少回撤预算」----
+        if args.track == "scale":
+            sg = scale_gate(rows)
+            if sg:
+                print(f"\n  ★ TRACK=SCALE 尺度闸门（决策变量=回撤预算，非 dSh；"
+                      f"预算 |max_drawdown_pct|={sg['budget']*100:.0f}%）")
+                print(f"    S1 收益随k单调上升 : {'PASS' if sg['s1'] else 'FAIL'}")
+                print(f"    S2 MDD在预算内     : {'PASS' if sg['s2'] else 'FAIL'}"
+                      f"   回撤预算使用率={sg['usage']*100:.0f}%"
+                      f"（最差IS_MDD={sg['worst_mdd']*100:+.2f}%）")
+                print(f"    S3 正收折不退化    : {'PASS' if sg['s3'] else 'FAIL'}"
+                      f"  （{sg['base_value']}: {sg['base_pos']}/{sg['top_n']}"
+                      f" -> {sg['top_value']}: {sg['top_pos']}/{sg['top_n']}）")
+                print(f"    S4 最差单折>-15%   : {'PASS' if sg['s4'] else 'FAIL'}"
+                      f"  （top 最差折 {sg['top_worst']*100:+.1f}%）")
+                verdict = ("通过（可落盘；已知代价：弱市亏损同步放大，须显式书写）"
+                           if sg['pass_all'] else "否决")
+                print(f"    => {'>>> ' if sg['pass_all'] else ''}{verdict}")
         if args.json:
             Path(args.json).write_text(json.dumps(
                 dict(param=args.param, base=dict(
@@ -800,6 +868,10 @@ def main():
     if args.mode == "consensus":
         WINDOWS = [(60, 9), (75, 7), (90, 6), (120, 4)]
         track = args.track
+        if track == "scale":
+            raise SystemExit(
+                "--track scale 仅用于 --mode grid（剂量扫描），"
+                "consensus 比较的是离散候选配置，尺度判据（收益单调性）不适用")
         tests = candidates_final()
         print(f"\n{'=' * 116}")
         print("多窗口共识：同一候选在 4 套互不重叠的折划分下重跑，"

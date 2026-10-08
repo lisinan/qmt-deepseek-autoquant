@@ -126,7 +126,7 @@ def base_cfg() -> BacktestConfig:
         exit_mode="trend", trend_exit_ma=60, hard_stop_pct=-0.18,
         trend_max_hold_days=120,
         momentum_rank=True, momentum_top_n=3, momentum_lookback=60,
-        risk_per_trade=0.012, fixed_amount=300000.0,
+        risk_per_trade=0.020, fixed_amount=300000.0,  # 2026-10-08 R23 由 0.012 回补，须与生产同步
         # 【2026-10-03 SYNTHESIZE 基线同步】原 down_day_exit_pct=-9.0 / atr_stop_mult=2.0
         #   / 缺 northbound_mode 三处全部漂移自生产（生产已落盘 -3.25 / 2.9 / "gate"）。
         #   _evolve_wf.py::base_cfg 在 09-29/10-03 已同步，但本函数（被权威复验

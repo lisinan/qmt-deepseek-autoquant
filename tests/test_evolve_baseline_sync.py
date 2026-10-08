@@ -34,7 +34,7 @@ MUST_MATCH = {
     "momentum_rank": None,        # True
     "momentum_top_n": None,       # 3
     "momentum_lookback": None,    # 60
-    "risk_per_trade": None,       # 0.012
+    "risk_per_trade": None,       # 0.020（2026-10-08 R23 回补）
     "max_positions": None,        # 5
     "buy_score_threshold": None,  # 4.0
     "min_signals": None,          # 3
@@ -181,6 +181,10 @@ OPT_HARNESS_MUST_MATCH = {
     "northbound_mode": None,     # "gate"（2026-09-19 落盘，原缺→默认 off 漂移）
     "nb_lookback": None,         # 20
     "min_daily_bias": None,      # 2.0（opt_harness 不显式设，靠 BacktestConfig 默认值对齐）
+    # 【2026-10-08 R23】risk_per_trade 由 0.012 回补到 0.020 时，_evolve_wf.base_cfg 已同步
+    #   （受 MUST_MATCH 覆盖），但 opt_harness.base_cfg 漏同步 → 权威复验 _verify_live_quality.py
+    #   会用旧 0.012 跑「当前状态」。这是第 11 次同型漂移，现补锁。
+    "risk_per_trade": None,      # 0.020（2026-10-08 R23 回补）
 }
 
 

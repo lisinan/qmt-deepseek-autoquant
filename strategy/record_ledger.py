@@ -24,11 +24,34 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import sqlite3
+import sys
 from datetime import date as date_cls
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+# Windows 控制台 UTF-8（本文件会打印中文 / ★ 等字符）。不加这段时，cp1252
+# 控制台上 print 会抛 UnicodeEncodeError，使 --check-gap / --backfill 在打印阶段就崩。
+try:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
+
+# ❗ 必须先 import config.settings，再 import sqlite3（与 strategy/review_daily.py 一致）。
+# 原因：config/settings.py 里有一段 Windows ``os.add_dll_directory`` 修复，用于把
+# conda env 的 ``Library\bin``（含 sqlite3.dll）加入搜索路径。若先 import sqlite3，
+# 在**未执行 conda activate** 的场景（如直接用解释器路径调用
+# ``<env>/python.exe strategy/record_ledger.py``，或由定时任务/自动化拉起）会抛
+# ``ImportError: DLL load failed while importing _sqlite3``，账本工具彻底跑不起来。
+import config.settings  # noqa: E402,F401  (须先于 sqlite3)
+
+import sqlite3  # noqa: E402
+
 LOG_DIR = ROOT / "logs"
 REPORT_DIR = ROOT / "reports"
 LEDGER_MD = REPORT_DIR / "EVOLUTION_LEDGER.md"

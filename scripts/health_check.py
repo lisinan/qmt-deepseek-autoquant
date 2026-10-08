@@ -25,6 +25,17 @@ import socket
 import subprocess
 import sys
 
+# Windows 控制台 UTF-8（本文件会打印中文）。不加这段时，cp1252 控制台上 print
+# 会抛 UnicodeEncodeError，导致 --start 在拉起引擎后打印「已尝试启动」时崩溃
+# （引擎其实已成功拉起，但调用方看到的是 exit=1，容易误判为启动失败）。
+try:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
+
 BASE_DIR = pathlib.Path(__file__).resolve().parent.parent
 MINIQMT_EXE = r"C:\pazq_qmt\bin.x64\XtItClient.exe"  # 拉起器：双击启动 miniQMT 的入口
 # 真正常驻的引擎进程是 XtMiniQmt.exe；XtItClient.exe 仅作拉起器，启动后即退出，

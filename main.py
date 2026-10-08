@@ -566,13 +566,26 @@ def main() -> int:
     try:
         if args.web:
             from web.app import run_web
-            # 启动 engine（后台线程），除非 --no-engine
+            # 启动 engine（后台线程），除非 --no-engine。
+            # 用 stop_event 联动：engine 主循环退出（收到 --stop 哨兵 / 异常收敛）后
+            # 置位事件，让 Flask 也优雅退出并释放端口。否则引擎停了但 web 残留，
+            # 端口 5000 不释放 → 守护进程误判「引擎在线」→ 永不拉起新引擎
+            # （2026-10-08 实测踩坑）。
+            stop_web = threading.Event()
+
+            def _run_engine():
+                try:
+                    engine.run(max_ticks=args.ticks)
+                finally:
+                    stop_web.set()
+
             if not args.no_engine:
-                t = threading.Thread(target=engine.run,
+                t = threading.Thread(target=_run_engine,
                                      name="engine-main", daemon=True)
                 t.start()
-            # Flask 主线程
-            run_web(engine=engine, host=args.host, port=args.port)
+            # Flask 主线程：启动失败仍会立刻可见；engine 停止后由 stop_web 触发退出
+            run_web(engine=engine, host=args.host, port=args.port,
+                    stop_event=stop_web)
             return 0
         # 默认：engine 主循环
         engine.run(max_ticks=args.ticks)
