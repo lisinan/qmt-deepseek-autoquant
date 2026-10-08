@@ -100,6 +100,9 @@ def _collect_tests():
             # 【2026-09-30 R14】合成行情（mock）禁止交易闸门守卫：
             # 夜间启动落 mock ⇒ 整个交易日按假价格成交（09-30 假亏 21 万元）。
             "tests.test_mock_data_trading_guard",
+            # 【2026-10-08】日内熔断 abs/pct 取较宽松者守卫：¥5000(-0.51%) 使
+            # -3% 成死代码且比单笔风险还小，约每 2~3 日冻结全天（09-24/09-28/10-08）。
+            "tests.test_daily_loss_limit_union",
             # 【2026-09-30 R15】账本断供守卫：账本只依赖 OBSERVE 的 review JSON
             # ⇒ 三级单点故障让 KPI #4 连续 4 个交易日静默无法计算。
             "tests.test_ledger_db_fallback",

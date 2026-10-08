@@ -28,6 +28,23 @@ logger = logging.getLogger(__name__)
 
 _SCALE_LADDER = [1.0, 0.8, 0.6, 0.4, 0.0]
 
+# 【2026-10-08 修复：日内熔断两个阈值自相矛盾】
+# 原实现中 ``daily_loss_limit_abs``(¥5000) 与 ``daily_loss_limit_pct``(-3%) 是
+# **同一意图的两道阈值**，但 abs 判定写在前、pct 是 elif ⇒ **abs 永远先触发**，
+# pct 自上线起就是死代码。而 ¥5000 在 98 万账户上只有 **-0.51%**，比单笔计划风险
+# （risk_per_trade=0.012 ⇒ ≈¥11,763）**还小一半** ⇒ 策略允许单笔亏 1.2 万，
+# 却规定「当日累计亏 5000 就全天冻结」，逻辑上自相矛盾。
+# 实盘铁证：09-24 / 09-28 / 10-08 已触发 3 次 ⇒ 约每 2~3 个交易日冻结全天，
+# 冻结后账户 95% 现金空转，是「赚不到钱」最直接的原因之一。
+# 另外 abs 是**绝对额**，不随账户规模缩放：账户翻倍后相对阈值再减半，越来越严。
+#
+# 修复：生效阈值 = max(abs, pct × 当前权益)，即两者取**较宽松者**。
+#   · 大账户 → pct 生效（随规模自动缩放，这是设计本意）
+#   · 小账户 → abs 生效（保留绝对额下限保护，账户极小时不会因 pct 过松而裸奔）
+#   · 不再自相矛盾，pct 恢复为活参数
+# 可逆：置 ``DAILY_LOSS_UNION_MAX = False`` 即完全恢复旧行为（abs 独断）。
+DAILY_LOSS_UNION_MAX = True
+
 
 class RiskManager:
     def __init__(self, params: Optional[dict] = None):
@@ -154,16 +171,50 @@ class RiskManager:
         # 日内次数
         if daily_trade_count >= self.p["max_daily_trades"]:
             return False, f"daily_trades>{self.p['max_daily_trades']}"
-        # 日内亏损熔断
-        if total_asset > 0:
-            loss_pct = self._daily_pnl / total_asset
-            if loss_pct <= self.p["daily_loss_limit_pct"]:
-                self._halt(reason=f"daily_loss_pct {loss_pct*100:.2f}%")
-                return False, f"halted:{self._halt_reason}"
-        if self._daily_pnl <= -self.p["daily_loss_limit_abs"]:
-            self._halt(reason=f"daily_loss_abs {self._daily_pnl:.2f}")
+        # 日内亏损熔断（2026-10-08：abs / pct 取较宽松者，见模块顶注释）
+        # 必须**合并成一次判定**：原实现 pct 分支写在前、abs 在后，若只把 abs 换成
+        # max(...) 而不合并，小账户时更严的 pct 仍会抢先触发，取宽松者就不生效。
+        _limit = self._daily_loss_limit(total_asset)
+        if _limit > 0 and self._daily_pnl <= -_limit:
+            if self._loss_limit_by_pct(total_asset):
+                _pct = (self._daily_pnl / total_asset * 100) if total_asset > 0 else 0.0
+                self._halt(reason=f"daily_loss_pct {_pct:.2f}%")
+            else:
+                self._halt(reason=f"daily_loss_abs {self._daily_pnl:.2f}")
             return False, f"halted:{self._halt_reason}"
         return True, ""
+
+    def _loss_limit_by_pct(self, total_asset: float = 0.0) -> bool:
+        """当前生效的日内阈值是由 pct 决定的（True）还是由 abs 兜底（False）。
+
+        仅用于给出准确的 halt_reason；判定本身一律走 ``_daily_loss_limit``。
+        """
+        if not DAILY_LOSS_UNION_MAX:
+            return False
+        try:
+            pct_v = abs(float(self.p.get("daily_loss_limit_pct", 0) or 0))
+            abs_v = float(self.p.get("daily_loss_limit_abs", 0) or 0)
+        except (TypeError, ValueError):
+            return False
+        return total_asset > 0 and pct_v > 0 and pct_v * total_asset >= abs_v
+
+    def _daily_loss_limit(self, total_asset: float = 0.0) -> float:
+        """日内亏损熔断的**生效**阈值（正数，元）。
+
+        旧实现直接用固定的 ``daily_loss_limit_abs``，与 ``daily_loss_limit_pct``
+        并存却永远抢先 ⇒ pct 成死代码、且不随规模缩放（见模块顶注释）。
+        这里改为取两者较宽松者；开关关闭时严格返回旧值，行为逐位不变。
+        """
+        abs_v = float(self.p.get("daily_loss_limit_abs", 0) or 0)
+        if not DAILY_LOSS_UNION_MAX:
+            return abs_v
+        try:
+            pct_v = abs(float(self.p.get("daily_loss_limit_pct", 0) or 0))
+        except (TypeError, ValueError):
+            return abs_v
+        if total_asset > 0 and pct_v > 0:
+            return max(abs_v, pct_v * total_asset)
+        return abs_v
 
     # ---------- 成交 ----------
 
@@ -214,8 +265,14 @@ class RiskManager:
                     logger.info("连续亏损 %s 次，仓位倍数 → %s",
                                 self._consec_loss, _SCALE_LADDER[idx])
                 # 日内亏损熔断（on_fill 时即可触发，不依赖 can_open）
-                if self._daily_pnl <= -self.p["daily_loss_limit_abs"]:
-                    self._halt(reason=f"daily_loss_abs {self._daily_pnl:.2f}")
+                # 2026-10-08：abs / pct 取较宽松者，见模块顶注释
+                if self._daily_pnl <= -self._daily_loss_limit(total_asset):
+                    if self._loss_limit_by_pct(total_asset):
+                        _pct = ((self._daily_pnl / total_asset * 100)
+                                if total_asset > 0 else 0.0)
+                        self._halt(reason=f"daily_loss_pct {_pct:.2f}%")
+                    else:
+                        self._halt(reason=f"daily_loss_abs {self._daily_pnl:.2f}")
                 elif total_asset > 0:
                     loss_pct = self._daily_pnl / total_asset
                     if loss_pct <= self.p["daily_loss_limit_pct"]:
