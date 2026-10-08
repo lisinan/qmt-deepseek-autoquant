@@ -85,6 +85,10 @@ def _collect_tests():
             # 【2026-10-07 PM R21】入场「宽度确认」闸门代理守卫：20 轮网格后第一个
             # 过关候选；锁死「默认 off 零变化 / 开启后真变 / 方向一致 / 两侧同值」。
             "tests.test_breadth_gate_proxy",
+            # 【2026-10-08 AM-EVOLVE R22】峰值自愈守卫：R20 只阻断「新增」盯市污染，
+            # 但 10-07 休市伪快照已把 peak_equity 落库为 1,020,446.6（真实可信峰值
+            # 1,005,860）⇒ 随状态恢复跨重启继承，回撤虚高 1.38pp、断路器提前触发。
+            "tests.test_peak_equity_sanity",
             # 【2026-09-28 R10】验证器 base_cfg 与生产配置的口径漂移守卫。
             # 该坑已踩两次（09-18 top_n/rpt、09-28 northbound_mode）。
             "tests.test_evolve_baseline_sync",

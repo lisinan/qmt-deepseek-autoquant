@@ -203,6 +203,52 @@ def _to_tick(code: str, raw: dict) -> Tick:
     )
 
 
+# ============================================================
+# 峰值可信性自愈（【2026-10-08 AM-EVOLVE 第 22 轮】）
+# 证据与机理见 EventEngine.PEAK_EQUITY_STALE_SANITY 的内联注释。
+# 抽出为**模块级纯函数**是为了可测：不依赖 DB、不依赖引擎实例。
+# ============================================================
+
+def credible_peak_from_daily(daily_rows) -> float:
+    """从「每日 (快照数, 日内最高, 日内最低)」聚合中求**可信**权益峰值。
+
+    脏日判据：**多快照零方差**。正常交易时段权益必然随报价波动；若某日
+    有 >= STALE_SUSPECT_MIN_SNAPSHOTS 条快照而 max == min，说明该日盯市
+    价根本没动过（休市伪快照 / 陈旧冻结 / 盯市缺陷），其数值不可信。
+    """
+    peak = 0.0
+    for row in daily_rows or ():
+        try:
+            n = int(row[0] or 0)
+            mx = float(row[1] or 0.0)
+            mn = float(row[2] or 0.0)
+        except (TypeError, ValueError):
+            continue
+        if mx <= 0.0:
+            continue
+        if n >= EventEngine.STALE_SUSPECT_MIN_SNAPSHOTS and mx == mn:
+            continue          # 零方差脏日：整日恒值 ⇒ 不是真实盯市轨迹
+        if mx > peak:
+            peak = mx
+    return peak
+
+
+def sanitize_peak_equity(stored_peak, credible_max) -> float:
+    """把持久化的峰值夹紧到可信上限（**只向下，永不上调**）。
+
+    - ``stored_peak <= 0`` 或 ``credible_max <= 0``：无法判定，原样返回。
+    - 开关关闭（``PEAK_EQUITY_STALE_SANITY=False``）：原样返回（可逆）。
+    - 其余：返回 ``min(stored, credible_max)``。
+    """
+    stored = float(stored_peak or 0.0)
+    cred = float(credible_max or 0.0)
+    if not getattr(EventEngine, "PEAK_EQUITY_STALE_SANITY", True):
+        return stored
+    if stored <= 0.0 or cred <= 0.0:
+        return stored
+    return min(stored, cred)
+
+
 class EventEngine:
     # ---- 决策频率控制（2026-09-02 #E 路径）----
     # Live 不再每 tick 调 TrendStrategy.on_bars（其本质是 minute-bar 评分，
@@ -1602,6 +1648,39 @@ class EventEngine:
     # 可逆：置 False 即完全恢复 R9 行为（仅改这一个常量，无需改逻辑）。
     MARK_STALE_FREEZE_VALUATION = True
 
+    # ---- 【2026-10-08 AM-EVOLVE 第 22 轮】峰值为脏数据时的自愈校验 ----
+    # ★ 前置事实（本轮实盘铁证，来自 storage/qmt.db）：
+    #   2026-09-21 账户复位后，`equity_snapshots` 的**可信**日内最高为
+    #     09-22 = **1,005,860.0**（此后 09-23 1000594 / 09-24 996189 / 09-25 991309 /
+    #     09-28 991109 / 09-29 981200 / 09-30 975273，单调下行）
+    #   而 `engine_state.peak_equity` 与 `peak_asset` 当前 = **1,020,446.6**。
+    #   1,020,446.6 只有一个来源：10-07 休市日 `get_full_tick` 返回
+    #   `timetag=2026-10-06 11:30` 的**伪快照**（R20 已逐票举证：300308 +11.3%、
+    #   688008 +14.9%、002415 +10.0%、000977 +6.1%）⇒ 权益被虚增 +45,173。
+    #
+    # ★ 为什么 R20 修完仍有残留：R20 的 `MARK_STALE_FREEZE_VALUATION` 只阻断
+    #   **新增**污染（冻结 last_price / peak_price、不建日内基线），但脏峰值
+    #   已经**落库**，而 `_restore_engine_state()` 在每次启动时原样读回：
+    #       self._peak_equity = float(row.get("peak_equity") or 0.0)
+    #   ⇒ 一个休市日的脏数据被**永久继承**，跨重启存活。这与 R14「mock 单例
+    #   永久化」同型：缺陷不在产生处，而在**状态的恢复路径没有可信性校验**。
+    #
+    # ★ 后果（必须修的理由）：
+    #   ① 回撤度量系统性虚高：10-08 11:29 真实权益 974,471.6，
+    #      真实回撤 = 974471.6/1005860 − 1 = **−3.12%**，
+    #      但系统按脏峰值报 **−4.51%**（虚增 1.38pp）。
+    #   ② `max_drawdown_pct=−0.20` 断路器因此提前 1.2% 触发
+    #      （真值需跌到 804,688，脏峰值下 816,357 就强平）。
+    #   ③ KPI#3 与所有风控报表沿用该虚高口径。
+    #
+    # 取向说明：本修复**只向下夹紧**（取 min(存储峰值, 可信峰值)），永不上调；
+    #   目的是让回撤反映真值，而不是放松风控——脏峰值本就不是真实权益高点。
+    # 可逆：置 False 即恢复「原样读回」行为（仅改这一个常量，无需改逻辑）。
+    PEAK_EQUITY_STALE_SANITY = True
+    # 「多快照零方差」判定为脏日所需的最少快照数。单个交易时段约 240~263 条；
+    #   09-30 这类只有 1 条快照的日子样本不足，不判脏（保守，避免误杀）。
+    STALE_SUSPECT_MIN_SNAPSHOTS = 30
+
     def _update_market_staleness(self, raw: Dict[str, dict]) -> None:
         """按本轮 tick 快照的交易所时间，判定行情源是否整体失效。"""
         if not raw:
@@ -2877,6 +2956,10 @@ class EventEngine:
             self._peak_equity = float(row.get("peak_equity") or 0.0)
             self._trade_date = (date.fromisoformat(row["trade_date"])
                                 if row.get("trade_date") else date.today())
+            # 【2026-10-08 第 22 轮】峰值自愈：脏峰值（休市伪快照虚增）会随
+            # 持久化状态跨重启永久继承，故在**恢复路径**上做一次可信性夹紧。
+            # 只向下夹紧；取不到可信历史（查询失败/表空）则原样保留（保守）。
+            self._sanitize_restored_peaks()
             # 【2026-09-21】恢复风控熔断/连亏时间戳。必须在 _reset_daily_if_needed
             # 之前：僵尸冻结自愈要用 persist 下来的「连亏起算日」算冷却天数。
             self.risk.load_state(row.get("risk_state"))
@@ -2886,6 +2969,57 @@ class EventEngine:
                         self._daily_trade_count, self.risk._daily_pnl)
         except Exception as e:
             logger.warning("恢复引擎状态失败（从初始状态启动）: %s", e)
+
+    def _credible_peak_equity(self) -> float:
+        """从 `equity_snapshots` 求可信权益峰值（剔除多快照零方差的脏日）。
+
+        查询失败或表为空时返回 0.0 ⇒ 上层 `sanitize_peak_equity` 会原样保留
+        存储峰值（保守，绝不因为量测故障而误改风控基线）。
+        """
+        try:
+            conn = self.storage._conn_get()
+            rows = conn.execute(
+                "SELECT COUNT(*), MAX(total_asset), MIN(total_asset) "
+                "FROM equity_snapshots GROUP BY substr(ts, 1, 10)"
+            ).fetchall()
+        except Exception as ex:      # 量测通道故障不得影响主流程
+            logger.debug("可信峰值查询失败（跳过自愈）: %s", ex)
+            return 0.0
+        return credible_peak_from_daily(rows)
+
+    def _sanitize_restored_peaks(self) -> None:
+        """把恢复出来的 `peak_equity` / `peak_asset` 夹紧到可信峰值。
+
+        ★ 为什么必须做：10-07 休市日伪快照把权益虚增到 1,020,446.6 并落库，
+        R20 只阻断了**新增**污染，脏值却随本函数所在的状态恢复路径跨重启存活
+        ⇒ 回撤被系统性虚高 1.38pp、断路器提前 1.2% 触发。详见
+        ``PEAK_EQUITY_STALE_SANITY`` 内联注释。
+        """
+        if not self.PEAK_EQUITY_STALE_SANITY:
+            return
+        cred = self._credible_peak_equity()
+        if cred <= 0.0:
+            return
+        for label, attr in (("peak_equity", "_peak_equity"),
+                            ("peak_asset", None)):
+            if attr is None:
+                old = float(getattr(self.risk, "_peak_asset", 0.0) or 0.0)
+                new = sanitize_peak_equity(old, cred)
+                if new < old:
+                    logger.warning(
+                        "[峰值自愈] %s %.2f → %.2f（超过可信峰值 %.2f，"
+                        "疑为休市伪快照/陈旧盯市虚增，已夹紧）",
+                        label, old, new, cred)
+                self.risk._peak_asset = new
+            else:
+                old = float(getattr(self, attr, 0.0) or 0.0)
+                new = sanitize_peak_equity(old, cred)
+                if new < old:
+                    logger.warning(
+                        "[峰值自愈] %s %.2f → %.2f（超过可信峰值 %.2f，"
+                        "疑为休市伪快照/陈旧盯市虚增，已夹紧）",
+                        label, old, new, cred)
+                setattr(self, attr, new)
 
     def _save_engine_state(self) -> None:
         """持久化当前 paper 账本（节流由调用方控制，约 60s 一次 + 优雅退出时）。"""
