@@ -106,7 +106,24 @@ GUARD 存活兜底(每小时,含 paper 断言) ─┐
      人工判据：DR-a 参数零改动 / DR-b 实盘铁证 / DR-c 守卫测试存在。
      缺陷修复必须用 `--baseline <实盘现状代理>` 作**反向对照**，否则 dSh 与闸门① 符号会判反。
    - 理由：+0.10 是为防 alpha churn 设计，套在缺陷修复上会**系统性阻断所有修复**。
-8. `EXECUTION_MODE` 保持 `paper`（严禁切 live）
+8'. **★ 第三通道 `--track scale`（2026-10-08 R23 增设，尺度/杠杆型改动）**：
+
+   闸门②（最差窗 dSh ≥ +0.10）与「Calmar 提升」对**仓位缩放类改动在数学上不可能成立** ——
+   Sharpe 与 Calmar 都是**尺度不变量**（整仓按 k 缩放 ⇒ 收益 k·R、波动 k·σ ⇒ 比值恒定）。
+   已由 `tests/test_leverage_scale_invariance.py` 钉死为恒等式。
+   ⇒ 过去 20 轮用它裁决 `risk_per_trade` 等杠杆旋钮，**等于系统性否决一切仓位放大**，
+   这是「回测夏普 2.0、账户却赚不到钱」的根因。
+
+   尺度型判据改为：
+     S1 收益随 k **单调**上升（确认是真杠杆而非噪声）
+     S2 MDD 仍在预算内，并给出**回撤预算使用率 = |MDD| / |max_drawdown_pct|**
+        （本轮回补前仅 36% ⇒ 风险预算被闲置，本身就是配置错误）
+     S3 正收折数**不退化**
+     S4 最差单折 > −15%
+     S5 `risk_per_trade` ≤ 0.02 等风险底线仍不动
+   决策变量是「**还剩多少回撤预算**」，不是「夏普有没有涨」。
+   已知代价须显式书写：收益与亏损**同步放大**（10-08 弱市：−2.68% → 约 −4.5% 量级）。
+8''. `EXECUTION_MODE` 保持 `paper`（严禁切 live）
 
 9. **防 churn**：同一参数 **24 小时内不得重复改动**（落盘前先查 `EVOLUTION_DECISIONS.md` 最近条目）；单轮最多落盘 2 个参数
 10. **回测/实盘口径纪律**：落盘前必须确认该参数在**实盘引擎**有读取点。反例 `reentry_cooldown` 只存在于回测器 `BacktestConfig`、实盘未实现 → 禁止只写 `settings.py`，须先补 `engine/event_engine.py` 实现再走闸门
@@ -129,8 +146,16 @@ GUARD 存活兜底(每小时,含 paper 断言) ─┐
 
 | 类型 | 参数 | 生效 |
 |---|---|---|
-| **热读**（引擎每次调用 `STRATEGY_PARAMS.get`） | `momentum_top_n` / `momentum_lookback` / `momentum_rank` / `momentum_scope` / `max_positions` / `exit_mode` / `hard_stop_pct` / `risk_per_trade` / `stop_loss` / `require_daily_data` | **无需重启**，下次调用即生效 |
-| **缓存**（引擎 `__init__` 读取） | `regime_mode` / `enable_rotation` / `rotation_*` | **需重启引擎**；自动化不得代为重启，须提示用户 |
+| **热读**（引擎每次调用 `STRATEGY_PARAMS.get`） | `momentum_top_n` / `momentum_lookback` / `momentum_rank` / `momentum_scope` / `max_positions` / `exit_mode` / `hard_stop_pct` / `stop_loss` / `require_daily_data` | **无需重启**，下次调用即生效 |
+| **缓存**（引擎 `__init__` 读取） | `regime_mode` / `enable_rotation` / `rotation_*` / **`risk_per_trade`** | **需重启引擎**；自动化不得代为重启，须提示用户 |
+
+★ **2026-10-08 R23 修正（文档错误）**：`risk_per_trade` 此前被误列在「热读、无需重启」一栏，
+与本轮轩然大波直接相关 —— 它实际上由 `risk/position_sizer.py:30` 在
+`PositionSizer.__init__` 里读一次并缓存为 `self.risk_per_trade`，而
+`engine/event_engine.py:288` 的 `self.sizer = PositionSizer()` 只在引擎构造时执行一次
+⇒ **改完必须重启**。
+（bugger：旧表格会让人以为改完当场生效 ⇒ 「改了却没变化」被误判为参数无效或没写进去，
+与本项目已踩 10 次的「落盘≠生效」同型。）
 
 这正是上午周期（11:40 午休）落盘热读参数后，**13:00 下午开盘即可生效并在当天被真实数据检验**的原因。
 
@@ -155,7 +180,7 @@ GUARD 存活兜底(每小时,含 paper 断言) ─┐
 | `dd_recover_days` | **3** | 回撤熔断冷却恢复 |
 | `halt_recover_days` | 1 | 连亏/日亏熔断冷却恢复（可恢复断路器） |
 | `daily_stop_flatten_pct` | **−0.06（新增）** | 日内硬止损 + 强平全部可卖持仓（T+1 仍生效，每日仅一次） |
-| `risk_per_trade` | **0.012** | 单笔风险（原 0.02） |
+| `risk_per_trade` | **0.020（2026-10-08 R23 由 0.012 回补）** | 单笔风险。这个是 Ger 2026-09-16 因实盘 −19.6% 恐慌性收紧的**过期残留**：当时 IS 回撤 −16.08%，收紧有依据；其后 R13/R16/R17/R21 已把回撤压到 −4.71%，前提消失但从未回退。回补后 IS ret +111%→**+211%**、Sh 2.012→1.976（几乎不动）、MDD −4.71%→−7.11%（**−20% 预算仍只用 36%**）；OOS 收益 +8.42%→+14.24%、Calmar 2.85→2.84 持平、正收 22/26 不退化。**0.020 恰为不可越底线（≤0.02）**。**缓存型，需重启**。可逆：改回 0.012（回测侧须同步改 `_evolve_wf.base_cfg`，否则 `test_evolve_baseline_sync` 与新增的 `test_leverage_scale_invariance` 会红） |
 | `max_position_amount` / `max_order_amount` | **18 万** | 单标的/单笔上限（原 30 万） |
 | `regime_mode` | `off` | 已证伪（7/7 折均跑输） |
 | `enable_rotation` | **False（2026-10-06 第 17 轮由 True 关闭）** | 板块轮换。★ 轮动候选**显式绕过动量闸门**（event_engine.py:774-777），实盘实际持有动量第 4~18 名 ⇒ 与观察篮同型的「实盘有、回测无」。四窗共识（`--track defect --baseline R1_实盘现状_轮动开启`）关闭轮动的修复收益 60×9 +0.060 / 75×7 +0.089 / 90×6 +0.268 / 120×4 +0.327，**均值 +0.186、最差 +0.060，四窗全正**；IS ret +80.91%→+90.68%、Sh 1.59→1.79、成交 231→176 笔。**缓存型（`EventEngine.__init__` 读取），需重启引擎生效**。可逆：置回 True（详见 settings.py 内联证据与下方 R17 条目） |

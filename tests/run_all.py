@@ -103,6 +103,10 @@ def _collect_tests():
             # 【2026-10-08】日内熔断 abs/pct 取较宽松者守卫：¥5000(-0.51%) 使
             # -3% 成死代码且比单笔风险还小，约每 2~3 日冻结全天（09-24/09-28/10-08）。
             "tests.test_daily_loss_limit_union",
+            # 【2026-10-08 PM R23】杠杆/尺度型改动的判据守卫：Sharpe 与 Calmar 都是
+            # 尺度不变量 ⇒ 「最差窗 dSh ≥ +0.10」会系统性否决一切仓位放大。
+            # 20 轮网格无果的真正原因在此（ deficiency 在方法层不在策略层）。
+            "tests.test_leverage_scale_invariance",
             # 【2026-09-30 R15】账本断供守卫：账本只依赖 OBSERVE 的 review JSON
             # ⇒ 三级单点故障让 KPI #4 连续 4 个交易日静默无法计算。
             "tests.test_ledger_db_fallback",

@@ -46,11 +46,13 @@ def test_off_keeps_legacy_behaviour():
     assert r_off["total_return"] == r_one["total_return"], \
         "K=1 不应改变任何结果（恒有 ≥1 只通过时才开仓，等价关闭）"
     assert r_off["sharpe"] == r_one["sharpe"]
-    # 关闭态 = 落盘前的旧基线（+90.68% / 1.79 / -5.42%），容差内的强钉
-    assert abs(r_off["total_return"] - 0.9068) < 0.02, \
-        f"关闭态应复现旧基线 +90.68%，实际 {r_off['total_return']:.4f}"
-    assert abs(r_off["sharpe"] - 1.7925) < 0.05, \
-        f"关闭态应复现旧基线 Sh 1.79，实际 {r_off['sharpe']:.4f}"
+    # 关闭态 = 宽度闸门落盘前的旧基线。
+    # 【2026-10-08 R23】因 risk_per_trade 0.012→0.020 回补而重算（尺度效应）：
+    #   关闭态 ret +90.68%→**+165.84%**、Sh 1.79→**1.74**、MDD −5.42%→**−8.46%**。
+    assert abs(r_off["total_return"] - 1.658372) < 0.02, \
+        f"关闭态应复现基线 +165.84%，实际 {r_off['total_return']:.4f}"
+    assert abs(r_off["sharpe"] - 1.740195) < 0.05, \
+        f"关闭态应复现基线 Sh 1.74，实际 {r_off['sharpe']:.4f}"
 
 
 def test_enabled_gate_really_changes_result():

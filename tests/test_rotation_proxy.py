@@ -38,9 +38,11 @@ from strategy.backtest_daily import BacktestConfig, run_backtest  # noqa: E402
 #     IS ret +90.68%→**+87.86%**  Sh 1.79→**+1.94**  MDD −5.42%→**−4.28%**
 #     成交 176→**166** 笔、胜率 49.4%→**52.4%**、暴露 63.5%→58.2%
 #     OOS 四窗均值 Sh 1.672 → **1.927**（KPI#1 缺口 −0.328 → −0.073）
-BASE_IS_RET = 0.878624      # +87.86%
-BASE_IS_SHARPE = 1.941583   # +1.94
-BASE_IS_MDD = -0.042757     # -4.28%
+# 【2026-10-08 R23】risk_per_trade 0.012→0.020 回补后重算（尺度效应：收益/回撤
+#   同比放大，Sharpe 几乎不动 —— 详见 tests/test_leverage_scale_invariance.py）。
+BASE_IS_RET = 1.644882      # +164.49%（原 +87.86%）
+BASE_IS_SHARPE = 1.864059   # 1.86（原 1.94）
+BASE_IS_MDD = -0.075964     # -7.60%（原 -4.28%）
 BASE_TRADES = 176           # 已验证成交笔数
 TOL_RET = 0.02
 TOL_SH = 0.05

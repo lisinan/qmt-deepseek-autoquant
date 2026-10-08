@@ -146,7 +146,7 @@ def base_cfg() -> BacktestConfig:
         exit_mode="trend", trend_exit_ma=60, hard_stop_pct=-0.18,
         trend_max_hold_days=120,
         momentum_rank=True, momentum_top_n=3, momentum_lookback=60,
-        risk_per_trade=0.012, fixed_amount=300000.0,
+        risk_per_trade=0.020, fixed_amount=300000.0,
         # 【2026-09-29 第 12 轮 AM-EVOLVE】-9.0 → **-5.0，与生产对齐**。
         #   此前两侧是登记在案的 KNOWN_DIVERGENCE（回测 -9.0 / 生产 -99.0），
         #   本轮裁决为「启用单日暴跌退出」，生产已改为 -5.0 ⇒ 基线同步改为 -5.0，

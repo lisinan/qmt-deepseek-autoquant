@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>策略盈利能力核实报告 · 2026-10-08</title>
+<style>
+  :root { --bg:#f7f8fa; --card:#fff; --bd:#e3e6ea; --tx:#1f2328; --mu:#6b7280;
+          --blue:#1f6feb; --amber:#b45309; --gray:#8b8f96; --red:#b42318; --green:#0f7b3d; }
+  * { box-sizing: border-box; }
+  body { margin:0; padding:32px 20px 64px; background:var(--bg); color:var(--tx);
+         font:15px/1.75 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif; }
+  .wrap { max-width:940px; margin:0 auto; }
+  h1 { font-size:24px; font-weight:600; margin:0 0 6px; }
+  .sub { color:var(--mu); font-size:14px; margin-bottom:28px; }
+  h2 { font-size:17px; font-weight:600; margin:36px 0 14px; padding-left:10px;
+       border-left:3px solid var(--blue); }
+  .card { background:var(--card); border:1px solid var(--bd); border-radius:10px;
+          padding:18px 20px; margin-bottom:16px; }
+  table { width:100%; border-collapse:collapse; font-size:14px; }
+  th, td { padding:8px 10px; border-bottom:1px solid var(--bd); text-align:right; }
+  th:first-child, td:first-child { text-align:left; }
+  th { color:var(--mu); font-weight:500; background:#fafbfc; }
+  tbody tr:last-child td { border-bottom:none; }
+  .pos { color:var(--green); } .neg { color:var(--red); }
+  .hl { background:#fff8e6; }
+  .kpi { display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:12px; margin-bottom:16px; }
+  .kpi div { background:var(--card); border:1px solid var(--bd); border-radius:10px; padding:14px 16px; }
+  .kpi span { display:block; color:var(--mu); font-size:13px; margin-bottom:4px; }
+  .kpi b { font-size:22px; font-weight:600; }
+  .note { font-size:13px; color:var(--mu); margin-top:10px; }
+  ul { margin:8px 0; padding-left:22px; } li { margin:5px 0; }
+  .tag { display:inline-block; font-size:12px; padding:1px 8px; border-radius:10px;
+         background:#eef4ff; color:var(--blue); margin-left:6px; }
+  .tag.g { background:#e9f7ef; color:var(--green); }
+  .tag.r { background:#fdeceb; color:var(--red); }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>策略盈利能力核实报告</h1>
+<div class="sub">qmtIDE-deepseek · 2026-10-08 · 23 只 AI 宇宙 × 1000 根对齐日线（20220818 → 20261008，单边 0.15% 成本）</div>
+
+<h2>一、数据准确性核实：通过</h2>
+<div class="card">
+<table>
+  <thead><tr><th>核实项</th><th>结论</th><th>依据</th></tr></thead>
+  <tbody>
+    <tr><td>行情数据源</td><td class="pos">真实 xtdata</td><td>10-07 20:48 起 <code>data=xtdata</code>；10-02 / 10-03 夜间落 mock 已被 R14 闸门拦截（日志「已禁止全部买卖成交」），<b>零假成交</b></td></tr>
+    <tr><td>账本回滚</td><td class="pos">已完成</td><td>100 万复位 → 现 973,233.60，09-30 合成行情假成交已撤销</td></tr>
+    <tr><td>peak_equity 脏值修复</td><td class="neg">未生效（需重启）</td><td><code>engine/event_engine.py</code> mtime 10-08 11:55 &gt; 引擎启动 10-07 20:48</td></tr>
+  </tbody>
+</table>
+</div>
+
+<h2>二、「交易逻辑太差」？—— 结论与直觉相反</h2>
+<div class="kpi">
+  <div><span>复位后 6 根 · 策略回测</span><b class="neg">−0.60%</b></div>
+  <div><span>同期 · 实盘</span><b class="neg">−2.68%</b></div>
+  <div><span>同期 · 全宇宙买入持有</span><b class="neg">−9.81%</b></div>
+  <div><span>近 60 根 · 策略 vs 基准</span><b>−2.22% <span style="font-size:14px;color:var(--mu)">vs −18.12%</span></b></div>
+</div>
+<div class="card">
+<p style="margin:0 0 10px">账户在亏钱，但<b>同期板块在暴跌</b>：策略把 −9.81% 的 beta 做成 −0.60%（回测）／−2.68%（实盘），
+   <b>跑赢基准 7.1pp</b>；近 60 根更是把 −18.12% 压到 −2.22%（跑赢 15.9pp）。这段时间的问题是<b>市场在跌</b>，不是逻辑失效。</p>
+<p style="margin:0" class="note">实盘 −2.68% 比回测 −0.60% 多亏 2.08pp，属于实盘摩擦（日内熔断、现金夹紧、整百手数），量级合理。</p>
+</div>
+
+<h2>三、真正的问题：牛市捕获率只有 38%~48%</h2>
+<div class="card">
+<table>
+  <thead><tr><th>年份</th><th>策略</th><th>全宇宙买入持有</th><th>Alpha</th><th>捕获率</th></tr></thead>
+  <tbody>
+    <tr><td>2024</td><td class="pos">+24.30%</td><td class="pos">+63.11%</td><td class="neg">−38.81%</td><td>38.5%</td></tr>
+    <tr><td>2025</td><td class="pos">+44.88%</td><td class="pos">+93.25%</td><td class="neg">−48.37%</td><td>48.1%</td></tr>
+    <tr><td>2026</td><td class="pos">+2.16%</td><td class="neg">−0.50%</td><td class="pos">+2.66%</td><td>—</td></tr>
+  </tbody>
+</table>
+<p class="note">策略是<b>防御型</b>：牛市吃不到，熊市少亏。这正是「回测看起来不错、账户却赚不到钱」的来源。</p>
+</div>
+
+<h2>四、根因：目标函数选错 —— 夏普比率是尺度不变量</h2>
+<div class="card">
+<p style="margin-top:0">整仓按 k 倍缩放 ⇒ 收益变 k·R、波动变 k·σ ⇒ <b>夏普与 Calmar 都不变，只有绝对收益与回撤同比例放大</b>。
+   过去 20 轮以「最差窗 dSh ≥ +0.10」为晋升闸门，<b>等于系统性否决了一切仓位放大</b>。</p>
+<p class="note">历史旁证：<code>reports/EVOLUTION_DECISIONS.md</code> §七.3 / §五.2 早已记载「risk_per_trade 近似<b>杠杆旋钮</b>而非 alpha 旋钮，0.010→0.020 收益单调 +140pt、夏普窄幅波动」，当时同样因闸门② 被 REJECTED。本轮是<b>第二次独立发现</b>，且数据更完整。</p>
+<table>
+  <thead><tr><th>单笔风险 rpt</th><th>IS 收益</th><th>IS 夏普</th><th>IS 回撤</th><th>IS Calmar</th><th>OOS 收益</th><th>OOS Calmar</th><th>正收折</th></tr></thead>
+  <tbody>
+    <tr class="hl"><td><b>0.012（现状）</b></td><td>+111.17%</td><td>2.012</td><td>−4.71%</td><td>23.61</td><td>+8.42%</td><td>2.85</td><td>22/26</td></tr>
+    <tr><td>0.014</td><td>+129.37%</td><td>1.901</td><td>−6.08%</td><td>21.28</td><td>+9.50%</td><td>2.65</td><td>22/26</td></tr>
+    <tr><td>0.016</td><td>+159.94%</td><td>1.931</td><td>−6.38%</td><td>25.07</td><td>+11.00%</td><td>2.64</td><td>22/26</td></tr>
+    <tr><td>0.018</td><td>+188.53%</td><td>1.953</td><td>−6.99%</td><td>26.99</td><td>+12.24%</td><td>2.67</td><td>21/26</td></tr>
+    <tr class="hl"><td><b>0.020（底线）</b></td><td class="pos"><b>+210.71%</b></td><td>1.976</td><td>−7.11%</td><td><b>29.65</b></td><td class="pos"><b>+14.24%</b></td><td>2.84</td><td>22/26</td></tr>
+  </tbody>
+</table>
+<p class="note">
+  · 收益 <b>+111% → +211%（1.90 倍）</b>，夏普仅变动 <b>−0.036</b>；OOS Calmar 2.85 vs 2.84 <b>持平</b> ⇒ 纯杠杆，单位风险收益不变。<br>
+  · IS 回撤 −7.11%，而生产预算是 −20% ⇒ <b>回撤预算只用了 36%</b>。<br>
+  · 单仓上限 19% → 30% 仅多 +1.39pp ⇒ 上限<b>未绑定</b>，无需改动 <code>max_single_position_pct</code>。<br>
+  · 收益变差的 5 个折<b>全部落在 2026（弱市）</b>，2024 / 2025 折全为正 ⇒ 杠杆对上涨与下跌<b>对称放大</b>。
+</p>
+</div>
+
+<h2>五、时变论据：收紧的前提早已消失</h2>
+<div class="card">
+<p style="margin:0"><code>risk_per_trade</code> 0.012 与 <code>max_position_amount</code> 18 万，都是 <b>2026-09-16 实盘 −19.6% 后的恐慌性收紧</b>，当时 IS 回撤 −16.08%。
+   其后 R13（atr 2.9）/ R16（dd −3.25）/ R17（关轮动）/ R21（入场宽度 2）已把回撤压到 <b>−4.71%</b> ——
+   <b>收紧的依据不复存在，但收紧从未回退</b>。历史记录：收紧代价约 −100pt 收益，仓位上限收紧再 −12.5pt。</p>
+</div>
+
+<h2>六、本轮已修复</h2>
+<div class="card">
+<table>
+  <thead><tr><th>项</th><th>问题</th><th>修复</th></tr></thead>
+  <tbody>
+    <tr><td>日内熔断自相矛盾</td><td><code>daily_loss_limit_abs=¥5000</code> 仅合 −0.51%，比单笔计划风险 ¥11,763 还小一半，已触发 3 次（09-24 / 09-28 / 10-08），且使 <code>pct=−3%</code> 成死代码</td><td><code>risk/manager.py</code> 改为取<b>较宽松者</b>（生效阈值 = max(abs, pct×权益)，随规模缩放）；8 例守卫；tests 385 → <b>392/0</b></td></tr>
+    <tr><td>回测从未建模实盘熔断</td><td>回测用 <code>daily_loss_abs_pct</code>（默认 0 = 关闭），实盘用绝对额</td><td>已登记口径差异，网格 0.0→0.03 全零，无法用回测验证</td></tr>
+  </tbody>
+</table>
+<p class="note">commit <code>7a535a5</code>（未 push）。</p>
+</div>
+
+<h2>七、待裁决事项</h2>
+<div class="card">
+<ul>
+  <li><b>risk_per_trade 0.012 → 0.020</b><span class="tag">恰在 ≤0.02 底线</span>：收益翻倍、回撤仅 −7.11%；但<b>当下弱市里亏损也同步放大 1.67 倍</b>。</li>
+  <li><b>max_position_amount 18 万是否回补</b>：同为 09-16 收紧（30 万 → 18 万），历史代价 −12.5pt。</li>
+  <li><b>考核目标</b>是否由夏普改为「绝对收益 @ 回撤预算内」—— 否则下一轮仍会否决同类改动。</li>
+  <li><b>重启引擎</b>：三项修复（peak_equity 脏值 / 入场宽度 2 / 日内熔断 + 关轮动）均因启动时间早于文件 mtime 而<b>未生效</b>。</li>
+</ul>
+</div>
+
+<p class="note" style="text-align:center;margin-top:32px">
+  生成脚本：<code>scripts/_diag_recent.py</code>、<code>_diag_leverage.py</code>、<code>_diag_leverage4.py</code>、<code>_dose_rpt.py</code>、<code>_gate_rpt020.py</code>
+</p>
+
+</div>
+</body>
+</html>
