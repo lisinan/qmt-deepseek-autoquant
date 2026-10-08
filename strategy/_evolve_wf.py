@@ -797,6 +797,11 @@ def main():
         values = []
         for v in raw:
             v = v.strip()
+            # 布尔开关（如 exit_next_open）：字符串 "False" 在 Python 里是真值，
+            # 必须显式转换，否则 `--values False,True` 两档都会变成 True。
+            if v.lower() in ("true", "false"):
+                values.append(v.lower() == "true")
+                continue
             try:
                 values.append(int(v) if v.lstrip("-").isdigit() else float(v))
             except ValueError:

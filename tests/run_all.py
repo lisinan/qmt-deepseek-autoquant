@@ -89,6 +89,11 @@ def _collect_tests():
             # 但 10-07 休市伪快照已把 peak_equity 落库为 1,020,446.6（真实可信峰值
             # 1,005,860）⇒ 随状态恢复跨重启继承，回撤虚高 1.38pp、断路器提前触发。
             "tests.test_peak_equity_sanity",
+            # 【2026-10-08 PM-EVOLVE R23】离场执行时点口径（exit_next_open）守卫：
+            # 入场是「收盘信号→次日开盘成交」，但离场 trend_break 是「当日收盘判定
+            # + 当日收盘成交」⇒ exit 侧少一根 bar。实测影响 ≈ 0（dSh +0.006），
+            # 故 REJECTED 且保持 off；本守卫防止它被人悄悄改成 True 而改写基线。
+            "tests.test_exit_next_open_proxy",
             # 【2026-09-28 R10】验证器 base_cfg 与生产配置的口径漂移守卫。
             # 该坑已踩两次（09-18 top_n/rpt、09-28 northbound_mode）。
             "tests.test_evolve_baseline_sync",

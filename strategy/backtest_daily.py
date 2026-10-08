@@ -352,6 +352,21 @@ class BacktestConfig:
     cost_pct: float = 0.0015         # 单边交易成本（佣金+印花税+滑点），计入
     chandelier: bool = False         # True=用峰值时 ATR 吊灯止损（趋势跟随）
     entry_mode: str = "factor"       # "factor"=6因子评分; "trend"=日线突破追涨
+    # ---- 离场执行时点口径（2026-10-08 第 23 轮 PM-EVOLVE，研究开关）----
+    # 【为什么有这条轴】文件头声明的语义是「信号在 day i 收盘产生，day i+1 开盘
+    #   成交（避免未来函数）」，入场侧确实如此（C 段收盘出信号 → A 段次日开盘成交）。
+    #   但**离场侧** B 段是「day i 的 high/low/close 判定 + day i 成交」——
+    #   其中 `trend_break` 用 **当日收盘价 cl** 判定 MA20 下穿/收盘跌破 exit_ma，
+    #   却仍以 **同一个 cl** 成交 ⇒ 少了一根 bar 的执行延迟，是 exit 侧的前视偏差。
+    #   实盘铁证（2026-10-08）：09:19:02~09:19:32 的 4 笔「趋势破位离场」全部是
+    #   用**上一根已收盘日线**判定、在**次日开盘后**以盘中价成交；实盘不可能在
+    #   当日收盘那一刻用当日收盘价卖出。
+    #   False（默认）= 原行为（当日收盘成交），零行为变化；
+    #   True          = trend_break 顺延到**次日开盘**成交，与入场侧同口径。
+    # 适用范围刻意做窄：只延迟「收盘判定类」的 trend_break。stop_loss /
+    # chandelier / take_profit / trend_trail 由 low/high 日内触发、实盘由分钟线
+    # 执行，本就当日成交；hard_stop / crash 实盘亦为分钟尺度 ⇒ 均不延迟。
+    exit_next_open: bool = False
     max_positions: int = 8
     # ---- A 股 T+1 约束【P0 修正 2026-09-02】----
     # 原事件时序：A) 执行昨日挂单（今日开盘成交，写入 positions）
@@ -1160,6 +1175,8 @@ def run_backtest(codes: List[str], cfg: BacktestConfig,
     _dl_day_pnl = 0.0         # 当日（本 bar）离场已实现盈亏累计，日切归零
     _dl_halt_bar = None       # 触发日内亏损熔断的 bar 下标；None = 未熔断
     _flatten_today = False    # 日内强平：次日开盘清仓标志
+    # 【2026-10-08 第 23 轮】trend_break 顺延到次日开盘成交的挂单（exit_next_open）
+    _deferred_trend_exit: List[str] = []
     _prev_close_equity = 0.0  # 昨日收盘权益（强平判定的「开盘资产」口径）
 
     WARMUP = max(65, int(cfg.momentum_lookback) + 5, exit_ma + 5,
@@ -1178,6 +1195,46 @@ def run_backtest(codes: List[str], cfg: BacktestConfig,
     rm_halted_ever = False
     rm_halted_days = 0
     for i in range(WARMUP, n):
+        # ================= A0) 顺延离场（trend_break 次日开盘成交） =================
+        # exit_next_open=True 时生效，默认 False ⇒ 本段恒为空、零行为变化。
+        # 语义：上一根已收盘日线判定 trend_break ⇒ 次日开盘以 open 卖出，
+        # 与入场侧「信号 day i 收盘 → day i+1 开盘成交」同口径（消除 exit 前视）。
+        if _deferred_trend_exit:
+            _still: List[str] = []
+            for _dc in _deferred_trend_exit:
+                _dp = positions.get(_dc)
+                if _dp is None:
+                    continue
+                if not panel[_dc]["valid"][i]:
+                    _still.append(_dc)      # 停牌：顺延到下一个交易日
+                    continue
+                _px = panel[_dc]["open"][i]
+                if _px <= 0:
+                    _still.append(_dc)
+                    continue
+                _net = _px * (1 - cfg.cost_pct)
+                _net_entry = _dp["entry"] * (1 + cfg.cost_pct)
+                cash += _net * _dp["qty"]
+                trades.append({
+                    "code": _dc,
+                    "pnl_pct": (_net - _net_entry) / _net_entry,
+                    "hold": i - _dp["entry_day"], "reason": "trend_break",
+                })
+                if cfg.consec_loss_scale and not cfg.consec_loss_batch:
+                    if _net < _net_entry:
+                        _consec_loss += 1
+                    elif _net > _net_entry:
+                        _consec_loss = 0
+                    if (_consec_loss >= cfg.consec_loss_halt
+                            and _halt_bar is None):
+                        _halt_bar = i
+                elif cfg.consec_loss_scale and cfg.consec_loss_batch:
+                    _batch_pnl += (_net - _net_entry) * _dp["qty"]
+                if cfg.daily_loss_halt:
+                    _dl_day_pnl += (_net - _net_entry) * _dp["qty"]
+                last_exit_day[_dc] = i
+                del positions[_dc]
+            _deferred_trend_exit = _still
         # ================= A) 执行昨日挂单（今日开盘成交） =================
         # 组合级动态暴露（DD control）：仅在「新开仓」上缩放目标仓位，
         # 不强制平已有持仓。净值创新高后 exp_scale 自动回到 1.0。
@@ -1452,6 +1509,11 @@ def run_backtest(codes: List[str], cfg: BacktestConfig,
             if (exit_price is None and not _exempt
                     and (i - pos["entry_day"]) >= _hold_cap):
                 exit_price, reason = cl, "timeout"
+            if (exit_price is not None and cfg.exit_next_open
+                    and reason == "trend_break" and i < n - 1):
+                # 顺延到次日开盘成交（默认关闭 ⇒ 本分支不进入，零行为变化）
+                _deferred_trend_exit.append(code)
+                continue
             if exit_price is not None:
                 cash += pos["qty"] * exit_price * (1 - cfg.cost_pct)
                 net_entry = entry * (1 + cfg.cost_pct)
