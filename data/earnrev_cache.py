@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import time
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -44,17 +45,35 @@ def _rev_from_forecast(df) -> Dict[str, float]:
       · 仅当同一 end_date（报告期）存在≥2 次指引时才定义修正（首次指引无基线，跳过）。
       · rev > 0 = 上修（基本面利好）；rev < 0 = 下修；rev = 0 = 持平。
     信号语义：gate 模式只看 rev>0（上修）；rank 模式用 signed_rev 做横截面倾斜。
+
+    【2026-10-08 修复 NaN 污染】原实现 ``float(r.get("p_change_min") or 0.0)``
+    对 NaN 失效：Python 里 ``float('nan') or 0.0`` 返回 ``nan``（NaN 是 truthy），
+    于是「扭亏为盈 / 由盈转亏」这类 p_change 无法定义的修订（Tushare 返回 NaN）
+    会算出 ``rev = mid - nan = nan``，再经 ``json.dumps`` 写出**非法 JSON**
+    （NaN 不在 JSON 规范内），缓存文件损坏、每次读缓存都回退到网络重拉。
+    现改为：p_change 两端任一无效（None / NaN / 非数值）即**跳过该条**，
+    不参与修正序列——宁可少一条，不污染其余。
     """
+
+    def _f(v) -> Optional[float]:
+        try:
+            x = float(v)
+        except (TypeError, ValueError):
+            return None
+        return None if math.isnan(x) else x
+
     rows = []
     for _, r in df.iterrows():
         try:
             ann = str(r.get("ann_date"))
             end = str(r.get("end_date"))
-            pmin = float(r.get("p_change_min") or 0.0)
-            pmax = float(r.get("p_change_max") or 0.0)
         except Exception:
             continue
         if not ann or not end:
+            continue
+        pmin = _f(r.get("p_change_min"))
+        pmax = _f(r.get("p_change_max"))
+        if pmin is None or pmax is None:
             continue
         rows.append((ann, end, (pmin + pmax) / 2.0))
     rows.sort(key=lambda x: x[0])          # 按披露日升序

@@ -120,7 +120,10 @@ def _collect_tests():
             # 【2026-10-06 R18】拼接口径（span）量测守卫：锁死「同一段行情的
             # 拼接 Sharpe 唯一」，即折均值口径的差异 100% 是划分假象；
             # 同时按代理守门锁死 entry_max_day_gain_pct 默认 off + 开启后真变。
-            "tests.test_span_measure"]
+            "tests.test_span_measure",
+            # 【2026-10-08 S2】业绩预告上修提取（earnrev_cache）NaN 数据完整性守卫：
+            # 旧实现 float(nan) or 0.0 返回 nan，json.dumps(nan) 写坏缓存。
+            "tests.test_earnrev_cache"]
     tests = []
     import_errors = []
     for m in mods:
