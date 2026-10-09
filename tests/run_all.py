@@ -94,6 +94,12 @@ def _collect_tests():
             # + 当日收盘成交」⇒ exit 侧少一根 bar。实测影响 ≈ 0（dSh +0.006），
             # 故 REJECTED 且保持 off；本守卫防止它被人悄悄改成 True 而改写基线。
             "tests.test_exit_next_open_proxy",
+            # 【2026-10-09 AM-EVOLVE 第 24 轮】入场闸门 trend_up 放宽/收紧档守卫。
+            # 半日度量铁证：连续两日开盘卖光后全天零 BUY；诊断显示近 90 日宽度闸门
+            # 仅 54.4% 交易日满足、末 30 日 57% 全宇宙零通过。本轮实测：放宽档
+            # 四窗 dSh −0.28~−0.66（灾难）、收紧档 ma60s −0.084~+0.050（噪声）
+            # ⇒ 闸门严格度恰在最优，该轴闭合。守卫把「放宽必为负效应」钉成断言。
+            "tests.test_trend_up_relax_proxy",
             # 【2026-09-28 R10】验证器 base_cfg 与生产配置的口径漂移守卫。
             # 该坑已踩两次（09-18 top_n/rpt、09-28 northbound_mode）。
             "tests.test_evolve_baseline_sync",

@@ -553,6 +553,19 @@ def candidates_final() -> dict:
     out["S1_板块上限_2"] = replace(b, max_per_sector=2)
     out["S2_板块上限_1"] = replace(b, max_per_sector=1)
     out["S3_板块上限_3"] = replace(b, max_per_sector=3)
+    # ---- 2026-10-09 AM-EVOLVE（第 24 轮）：入场闸门 trend_up 的放宽/收紧档 ----
+    # 来源：本轮半日度量的实盘铁证（连续两日开盘卖光后全天零 BUY、100% 现金）
+    #   + 闸门通过率诊断（近 90 日宽度闸门仅 54.4% 交易日满足，末 30 日 57% 全宇宙零通过）。
+    # 90x6 单窗实测（dSh）：
+    #   放宽档：no_macd −0.283 / no_slope −0.104 / no_ma60 −0.173 / any3 −0.428 ⇒ **全负**
+    #   收紧档：ma60s（额外要求 MA60 5 日斜率>0）**+0.050**
+    #          IS ret +164.5%→+174.6%  Sh 1.86→1.88  MDD −7.60%→−7.63%
+    #          最差折 −4.4%→**−3.6%**、正收 5/6 不变
+    # ⇒ 该轴的收益方向是「**收紧**」而非「放宽」：trend_up 的严格性本身就是 alpha 源。
+    #   本组交四窗口共识裁决（单窗 +0.050 未达 +0.10，必须以最差窗为准）。
+    out["T1_入场闸门_收紧MA60斜率"] = replace(b, trend_up_relax="ma60s")
+    out["T2_入场闸门_去掉MACD"] = replace(b, trend_up_relax="no_macd")
+    out["T3_入场闸门_四取三"] = replace(b, trend_up_relax="any3")
     return out
 
 

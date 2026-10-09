@@ -313,7 +313,41 @@ def score_daily(o, h, l, c, v) -> Tuple[float, Dict[str, float]]:
     return round(sum(factors.values()), 2), factors
 
 
-def daily_trend_up(c, h, l, i: int) -> bool:
+def trend_up_relaxed(a: bool, b: bool, c: bool, d: bool, relax: str) -> bool:
+    """trend_up 的四分量按放宽档位组合（纯函数，回测/实盘共用同一张真值表）。
+
+    分量（与 daily_trend_up / daily_context.py:325 严格同义）：
+      a = close > MA20        b = MA20 > MA60
+      c = MA20 5 日斜率 > 0   d = MACD 柱 >= 0
+
+    档位：
+      "none"     = a & b & c & d  （生产现状，默认）
+      "no_macd"  = a & b & c      去掉 MACD（MACD 最滞后，弱市里最后翻正）
+      "no_slope" = a & b & d      去掉 MA20 斜率
+      "no_ma60"  = a & c & d      不要求 MA20>MA60（允许早期趋势）
+      "any3"     = 4 个分量中至少 3 个成立
+      "ma60s"    = a & b & c & d & e（收紧：额外要求 MA60 5 日斜率 > 0）
+    注：e 分量单独由调用方传入（函数第 5 参），默认 None = 该档退化为 "none"。
+    """
+    if relax == "none":
+        return a and b and c and d
+    if relax == "no_macd":
+        return a and b and c
+    if relax == "no_slope":
+        return a and b and d
+    if relax == "no_ma60":
+        return a and c and d
+    if relax == "any3":
+        return (1 if a else 0) + (1 if b else 0) + (1 if c else 0) + (1 if d else 0) >= 3
+    return a and b and c and d
+
+
+def _trend_up_with_ma60s(a, b, c, d, e):
+    """收紧档 ma60s：原 4-AND 再叠加 MA60 斜率 > 0。"""
+    return a and b and c and d and bool(e)
+
+
+def daily_trend_up(c, h, l, i: int, relax: str = "none") -> bool:
     """更高周期趋势闸门：close>MA20>MA60 且 MA20 斜率>0 且 MACD>=0。"""
     if i < 60:
         return False
@@ -323,8 +357,11 @@ def daily_trend_up(c, h, l, i: int) -> bool:
     _, _, hist = I.macd(c[:i + 1], 12, 26, 9)
     macd_hist = I.last(hist)
     close = c[i]
-    return (ma20 and ma60 and close > ma20 > ma60
-            and ma20_s > 0 and (macd_hist or 0) >= 0)
+    a = bool(ma20 and close > ma20)
+    b = bool(ma20 and ma60 and ma20 > ma60)
+    cc = bool(ma20_s > 0)
+    d = bool((macd_hist or 0) >= 0)
+    return trend_up_relaxed(a, b, cc, d, relax)
 
 
 def atr_pct_at(h, l, c, i: int) -> float:
@@ -377,6 +414,23 @@ class BacktestConfig:
     #   系统性高估收益、低估回撤。
     # True = 强制 T+1（建仓当日不可卖，仅标记权益）；False = 旧行为（仅供对照）。
     t1_restriction: bool = True
+    # ---- 入场日线闸门 trend_up 的放宽档位（2026-10-09 第 24 轮 AM-EVOLVE，研究开关）----
+    # 【为什么有这条轴】实盘铁证：连续两个交易日（10-08 / 10-09）开盘卖光后
+    #   **全天零 BUY、100% 现金**。诊断（scripts/_am_gate_diag.py）：
+    #     近 90 个交易日（20260527→20261008）全宇宙 trend_up 通过率
+    #       至少 1 只通过：69/90 = **76.7%**
+    #       至少 2 只通过（= 生产 min_passing_candidates=2）：49/90 = **54.4%**
+    #     末 30 个交易日：pass=0 的天数占 **17/30 = 57%**（含 09-28~09-30、10-08）
+    #     四分量单独通过率：above_ma20 37.3% / above_ma60 40.8% /
+    #                       ma20_slope 39.1% / macd 45.2% ⇒ 联合仅 **10.97%**
+    #   ⇒ 「低暴露 / KPI#4 不达标」的机制根因不是亏钱，而是**一半交易日根本不参与**。
+    # 【机理假设】trend_up = close>MA20>MA60 且 MA20 斜率>0 且 MACD 柱>=0，
+    #   是 4 个**高度正相关**分量的 AND ⇒ 弱市里四者同时转负，闸门整体关闭。
+    #   放宽其中一条 = 用少量假信号换取暴露，属 alpha 型（非尺度型）改动。
+    # 【口径纪律】实盘同式判定在 strategy/daily_context.py:325，
+    #   落盘前必须同步该处读点，否则制造「回测有效、实盘无效」的背离。
+    # 默认 **"none" = 原 4-AND**，逐位保持既有回测行为，零行为变化。
+    trend_up_relax: str = "none"
     # ---- 分行业分散持仓（组合层风险约束，研究用）----
     # 与 max_positions（组合总上限）正交：在"总上限"之内，进一步限制
     # 同一 AI 产业链环节（光模块/AI芯片/晶圆代工/…）最多持几只。
@@ -968,13 +1022,21 @@ def run_backtest(codes: List[str], cfg: BacktestConfig,
         _s20s = _vec_slope(_s20, 5)
         _, _, _mh = I.macd(cl, 12, 26, 9)
         _tu = [False] * n_c
+        _relax = getattr(cfg, "trend_up_relax", "none")
+        _s60s = _vec_slope(_s60, 5) if _relax == "ma60s" else None
         for i in range(n_c):
             if i < 60:
                 continue
             m20 = _s20[i]; m60 = _s60[i]; m20s = _s20s[i]
-            if (m20 and m60 and cl[i] > m20 > m60
-                    and m20s is not None and m20s > 0
-                    and (_mh[i] or 0) >= 0):
+            _a = bool(m20 and cl[i] > m20)
+            _b = bool(m20 and m60 and m20 > m60)
+            _c = bool(m20s is not None and m20s > 0)
+            _d = bool((_mh[i] or 0) >= 0)
+            if _relax == "ma60s":
+                _e = bool(_s60s[i] is not None and _s60s[i] > 0)
+                if _trend_up_with_ma60s(_a, _b, _c, _d, _e):
+                    _tu[i] = True
+            elif trend_up_relaxed(_a, _b, _c, _d, _relax):
                 _tu[i] = True
         trend_up_arr[code] = _tu
         # 综合偏置序列 bias ∈ [-1,1]（与 daily_context.py:180-187 严格同式）
