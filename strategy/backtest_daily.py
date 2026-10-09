@@ -693,6 +693,23 @@ class BacktestConfig:
     # 每笔都满到 30% 上限，risk_per_trade 形同虚设、且高波动股反而仓位更重。
     # 开启后改用真实趋势止损距离做风险平价：高波动少买、低波动多买。
     trend_vol_sizing: bool = False
+    # ----【2026-10-09 第 25 轮 PM-EVOLVE】趋势模式 ATR 止损（研究开关，默认 0=关闭）----
+    # 背景（**结构性缺口**，非标量调参）：
+    #   exit_mode="trend" 的离场集合 = {trend_break(MA20×MA60) / hard_stop −18%
+    #   / crash −3.25% / timeout 120d}。入场时按 max(|stop_loss|, ATR%×atr_stop_mult)
+    #   算出的 pos["stop_price"] **在趋势分支里从未被检查**——它只在 chandelier /
+    #   旧 scalp 分支里被用到，而那两个分支在 exit_mode=="trend" 时根本不执行。
+    #   ⇒ **ATR 止损在趋势模式下是死代码**：它仅通过 stop_dist 影响仓位大小，
+    #     从不真正截断左尾。
+    #   回测（本文件）与实盘（strategy/trend_strategy.py::on_exit 的 trend 分支）
+    #   **两侧同为此行为** ⇒ 不是口径背离，而是双向的结构性缺口，可以放心建模。
+    #   实盘铁证：2026-10-09 300394.SZ 一路阴跌到 −14.9% 才由 trend_break 卖出
+    #   （−18% 硬止损从未触发、单日 −3.25% 也从未触发）⇒ **慢速阴跌完全免疫**。
+    # 两个研究开关，默认 0.0 = 关闭 = 零行为变化（便于先用剂量轴量化再决定是否落盘）：
+    #   trend_atr_stop_mult   >0：静态止损，跌破 entry×(1−ATR%×k) 即离场（截断左尾）
+    #   trend_chandelier_mult >0：吊灯止损，stop=max(stop, peak×(1−ATR%×k))（锁定浮盈）
+    trend_atr_stop_mult: float = 0.0
+    trend_chandelier_mult: float = 0.0
     # ---- 组合级动态暴露（回撤控制 DD control，风险预算层）----
     # 独立于 regime 的"组合级风险预算"：当组合净值自峰值回撤超过
     # dd_ctrl_start 时，对新开仓的目标仓位按比例缩减（exp_scale 由 1.0
@@ -1477,6 +1494,10 @@ def run_backtest(codes: List[str], cfg: BacktestConfig,
                 "peak": entry,
                 "stop_price": entry * (1 - stop_dist),
                 "target_price": entry * (1 + target_dist),
+                # 【2026-10-09 第 25 轮】建仓时点 ATR%（静态 ATR 止损用，研究开关）
+                "entry_ap": (atr_pct_arr[code][i]
+                             if (atr_pct_arr.get(code) is not None
+                                 and i < len(atr_pct_arr[code])) else 0.0),
             }
         pending = []
 
@@ -1532,6 +1553,21 @@ def run_backtest(codes: List[str], cfg: BacktestConfig,
                             trail = floor
                         if lo <= trail:
                             exit_price, reason = trail, "trend_trail"
+                # 【2026-10-09 第 25 轮 PM-EVOLVE】趋势模式 ATR 止损（研究开关）
+                # 见 BacktestConfig.trend_atr_stop_mult 的完整背景。默认 0.0 ⇒ 不进入。
+                elif cfg.trend_atr_stop_mult > 0 and pos.get("entry_ap", 0) > 0:
+                    _s = entry * (1 - pos["entry_ap"] * cfg.trend_atr_stop_mult)
+                    if lo <= _s:
+                        exit_price, reason = _s, "atr_stop"
+                elif cfg.trend_chandelier_mult > 0 and atr_pct_arr[code][i] > 0:
+                    # 吊灯止损：stop 随峰值上移，只升不降（与引擎 chandelier 同语义）
+                    _ch = pos["peak"] * (1 - atr_pct_arr[code][i]
+                                         * cfg.trend_chandelier_mult)
+                    pos.setdefault("chand", 0.0)
+                    if _ch > pos["chand"]:
+                        pos["chand"] = _ch
+                    if _ch > 0 and lo <= pos["chand"]:
+                        exit_price, reason = pos["chand"], "trend_chandelier"
             elif cfg.chandelier:
                 # 吊灯止损：stop = 峰值 - atr_stop_mult * ATR；随峰值上移
                 ap = atr_pct_at(panel[code]["high"][:i + 1],

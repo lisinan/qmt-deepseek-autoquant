@@ -147,7 +147,28 @@ def base_cfg() -> BacktestConfig:
         exit_mode="trend", trend_exit_ma=60, hard_stop_pct=-0.18,
         trend_max_hold_days=120,
         momentum_rank=True, momentum_top_n=3, momentum_lookback=60,
-        risk_per_trade=0.020, fixed_amount=300000.0,
+        risk_per_trade=0.020,
+        # 【2026-10-09 第 25 轮 PM-EVOLVE】30 万 → **18 万，与生产对齐**
+        #   （第 12 次同型「口径漂移」复现，且是本项目**第一次**由「生产收紧而
+        #     验证器未同步」造成的：2026-09-16 实盘 −19.6% 后
+        #     `max_order_amount` 30万→18万（config/settings.py:687），
+        #     而验证器 fixed_amount 一直停在 30 万 ⇒ 回测侧**从未感受过这次收紧**。
+        #     与 R23 发现的 `risk_per_trade` 同属「09-16 恐慌性收紧残留」批次。）
+        #   机理：回测 tgt = min(budget/stop_dist, equity×max_single_position_pct,
+        #                       fixed_amount)
+        #         生产 cap = min(max_single_position_pct, max_order_amount/equity)
+        #                  ⇒ **fixed_amount 与 max_order_amount 是同一个位置的同一
+        #                     个约束**，回测用 30 万就等于宣称「单仓可放到 30 万」。
+        #   影响（900 根 90×6 口径实测）：IS 收益 **+164.49% → +130.00%（−34.5pt）**、
+        #     IS MDD −7.60%→−6.94%；OOS 均值 Sh 1.824→**1.817（−0.008，持平）**、
+        #     均值 ret 16.4%→16.1%。
+        #     ⇒ **被高估的几乎全在 IS**：样本后期权益涨到 2~3 百万，18 万/笔
+        #       夹紧力度随权益上升而变强，而 OOS 各折只有 90 根、权益增长有限。
+        #   为什么仍要落盘：这不是 alpha 改动，是**量测口径修正**——P0 基线的
+        #     头条收益虚高 21%，任何以 IS 收益为依据的裁决都被系统性放大。
+        #     与 R10(northbound_mode)/R11(折对齐)/R14(max_single_position_pct)
+        #     同型：真实但难看的数字，胜过漂亮但错误的数字。生产参数**零改动**。
+        fixed_amount=180000.0,
         # 【2026-09-29 第 12 轮 AM-EVOLVE】-9.0 → **-5.0，与生产对齐**。
         #   此前两侧是登记在案的 KNOWN_DIVERGENCE（回测 -9.0 / 生产 -99.0），
         #   本轮裁决为「启用单日暴跌退出」，生产已改为 -5.0 ⇒ 基线同步改为 -5.0，
@@ -566,6 +587,44 @@ def candidates_final() -> dict:
     out["T1_入场闸门_收紧MA60斜率"] = replace(b, trend_up_relax="ma60s")
     out["T2_入场闸门_去掉MACD"] = replace(b, trend_up_relax="no_macd")
     out["T3_入场闸门_四取三"] = replace(b, trend_up_relax="any3")
+    # ---- 2026-10-09 PM-EVOLVE（第 25 轮）：★ 趋势模式「ATR 止损」死代码复活 ----
+    # 来源：结构性缺口（非标量调参）。exit_mode="trend" 的离场集合是
+    #   {trend_break(MA20×MA60) / hard_stop −18% / crash −3.25% / timeout 120d}，
+    #   入场时算出的 pos["stop_price"] **在趋势分支里从未被检查**——它只在
+    #   chandelier / 旧 scalp 分支里被用到，而那两个分支在 trend 模式下不执行。
+    #   回测（backtest_daily）与实盘（trend_strategy.on_exit 的 trend 分支）
+    #   **两侧同为死代码** ⇒ 不是口径背离，而是双向结构缺口，可放心建模。
+    # 实盘铁证：2026-10-09 300394.SZ 一路阴跌到 −14.9% 才由 trend_break 卖出
+    #   （−18% 硬止损、−3.25% 暴跌退出均未触发）⇒ 慢速阴跌完全免疫。
+    # 90x6 剂量轴实测（dSh，0=关闭=现状）：
+    #   静态 ATR 止损 trend_atr_stop_mult：
+    #     1.5 **−0.089**（IS −14.4pt）/ 2.0 +0.018 / 2.5~5.0 **惰性 0.000**
+    #     ⇒ k≥2.5 完全不绑定（≈10% 静态止损从未在 trend_break/crash 之前触发）；
+    #       唯一能绑定的 1.5（≈6%）是**负效应**。
+    #   吊灯止损 trend_chandelier_mult（从峰值回撤）：
+    #     1.0 **−1.551** / 1.5 −1.984 / 2.0 −0.989 / 2.5 −0.297 / 2.9 −0.093 /
+    #     4.0 −0.019 / 6.0~10.0 惰性 0.000 ⇒ **严格单调负，越紧越差**。
+    # ⇒ ★ 结论：本策略的左尾**已经被 trend_break 截断完了**（IS MDD 仅 −6.94%，
+    #   回撤预算 −20% 只用掉 35%），再做任何「更快离场」都是**砍掉趋势 alpha**。
+    #   与已证伪的「不追高类入场约束」同源：趋势策略的钱是**骑出来的**，
+    #   任何提前下车（止损/吊灯/止盈）都在减 alpha。**该方向整类闭合。**
+    out["U1_趋势ATR止损_6pct"] = replace(b, trend_atr_stop_mult=1.5)
+    out["U2_趋势ATR止损_10pct"] = replace(b, trend_atr_stop_mult=2.5)
+    out["U3_趋势吊灯_2.9"] = replace(b, trend_chandelier_mult=2.9)
+    out["U4_趋势吊灯_4.0"] = replace(b, trend_chandelier_mult=4.0)
+    # ---- 2026-10-09 PM-EVOLVE（第 25 轮）：trend_vol_sizing 在新基线上重测 ----
+    # 动机：settings.py:505-511 记载「vol_sizing 用**紧止损**(-4% / atr×2.5)算仓位，
+    #   但趋势模式真实止损是宽幅硬止损(-18% / atr×6) ⇒ budget/stop_dist 恒大于
+    #   单仓上限，risk_per_trade 形同虚设、高波动股反而仓位更重」。R23 把
+    #   risk_per_trade 提到 0.020（仓位 ×1.67）后，这个失真的绝对量同步放大
+    #   ⇒ 值得在新基线上重测。
+    # 90×6 实测：IS ret +164.5%→+64.3%（**−100pt**）、IS Sh 1.86→**1.94**、
+    #   IS MDD −7.60%→−3.83%；但 OOS 均值 Sh 1.824→**1.343（−0.482）**、
+    #   均值 ret 16.4%→7.2%。
+    # ⇒ ★ 教科书级的「**IS Sharpe 升 = 少交易的会计效应**」陷阱：
+    #   IS Sharpe 反而**上升** 0.08，但 OOS 崩 0.482。判据：凡 IS Sh 升而
+    #   IS 收益腰斩的候选，一律以 OOS 为准否决。**勿再以 IS Sharpe 单独决策。**
+    out["U5_趋势真实止损定仓位"] = replace(b, trend_vol_sizing=True)
     return out
 
 

@@ -40,10 +40,16 @@ from strategy.backtest_daily import BacktestConfig, run_backtest  # noqa: E402
 #     OOS 四窗均值 Sh 1.672 → **1.927**（KPI#1 缺口 −0.328 → −0.073）
 # 【2026-10-08 R23】risk_per_trade 0.012→0.020 回补后重算（尺度效应：收益/回撤
 #   同比放大，Sharpe 几乎不动 —— 详见 tests/test_leverage_scale_invariance.py）。
-BASE_IS_RET = 1.644882      # +164.49%（原 +87.86%）
-BASE_IS_SHARPE = 1.864059   # 1.86（原 1.94）
-BASE_IS_MDD = -0.075964     # -7.60%（原 -4.28%）
-BASE_TRADES = 176           # 已验证成交笔数
+# 【2026-10-09 R25】验证器 fixed_amount 30万→18万 对齐生产 max_order_amount
+#   后**第三次**重算（**量测口径修正，生产参数零改动**）。
+#   机理：回测 tgt = min(风险预算, 单仓19%, fixed_amount)，生产单仓硬顶 = 18万；
+#   旧口径在样本后期（权益 2~3 百万）允许单仓 30 万 ⇒ **IS 收益虚高 34.5pt**。
+#   注意本次是收益**下降**而 Sharpe **上升**（1.86→1.90）：少了后期超配的
+#   那部分暴露，波动降得比收益多 —— 与 R23 的尺度效应方向相反，勿混淆。
+BASE_IS_RET = 1.300260      # +130.03%（原 +164.49%）
+BASE_IS_SHARPE = 1.898559   # 1.90（原 1.86）
+BASE_IS_MDD = -0.069412     # -6.94%（原 -7.60%）
+BASE_TRADES = 169           # 已验证成交笔数（R25 口径修正后 176→169）
 TOL_RET = 0.02
 TOL_SH = 0.05
 TOL_MDD = 0.01

@@ -100,6 +100,13 @@ def _collect_tests():
             # 四窗 dSh −0.28~−0.66（灾难）、收紧档 ma60s −0.084~+0.050（噪声）
             # ⇒ 闸门严格度恰在最优，该轴闭合。守卫把「放宽必为负效应」钉成断言。
             "tests.test_trend_up_relax_proxy",
+            # 【2026-10-09 PM-EVOLVE 第 25 轮】趋势模式 ATR 止损研究开关守卫。
+            # 结构缺口：trend 分支从不检查入场时算好的 stop_price（回测/实盘两侧
+            # 同为死代码）。实测：静态止损 k≥2.5 惰性、k=1.5 负 −0.089；吊灯止损
+            # 严格单调负（4.0 −0.019 → 1.0 −1.551）⇒ 退出侧整类闭合。
+            # 另钉死第 12 次同型口径漂移：验证器 fixed_amount 必须等于生产
+            # max_order_amount（30万 vs 18万 ⇒ IS 收益虚高 34.5pt）。
+            "tests.test_trend_stop_switch",
             # 【2026-09-28 R10】验证器 base_cfg 与生产配置的口径漂移守卫。
             # 该坑已踩两次（09-18 top_n/rpt、09-28 northbound_mode）。
             "tests.test_evolve_baseline_sync",
