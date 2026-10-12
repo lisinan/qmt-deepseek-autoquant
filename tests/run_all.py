@@ -107,6 +107,15 @@ def _collect_tests():
             # 另钉死第 12 次同型口径漂移：验证器 fixed_amount 必须等于生产
             # max_order_amount（30万 vs 18万 ⇒ IS 收益虚高 34.5pt）。
             "tests.test_trend_stop_switch",
+            # 【2026-10-12 AM-EVOLVE 第 26 轮】趋势破位「更慢离场」双开关守卫。
+            # 25 轮里所有退出侧扫描只朝「更紧」一个方向走（静态 ATR 止损 k=1.5
+            # −0.089 / 吊灯严格单调负 / hard_stop 惰性），其反面从未被测过。
+            # 本守卫锁死：默认 1 / 0.0 零行为变化 + 开启后真变 + 方向为「更慢」。
+            "tests.test_trend_break_slower_exit",
+            # 【2026-10-10 SYNTHESIZE】入场侧半仓降级（entry_half_when_one）守卫。
+            # 注：10-10 落盘时**漏注册**到 run_all.py ⇒ 4 例用例一直隐形未执行，
+            # 本轮补登记（与「import 失败必须报错」同一类纪律）。
+            "tests.test_entry_half_when_one",
             # 【2026-09-28 R10】验证器 base_cfg 与生产配置的口径漂移守卫。
             # 该坑已踩两次（09-18 top_n/rpt、09-28 northbound_mode）。
             "tests.test_evolve_baseline_sync",

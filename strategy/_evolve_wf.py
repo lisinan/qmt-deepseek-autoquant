@@ -625,6 +625,28 @@ def candidates_final() -> dict:
     #   IS Sharpe 反而**上升** 0.08，但 OOS 崩 0.482。判据：凡 IS Sh 升而
     #   IS 收益腰斩的候选，一律以 OOS 为准否决。**勿再以 IS Sharpe 单独决策。**
     out["U5_趋势真实止损定仓位"] = replace(b, trend_vol_sizing=True)
+    # ---- 2026-10-10 周度深度研究（SYNTHESIZE）：入场侧「仅 1 只通过时半仓降级」----
+    # R25 §10 #4 明确提名的结构性方向：min_passing_candidates=2 让近 90 日
+    #   45.6% 交易日零开仓，是弱市 KPI#4 为负的机制根因。R24 已证「放宽
+    #   trend_up 信号质量门」是灾难（四窗最差 −0.49），本候选**严格区分**：
+    #   只放宽仓位（half position）、不动信号质量门。backtest_daily.py 的
+    #   entry_half_when_one 开关默认 False（零行为变化），True 时恰好 1 只
+    #   通过全部门 → 半仓开这 1 只。四窗口共识裁决（闸门② 最差窗 ≥ +0.10）。
+    out["W1_entry_half_when_one"] = replace(b, entry_half_when_one=True)
+    # ---- 2026-10-12 AM-EVOLVE（第 26 轮）：板块分散（每板块最多 N 只）重裁 ----
+    # 为什么重开：本轴是 26 轮里**唯一四窗全正**的候选（R22 旧基线
+    #   +0.181/+0.047/+0.101/+0.204，均值 +0.133、最差 +0.047），唯一致命伤是
+    #   最差窗 +0.047 < +0.10。而 R25 把验证器 fixed_amount 30万→18万（对齐生产）
+    #   后基线已变；R22 实测「基线变化会把同轴的 dSh 放大 2.3 倍」
+    #   （max_per_sector 旧基线 +0.057 → 新基线 +0.133）⇒ 值得在新基线上重裁。
+    # 90×6 新基线实测：0 +0.000 / 1 −0.005 / **2 +0.120** / 3 +0.011。
+    # V2（=3）是剂量对照，用于判定 2 是高原还是尖峰。
+    # ⚠ 已知硬伤（两条，任一即否决）：
+    #   ① IS 收益 +129.9%→+124.3%（−5.6pt）、IS Sharpe 1.90→1.89 ⇒ **闸门① 不成立**；
+    #   ② `SECTOR_OF` 在 engine/event_engine.py **从未被读取** ⇒ 即便过闸也须先补
+    #      实盘实现（§7 口径纪律），否则又是「回测有效、实盘无效」。
+    out["V1_板块分散_每板块最多2只"] = replace(b, max_per_sector=2)
+    out["V2_板块分散_每板块最多3只"] = replace(b, max_per_sector=3)
     return out
 
 

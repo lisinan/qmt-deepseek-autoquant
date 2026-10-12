@@ -404,6 +404,16 @@ class BacktestConfig:
     # chandelier / take_profit / trend_trail 由 low/high 日内触发、实盘由分钟线
     # 执行，本就当日成交；hard_stop / crash 实盘亦为分钟尺度 ⇒ 均不延迟。
     exit_next_open: bool = False
+    # ---- 入场侧「仅 1 只通过时半仓降级」研究开关（2026-10-10 周度深度研究）----
+    # 【背景】R21 落盘 min_passing_candidates=2 后，近 90 日仅 54.4% 天数 ≥2 只
+    #   通过、45.6% 天数 < 2 只 ⇒ 全关（零开仓）。R24 已证「放宽 trend_up 信号门」
+    #   是灾难（四窗最差 −0.49），但那是放低了**信号质量**。本开关严格区分：
+    #   **只放宽仓位、不动信号质量门**——当恰好 1 只通过全部门时，仍开这 1 只，
+    #   但仓位减半（wf × 0.5，经 line 1475 的 tgt=tgt*wf 流入实际股数）。
+    #   既提高弱市暴露（治 KPI#4 为负的机制根因），又不引入低质量信号。
+    # False（默认）= 原行为（<2 只即全关），零行为变化；
+    # True          = 恰好 1 只通过 → 半仓开这 1 只（多只通过仍全开，0 只仍全关）。
+    entry_half_when_one: bool = False
     max_positions: int = 8
     # ---- A 股 T+1 约束【P0 修正 2026-09-02】----
     # 原事件时序：A) 执行昨日挂单（今日开盘成交，写入 positions）
@@ -710,6 +720,25 @@ class BacktestConfig:
     #   trend_chandelier_mult >0：吊灯止损，stop=max(stop, peak×(1−ATR%×k))（锁定浮盈）
     trend_atr_stop_mult: float = 0.0
     trend_chandelier_mult: float = 0.0
+    # ----【2026-10-12 第 26 轮 AM-EVOLVE】趋势破位「**更慢**离场」双开关（研究用，默认=现状）----
+    # 背景（为什么要开这条轴）：第 25 轮 PM 已把退出侧「**更快**离场」整类闭合——
+    #   静态 ATR 止损 k=1.5 −0.089、k≥2.5 惰性；吊灯止损严格单调负（4.0 −0.019
+    #   → 1.0 −1.551）；hard_stop −0.12 惰性。其判词是「趋势策略的钱是**骑出来**
+    #   的，任何提前下车都在减 alpha，左尾已被 trend_break 截断完（IS MDD 仅
+    #   −6.94%、预算 −20% 只用 35%）」。
+    #   ⇒ 同一枚硬币的**反面此前从未被测过**：既然「更快」减 alpha，那么「更慢」
+    #     是否增 alpha？本项目 26 轮里所有退出侧扫描都只朝「更紧」一个方向走。
+    #   两个正交的「更慢」剂量旋钮（默认均为现状 ⇒ 零行为变化）：
+    #     trend_break_confirm_days  N>1：破位条件需**连续 N 个交易日**成立才离场
+    #       （第 N 日收盘成交）。直接对冲震荡市里「单日插针破 MA60 → 次日反弹」
+    #       的 whipsaw；左尾仍由 hard_stop −18% / crash −3.25% 兜底。
+    #     trend_break_buffer_pct    b>0：判定线由 `cl < MA60` 放宽为
+    #       `cl < MA60×(1−b)`（与 trend_exit_ma 的**均线周期**轴正交：
+    #       周期轴改变的是均线本身，缓冲轴改变的是相对均线的容差）。
+    #   注意：二者都是**放宽**离场 ⇒ 必然抬高 IS MDD。而回撤预算严重欠用
+    #   （−6.94% vs −20%）正是本轴成立的前提。
+    trend_break_confirm_days: int = 1
+    trend_break_buffer_pct: float = 0.0
     # ---- 组合级动态暴露（回撤控制 DD control，风险预算层）----
     # 独立于 regime 的"组合级风险预算"：当组合净值自峰值回撤超过
     # dd_ctrl_start 时，对新开仓的目标仓位按比例缩减（exp_scale 由 1.0
@@ -1534,8 +1563,13 @@ def run_backtest(codes: List[str], cfg: BacktestConfig,
                 # 趋势骑行：MA20 下穿 exit_ma 或 收盘跌破 exit_ma → 离场
                 _m20 = I.last(ma20_arr[code][:i + 1])
                 _mex = I.last(ma_exit_arr[code][:i + 1])
-                if not _exempt and ((_m20 and _mex and _m20 < _mex)
-                                    or (cl < _mex if _mex else False)):
+                # 【2026-10-12 第 26 轮】更慢离场双旋钮（默认 1 / 0.0 ⇒ 逐位等同旧行为）
+                _broken = ((_m20 and _mex and _m20 < _mex)
+                           or (cl < _mex * (1 - cfg.trend_break_buffer_pct)
+                               if _mex else False))
+                pos["_tb_streak"] = (pos.get("_tb_streak", 0) + 1) if _broken else 0
+                if (not _exempt and pos["_tb_streak"]
+                        >= max(1, int(cfg.trend_break_confirm_days))):
                     exit_price, reason = cl, "trend_break"
                 elif (cl / entry - 1) <= cfg.hard_stop_pct:
                     exit_price, reason = cl, "hard_stop"
@@ -1871,9 +1905,17 @@ def run_backtest(codes: List[str], cfg: BacktestConfig,
             # 只砍**新开仓**，不触碰任何退出判定 ⇒ 可与退出侧结论叠加阅读。
             # 默认 0 → 恒不触发（零行为变化，守卫测试见
             # tests/test_min_passing_candidates.py）。
+            _broad_half_codes: set = set()
             if cfg.min_passing_candidates > 0 and breadth_n < int(
                     cfg.min_passing_candidates):
-                scored = []
+                if (cfg.entry_half_when_one and breadth_n == 1
+                        and int(cfg.min_passing_candidates) >= 2 and scored):
+                    # 降级：仅 1 只通过全部门 → 半仓开这 1 只（不动信号质量门）。
+                    # 与 R24 trend_up_relax 放宽信号门灾难严格区分：此处只放宽仓位。
+                    _broad_half_codes = {scored[0][1]}
+                    scored = scored[:1]
+                else:
+                    scored = []
             # ---- 分行业分散持仓（max_per_sector>0 时生效）----
             # 在"总持仓上限"之内，进一步限制同一产业链环节最多持几只，
             # 强制组合跨环节铺开、降低环节内隐性集中风险。
@@ -2023,7 +2065,7 @@ def run_backtest(codes: List[str], cfg: BacktestConfig,
                     "code": code,
                     "stop_dist": stop_dist,
                     "target_dist": max(abs(cfg.take_profit), ap * cfg.tp_atr_mult),
-                    "wf": wf_map.get(code, 1.0),
+                    "wf": wf_map.get(code, 1.0) * (0.5 if code in _broad_half_codes else 1.0),
                     "weight": rp_map.get(code, 1.0),
                 })
 
