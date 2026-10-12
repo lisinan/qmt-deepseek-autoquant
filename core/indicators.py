@@ -202,6 +202,61 @@ def vwap(typicals: List[float], volumes: List[int]) -> List[F]:
     return out
 
 
+def vwap_roll(typicals: List[float], volumes: List[int],
+              window: int = 0) -> List[F]:
+    """滚动 N 日 VWAP（**平移不变**）。window <= 0 ⇒ 退化为累计 VWAP。
+
+    【2026-10-12 PM-EVOLVE 第 27 轮 · 第 13 次同型口径缺陷修复】
+
+    缺陷：``vwap`` 是「**从序列起点**累计」的均价 —— 它的数值**取决于你把序列
+    从哪一天开始算**。而实盘 `DailyContext` 只拉 `DAILY_COUNT=120` 根日线，
+    回测用全样本 901 根 ⇒ 同一只股票、同一天，两侧 VWAP 值系统性不同
+    ⇒ vwap 因子（0/1/2，6 因子里权重最大的一项）不同 ⇒ score 不同。
+
+    实测铁证（scripts/_pm_score_align_20261012.py，23 只 × 近 250 根）：
+      · 35.1%（2017/5750）的 (标的, 交易日) 上 live 与回测 score **不同**；
+      · 差异 **100%** 来自 vwap 因子的 0/1/2 迁移（0→2 有 941 次、2→0 有 836 次）；
+      · 回测判定买入（score ≥ 4.0）的 2684 个 (标的, 交易日) 里，
+        **482 个（18.0%）在实盘口径下 < 4.0 ⇒ 实盘会漏买**。
+
+    修复：改滚动窗口 VWAP —— 只要序列尾部对齐，无论从哪天开始算都
+    **逐位相同**（满足 R26 立下的「不变性检验」判据）。预热区（i < window-1）
+    回退到累计值，保证 `window<=0` 时与 ``vwap`` **逐位相同**（零行为变化）。
+    """
+    n = len(typicals)
+    # 前缀和：O(n) 而非 O(n*window)，避免拖慢 walk-forward 网格
+    cpv = [0.0] * (n + 1)
+    cvv = [0.0] * (n + 1)
+    for i in range(n):
+        vv = volumes[i] if i < len(volumes) else 0
+        cpv[i + 1] = cpv[i] + typicals[i] * vv
+        cvv[i + 1] = cvv[i] + vv
+
+    # window < 0：**模拟实盘**——序列只有最近 W 根（DAILY_COUNT=120），
+    # 每个 bar i 的 VWAP 从 max(0, i-W+1) 累计到 i。用于量测
+    # 「实盘口径 vs 回测口径」的真实差距（回测有全样本，实盘只有 120 根）。
+    if window < 0:
+        w = -window
+        out: List[F] = _none_list(n)
+        for i in range(n):
+            lo = max(0, i - w + 1)
+            pv = cpv[i + 1] - cpv[lo]
+            vv2 = cvv[i + 1] - cvv[lo]
+            out[i] = pv / vv2 if vv2 > 0 else None
+        return out
+
+    cum = vwap(typicals, volumes)
+    if window == 0 or window >= n:
+        return cum
+    out = list(cum)
+    for i in range(window - 1, n):
+        lo = i - window + 1
+        pv = cpv[i + 1] - cpv[lo]
+        vv = cvv[i + 1] - cvv[lo]
+        out[i] = pv / vv if vv > 0 else None
+    return out
+
+
 # ---------------------------------------------------------------- 工具
 
 def slope(values: List[F], lookback: int = 5) -> Optional[float]:

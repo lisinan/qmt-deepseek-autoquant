@@ -647,6 +647,27 @@ def candidates_final() -> dict:
     #      实盘实现（§7 口径纪律），否则又是「回测有效、实盘无效」。
     out["V1_板块分散_每板块最多2只"] = replace(b, max_per_sector=2)
     out["V2_板块分散_每板块最多3只"] = replace(b, max_per_sector=3)
+    # ---- 2026-10-12 PM-EVOLVE（第 27 轮）：W 系列 = VWAP 因子窗口（回测/实盘口径对齐）----
+    # 缺陷（第 13 次同型）：6 因子里的 vwap 因子用 I.vwap「**从序列起点累计**」，
+    #   其数值取决于序列从哪天开始算。实盘 DailyContext 只拉 DAILY_COUNT=120 根，
+    #   回测用全样本 901 根 ⇒ 同一标的同一天两侧 vwap 值系统性不同 ⇒ vwap 因子
+    #   （0/1/2，6 因子里权重最大）不同 ⇒ score 不同。
+    # 实测铁证（scripts/_pm_score_align_20261012.py，23 只 × 近 250 根）：
+    #   · 35.1%（2017/5750）的 (标的,交易日) 两侧 score 不同，差异 **100%** 来自
+    #     vwap 因子的 0/1/2 迁移（0→2 941 次、2→0 836 次）；
+    #   · 回测 score≥4.0 的 2684 个信号里 **482 个（18.0%）在实盘口径下 <4.0 ⇒ 漏买**。
+    #   · 判决性不变性检验（R26 判据）：
+    #       603019.SH  w=0: full=1.69 vs tail120=3.69（差 −2.00）  ← 平移不变量被破坏
+    #                  w=60: full=1.69 vs tail120=1.69（差 0.00）  ← 修复
+    #       688981.SH  w=0: full=3.53 vs tail120=1.53（差 +2.00）
+    #                  w=60: full=1.53 vs tail120=1.53（差 0.00）
+    # W0 = 现状（累计 VWAP），即 P0 基线本身，仅作惰性对照；W1~W4 = 滚动窗口剂量轴。
+    # 实盘读取点已同步（strategy/daily_context.py:_compute 读 STRATEGY_PARAMS.vwap_window）。
+    out["W0_vwap累计_现状"] = replace(b, vwap_window=0)
+    out["W1_vwap滚动20"] = replace(b, vwap_window=20)
+    out["W2_vwap滚动40"] = replace(b, vwap_window=40)
+    out["W3_vwap滚动60"] = replace(b, vwap_window=60)
+    out["W4_vwap滚动90"] = replace(b, vwap_window=90)
     return out
 
 

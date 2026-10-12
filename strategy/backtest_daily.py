@@ -133,13 +133,18 @@ def align_panel(data: Dict[str, dict]) -> Tuple[List[str], Dict[str, dict]]:
 
 # ============================================================ 因子（与 trend_strategy 等价）
 
-def score_daily_series(o, h, l, c, v) -> List[Tuple[float, Dict[str, float]]]:
+def score_daily_series(o, h, l, c, v,
+                       vwap_window: int = 0,
+                       vwap_factor_fixed: float = -1.0) -> List[Tuple[float, Dict[str, float]]]:
     """向量化 6 因子评分：预计算所有指标序列一次，逐索引取 [i]。
 
     与 ``score_daily`` 数值完全一致（I.last(series[:i+1]) == series[i]，
     因指标在预热后恒为非负值、无 None 反弹）。返回长度 n 的列表，
     每项 = (score, factors_dict)。run_backtest 用它把 O(n^2) 的逐 bar
     重算降为 O(n)，加速 walk-forward 验证（结果不变）。
+
+    ``vwap_window``：滚动 N 日 VWAP 窗口；**0（默认）= 累计 VWAP，零行为变化**。
+    详见 ``core/indicators.vwap_roll`` 的缺陷说明（2026-10-12 第 27 轮）。
     """
     n = len(c)
     sma5 = I.sma(c, 5)
@@ -152,7 +157,7 @@ def score_daily_series(o, h, l, c, v) -> List[Tuple[float, Dict[str, float]]]:
     atr = I.atr(h, l, c, 14)
     sma20_slope = _vec_slope(sma20, 5)   # 全序列斜率（与 daily_trend_up 等价）
     typ = [(hh + ll + cc) / 3 for hh, ll, cc in zip(h, l, c)]
-    vwap = I.vwap(typ, v)
+    vwap = I.vwap_roll(typ, v, vwap_window)
     out: List[Tuple[float, Dict[str, float]]] = []
     for i in range(n):
         close = c[i]
@@ -218,7 +223,9 @@ def score_daily_series(o, h, l, c, v) -> List[Tuple[float, Dict[str, float]]]:
         factors["position"] = round(pos, 2)
         # VWAP（重校准版）
         vw = 0.0
-        if close and vwap_i:
+        if vwap_factor_fixed >= 0:
+            vw = float(vwap_factor_fixed)      # 固定值（噪声检验）
+        elif close and vwap_i:
             diff = (close - vwap_i) / vwap_i
             if diff > 0.0008:
                 vw = 2.0
@@ -229,10 +236,11 @@ def score_daily_series(o, h, l, c, v) -> List[Tuple[float, Dict[str, float]]]:
     return out
 
 
-def score_daily(o, h, l, c, v) -> Tuple[float, Dict[str, float]]:
+def score_daily(o, h, l, c, v, vwap_window: int = 0) -> Tuple[float, Dict[str, float]]:
     """对一组日线序列（截至当前）计算 6 因子评分。c[-1] 为当前收盘。
 
     兼容旧调用：等价于 score_daily_series(...)[-1]。
+    ``vwap_window``：滚动 N 日 VWAP 窗口；0（默认）= 累计 VWAP，零行为变化。
     """
     ma5 = I.last(I.sma(c, 5))
     ma10 = I.last(I.sma(c, 10))
@@ -246,7 +254,7 @@ def score_daily(o, h, l, c, v) -> Tuple[float, Dict[str, float]]:
     boll_mid, boll_up, boll_lo = I.last(_bmid), I.last(_bup), I.last(_blo)
     atr = I.last(I.atr(h, l, c, 14))
     typ = [(hh + ll + cc) / 3 for hh, ll, cc in zip(h, l, c)]
-    vwap = I.last(I.vwap(typ, v))
+    vwap = I.last(I.vwap_roll(typ, v, vwap_window))
     close = c[-1]
 
     factors: Dict[str, float] = {}
@@ -450,6 +458,23 @@ class BacktestConfig:
     # Sharpe / Calmar。默认 0 = 关闭（行为与旧版完全一致）。
     # 须经 IS/OOS + 多折 walk-forward 严格验证后才并入生产。
     max_per_sector: int = 0
+    # ---- VWAP 因子窗口（**回测/实盘口径对齐**，研究开关；默认 0 = 现状）----
+    # 【2026-10-12 PM-EVOLVE 第 27 轮 · 第 13 次同型口径缺陷】
+    # 缺陷：6 因子里的 vwap 因子用 ``I.vwap``（**从序列起点累计**），其数值
+    #   取决于序列从哪天开始算。实盘 `DailyContext` 只拉 120 根（DAILY_COUNT），
+    #   回测用全样本 901 根 ⇒ 同一标的同一天两侧 vwap 值系统性不同。
+    #   实测：35.1% 的 (标的,交易日) score 不同；回测会买的 2684 个信号里
+    #   **482 个（18.0%）在实盘口径下 <4.0 ⇒ 实盘漏买**。
+    # 修复：>0 = 改用**滚动 N 日 VWAP**（平移不变 ⇒ 与序列起点无关 ⇒ 两侧同值）。
+    # **默认 0 = 累计 VWAP（现状），逐位零行为变化**；>0 才改变评分。
+    # 【口径纪律】实盘同式读点在 strategy/daily_context.py:_compute()，
+    #   落盘前必须确认该处已同步读取本字段。
+    # 【2026-10-12 PM-EVOLVE 第 27 轮】<0 = 现状；>=0 = 该因子恒取该固定值。
+    # 用于判定 vwap 因子本身是 alpha 还是噪声（它正是回测/实盘不一致的**唯一**
+    # 起源：实盘只有 120 根历史而 I.vwap 从序列起点累计）。若移除/固定它后
+    # OOS 不降甚至升 ⇒ 该因子是噪声，且可顺带消除 35% 的回测/实盘评分分歧。
+    vwap_factor_fixed: float = -1.0
+    vwap_window: int = 0
     buy_score_threshold: float = 4.0
     min_signals: int = 3
     # ---- 日线偏置闸门（与实盘 trend_strategy.on_bars 对齐）----
@@ -1109,7 +1134,9 @@ def run_backtest(codes: List[str], cfg: BacktestConfig,
                 _ap[i] = a / cl[i]
         atr_pct_arr[code] = _ap
         # 6 因子评分序列（与 score_daily 等价）
-        score_arr[code] = score_daily_series(o, hi, lo, cl, vo)
+        score_arr[code] = score_daily_series(o, hi, lo, cl, vo,
+                                             cfg.vwap_window,
+                                             cfg.vwap_factor_fixed)
         # 量能突破确认预计算
         _vma = I.sma(vo, cfg.vol_confirm_ma)
         _vr = [0.0] * n_c

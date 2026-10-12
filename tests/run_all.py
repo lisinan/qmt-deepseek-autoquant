@@ -116,6 +116,7 @@ def _collect_tests():
             # 注：10-10 落盘时**漏注册**到 run_all.py ⇒ 4 例用例一直隐形未执行，
             # 本轮补登记（与「import 失败必须报错」同一类纪律）。
             "tests.test_entry_half_when_one",
+            "tests.test_vwap_window_alignment",
             # 【2026-09-28 R10】验证器 base_cfg 与生产配置的口径漂移守卫。
             # 该坑已踩两次（09-18 top_n/rpt、09-28 northbound_mode）。
             "tests.test_evolve_baseline_sync",

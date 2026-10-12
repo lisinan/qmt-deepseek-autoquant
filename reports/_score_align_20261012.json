@@ -1,0 +1,550 @@
+{
+ "n_codes": 23,
+ "last_diff": {
+  "000977.SZ": -2.0,
+  "002230.SZ": 0.0,
+  "002371.SZ": 0.0,
+  "002415.SZ": 0.0,
+  "002916.SZ": 0.0,
+  "300033.SZ": 0.0,
+  "300308.SZ": 0.0,
+  "300383.SZ": 0.0,
+  "300394.SZ": -2.0,
+  "300474.SZ": 0.0,
+  "300476.SZ": 2.0,
+  "300496.SZ": 0.0,
+  "300502.SZ": 0.0,
+  "300570.SZ": 0.0,
+  "603019.SH": -2.0,
+  "603881.SH": 0.0,
+  "603986.SH": 0.0,
+  "688008.SH": 0.0,
+  "688012.SH": 0.0,
+  "688041.SH": 0.0,
+  "688111.SH": 0.0,
+  "688256.SH": 0.0,
+  "688981.SH": -2.0
+ },
+ "last_detail": {
+  "000977.SZ": {
+   "score_full": 5.83,
+   "score_live": 7.83,
+   "vwap_full_f": 0.0,
+   "vwap_live_f": 2.0,
+   "factors_full": {
+    "trend": 2.0,
+    "momentum": 1.0,
+    "oversold": 1.0,
+    "volume": 1.0,
+    "position": 0.83,
+    "vwap": 0.0
+   },
+   "factors_live": {
+    "trend": 2.0,
+    "momentum": 1.0,
+    "oversold": 1.0,
+    "volume": 1.0,
+    "position": 0.83,
+    "vwap": 2.0
+   }
+  },
+  "002230.SZ": {
+   "score_full": 5.5,
+   "score_live": 5.5,
+   "vwap_full_f": 2.0,
+   "vwap_live_f": 2.0,
+   "factors_full": {
+    "trend": 2.0,
+    "momentum": 1.0,
+    "oversold": 0.0,
+    "volume": 0.0,
+    "position": 0.5,
+    "vwap": 2.0
+   },
+   "factors_live": {
+    "trend": 2.0,
+    "momentum": 1.0,
+    "oversold": 0.0,
+    "volume": 0.0,
+    "position": 0.5,
+    "vwap": 2.0
+   }
+  },
+  "002371.SZ": {
+   "score_full": 1.82,
+   "score_live": 1.82,
+   "vwap_full_f": 0.0,
+   "vwap_live_f": 0.0,
+   "factors_full": {
+    "trend": 0.0,
+    "momentum": 0.0,
+    "oversold": 1.5,
+    "volume": 0.0,
+    "position": 0.32,
+    "vwap": 0.0
+   },
+   "factors_live": {
+    "trend": 0.0,
+    "momentum": 0.0,
+    "oversold": 1.5,
+    "volume": 0.0,
+    "position": 0.32,
+    "vwap": 0.0
+   }
+  },
+  "002415.SZ": {
+   "score_full": 2.96,
+   "score_live": 2.96,
+   "vwap_full_f": 0.0,
+   "vwap_live_f": 0.0,
+   "factors_full": {
+    "trend": 0.5,
+    "momentum": 1.0,
+    "oversold": 0.0,
+    "volume": 1.0,
+    "position": 0.46,
+    "vwap": 0.0
+   },
+   "factors_live": {
+    "trend": 0.5,
+    "momentum": 1.0,
+    "oversold": 0.0,
+    "volume": 1.0,
+    "position": 0.46,
+    "vwap": 0.0
+   }
+  },
+  "002916.SZ": {
+   "score_full": 1.18,
+   "score_live": 1.18,
+   "vwap_full_f": 0.0,
+   "vwap_live_f": 0.0,
+   "factors_full": {
+    "trend": 0.0,
+    "momentum": 0.0,
+    "oversold": 1.0,
+    "volume": 0.0,
+    "position": 0.18,
+    "vwap": 0.0
+   },
+   "factors_live": {
+    "trend": 0.0,
+    "momentum": 0.0,
+    "oversold": 1.0,
+    "volume": 0.0,
+    "position": 0.18,
+    "vwap": 0.0
+   }
+  },
+  "300033.SZ": {
+   "score_full": 6.04,
+   "score_live": 6.04,
+   "vwap_full_f": 2.0,
+   "vwap_live_f": 2.0,
+   "factors_full": {
+    "trend": 2.0,
+    "momentum": 0.0,
+    "oversold": 1.5,
+    "volume": 0.0,
+    "position": 0.54,
+    "vwap": 2.0
+   },
+   "factors_live": {
+    "trend": 2.0,
+    "momentum": 0.0,
+    "oversold": 1.5,
+    "volume": 0.0,
+    "position": 0.54,
+    "vwap": 2.0
+   }
+  },
+  "300308.SZ": {
+   "score_full": 1.8,
+   "score_live": 1.8,
+   "vwap_full_f": 0.0,
+   "vwap_live_f": 0.0,
+   "factors_full": {
+    "trend": 0.0,
+    "momentum": 0.0,
+    "oversold": 1.5,
+    "volume": 0.0,
+    "position": 0.3,
+    "vwap": 0.0
+   },
+   "factors_live": {
+    "trend": 0.0,
+    "momentum": 0.0,
+    "oversold": 1.5,
+    "volume": 0.0,
+    "position": 0.3,
+    "vwap": 0.0
+   }
+  },
+  "300383.SZ": {
+   "score_full": 3.58,
+   "score_live": 3.58,
+   "vwap_full_f": 0.0,
+   "vwap_live_f": 0.0,
+   "factors_full": {
+    "trend": 0.0,
+    "momentum": 1.0,
+    "oversold": 1.0,
+    "volume": 1.0,
+    "position": 0.58,
+    "vwap": 0.0
+   },
+   "factors_live": {
+    "trend": 0.0,
+    "momentum": 1.0,
+    "oversold": 1.0,
+    "volume": 1.0,
+    "position": 0.58,
+    "vwap": 0.0
+   }
+  },
+  "300394.SZ": {
+   "score_full": 3.5,
+   "score_live": 5.5,
+   "vwap_full_f": 0.0,
+   "vwap_live_f": 2.0,
+   "factors_full": {
+    "trend": 2.0,
+    "momentum": 1.0,
+    "oversold": 0.0,
+    "volume": 0.0,
+    "position": 0.5,
+    "vwap": 0.0
+   },
+   "factors_live": {
+    "trend": 2.0,
+    "momentum": 1.0,
+    "oversold": 0.0,
+    "volume": 0.0,
+    "position": 0.5,
+    "vwap": 2.0
+   }
+  },
+  "300474.SZ": {
+   "score_full": 6.58,
+   "score_live": 6.58,
+   "vwap_full_f": 2.0,
+   "vwap_live_f": 2.0,
+   "factors_full": {
+    "trend": 2.0,
+    "momentum": 1.0,
+    "oversold": 1.0,
+    "volume": 0.0,
+    "position": 0.58,
+    "vwap": 2.0
+   },
+   "factors_live": {
+    "trend": 2.0,
+    "momentum": 1.0,
+    "oversold": 1.0,
+    "volume": 0.0,
+    "position": 0.58,
+    "vwap": 2.0
+   }
+  },
+  "300476.SZ": {
+   "score_full": 7.64,
+   "score_live": 5.64,
+   "vwap_full_f": 2.0,
+   "vwap_live_f": 0.0,
+   "factors_full": {
+    "trend": 2.0,
+    "momentum": 1.0,
+    "oversold": 1.0,
+    "volume": 1.0,
+    "position": 0.64,
+    "vwap": 2.0
+   },
+   "factors_live": {
+    "trend": 2.0,
+    "momentum": 1.0,
+    "oversold": 1.0,
+    "volume": 1.0,
+    "position": 0.64,
+    "vwap": 0.0
+   }
+  },
+  "300496.SZ": {
+   "score_full": 1.8,
+   "score_live": 1.8,
+   "vwap_full_f": 0.0,
+   "vwap_live_f": 0.0,
+   "factors_full": {
+    "trend": 0.0,
+    "momentum": 0.0,
+    "oversold": 1.5,
+    "volume": 0.0,
+    "position": 0.3,
+    "vwap": 0.0
+   },
+   "factors_live": {
+    "trend": 0.0,
+    "momentum": 0.0,
+    "oversold": 1.5,
+    "volume": 0.0,
+    "position": 0.3,
+    "vwap": 0.0
+   }
+  },
+  "300502.SZ": {
+   "score_full": 3.62,
+   "score_live": 3.62,
+   "vwap_full_f": 0.0,
+   "vwap_live_f": 0.0,
+   "factors_full": {
+    "trend": 1.0,
+    "momentum": 1.0,
+    "oversold": 1.0,
+    "volume": 0.0,
+    "position": 0.62,
+    "vwap": 0.0
+   },
+   "factors_live": {
+    "trend": 1.0,
+    "momentum": 1.0,
+    "oversold": 1.0,
+    "volume": 0.0,
+    "position": 0.62,
+    "vwap": 0.0
+   }
+  },
+  "300570.SZ": {
+   "score_full": 5.12,
+   "score_live": 5.12,
+   "vwap_full_f": 2.0,
+   "vwap_live_f": 2.0,
+   "factors_full": {
+    "trend": 0.0,
+    "momentum": 1.0,
+    "oversold": 1.5,
+    "volume": 0.0,
+    "position": 0.62,
+    "vwap": 2.0
+   },
+   "factors_live": {
+    "trend": 0.0,
+    "momentum": 1.0,
+    "oversold": 1.5,
+    "volume": 0.0,
+    "position": 0.62,
+    "vwap": 2.0
+   }
+  },
+  "603019.SH": {
+   "score_full": 5.93,
+   "score_live": 7.93,
+   "vwap_full_f": 0.0,
+   "vwap_live_f": 2.0,
+   "factors_full": {
+    "trend": 2.0,
+    "momentum": 1.0,
+    "oversold": 1.0,
+    "volume": 1.0,
+    "position": 0.93,
+    "vwap": 0.0
+   },
+   "factors_live": {
+    "trend": 2.0,
+    "momentum": 1.0,
+    "oversold": 1.0,
+    "volume": 1.0,
+    "position": 0.93,
+    "vwap": 2.0
+   }
+  },
+  "603881.SH": {
+   "score_full": 1.84,
+   "score_live": 1.84,
+   "vwap_full_f": 0.0,
+   "vwap_live_f": 0.0,
+   "factors_full": {
+    "trend": 0.0,
+    "momentum": 0.0,
+    "oversold": 1.0,
+    "volume": 0.5,
+    "position": 0.34,
+    "vwap": 0.0
+   },
+   "factors_live": {
+    "trend": 0.0,
+    "momentum": 0.0,
+    "oversold": 1.0,
+    "volume": 0.5,
+    "position": 0.34,
+    "vwap": 0.0
+   }
+  },
+  "603986.SH": {
+   "score_full": 7.76,
+   "score_live": 7.76,
+   "vwap_full_f": 2.0,
+   "vwap_live_f": 2.0,
+   "factors_full": {
+    "trend": 2.0,
+    "momentum": 1.0,
+    "oversold": 1.0,
+    "volume": 1.0,
+    "position": 0.76,
+    "vwap": 2.0
+   },
+   "factors_live": {
+    "trend": 2.0,
+    "momentum": 1.0,
+    "oversold": 1.0,
+    "volume": 1.0,
+    "position": 0.76,
+    "vwap": 2.0
+   }
+  },
+  "688008.SH": {
+   "score_full": 3.99,
+   "score_live": 3.99,
+   "vwap_full_f": 2.0,
+   "vwap_live_f": 2.0,
+   "factors_full": {
+    "trend": 0.5,
+    "momentum": 0.0,
+    "oversold": 1.0,
+    "volume": 0.0,
+    "position": 0.49,
+    "vwap": 2.0
+   },
+   "factors_live": {
+    "trend": 0.5,
+    "momentum": 0.0,
+    "oversold": 1.0,
+    "volume": 0.0,
+    "position": 0.49,
+    "vwap": 2.0
+   }
+  },
+  "688012.SH": {
+   "score_full": 2.14,
+   "score_live": 2.14,
+   "vwap_full_f": 0.0,
+   "vwap_live_f": 0.0,
+   "factors_full": {
+    "trend": 0.0,
+    "momentum": 1.0,
+    "oversold": 1.0,
+    "volume": 0.0,
+    "position": 0.14,
+    "vwap": 0.0
+   },
+   "factors_live": {
+    "trend": 0.0,
+    "momentum": 1.0,
+    "oversold": 1.0,
+    "volume": 0.0,
+    "position": 0.14,
+    "vwap": 0.0
+   }
+  },
+  "688041.SH": {
+   "score_full": 1.47,
+   "score_live": 1.47,
+   "vwap_full_f": 0.0,
+   "vwap_live_f": 0.0,
+   "factors_full": {
+    "trend": 0.0,
+    "momentum": 0.0,
+    "oversold": 1.0,
+    "volume": 0.0,
+    "position": 0.47,
+    "vwap": 0.0
+   },
+   "factors_live": {
+    "trend": 0.0,
+    "momentum": 0.0,
+    "oversold": 1.0,
+    "volume": 0.0,
+    "position": 0.47,
+    "vwap": 0.0
+   }
+  },
+  "688111.SH": {
+   "score_full": 1.24,
+   "score_live": 1.24,
+   "vwap_full_f": 0.0,
+   "vwap_live_f": 0.0,
+   "factors_full": {
+    "trend": 0.0,
+    "momentum": 0.0,
+    "oversold": 1.0,
+    "volume": 0.0,
+    "position": 0.24,
+    "vwap": 0.0
+   },
+   "factors_live": {
+    "trend": 0.0,
+    "momentum": 0.0,
+    "oversold": 1.0,
+    "volume": 0.0,
+    "position": 0.24,
+    "vwap": 0.0
+   }
+  },
+  "688256.SH": {
+   "score_full": 3.9,
+   "score_live": 3.9,
+   "vwap_full_f": 2.0,
+   "vwap_live_f": 2.0,
+   "factors_full": {
+    "trend": 0.0,
+    "momentum": 0.0,
+    "oversold": 1.0,
+    "volume": 0.5,
+    "position": 0.4,
+    "vwap": 2.0
+   },
+   "factors_live": {
+    "trend": 0.0,
+    "momentum": 0.0,
+    "oversold": 1.0,
+    "volume": 0.5,
+    "position": 0.4,
+    "vwap": 2.0
+   }
+  },
+  "688981.SH": {
+   "score_full": 4.52,
+   "score_live": 6.52,
+   "vwap_full_f": 0.0,
+   "vwap_live_f": 2.0,
+   "factors_full": {
+    "trend": 2.0,
+    "momentum": 1.0,
+    "oversold": 1.0,
+    "volume": 0.0,
+    "position": 0.52,
+    "vwap": 0.0
+   },
+   "factors_live": {
+    "trend": 2.0,
+    "momentum": 1.0,
+    "oversold": 1.0,
+    "volume": 0.0,
+    "position": 0.52,
+    "vwap": 2.0
+   }
+  }
+ },
+ "day_rows_n": 5750,
+ "day_mismatch_n": 2017,
+ "vwap_migration": {
+  "0.0->2.0": 941,
+  "0.0->1.0": 92,
+  "1.0->2.0": 16,
+  "2.0->1.0": 82,
+  "2.0->0.0": 836,
+  "1.0->0.0": 50
+ },
+ "buy_full_n": 2684,
+ "missed_by_live_n": 482,
+ "extra_by_live_n": 400,
+ "D_TAIL": 120
+}

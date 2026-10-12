@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 
-from config.settings import INDEX_CODES, MARKET_INDEX_CODE
+from config.settings import INDEX_CODES, MARKET_INDEX_CODE, STRATEGY_PARAMS
 from core import indicators as I
 from core.qmt_client import qmt_client
 from data.tushare_client import tushare_client
@@ -301,7 +301,15 @@ class DailyContext:
         # 会把「无数据」误判为 rsi=0=超卖、错误加 1.5。落库字段在构造时兜底。
         rsi = I.last(I.rsi(closes, 14))
         typ = [(h + l + c) / 3 for h, l, c in zip(highs, lows, closes)]
-        vwap = I.last(I.vwap(typ, vols)) or 0.0
+        # 【2026-10-12 PM-EVOLVE 第 27 轮 · 实盘侧读取点】
+        # 原为 ``I.vwap(typ, vols)``（**从序列起点累计**）。本类只拉
+        # DAILY_COUNT=120 根日线，而回测用全样本 ⇒ 同一标的同一天 vwap 值
+        # 系统性不同 ⇒ vwap 因子（0/1/2）不同 ⇒ score 不同（实测 35.1%
+        # 的标的日不同、18.0% 的回测买入信号在实盘被漏掉）。
+        # 改读 ``vwap_window``：>0 = 滚动 N 日 VWAP（平移不变），与回测同值；
+        # **默认 0 = 累计 VWAP，逐位保持既有实盘行为**（零行为变化）。
+        _vw_w = int(STRATEGY_PARAMS.get("vwap_window", 0) or 0)
+        vwap = I.last(I.vwap_roll(typ, vols, _vw_w)) or 0.0
         vol_avg5 = (sum(vols[-6:-1]) / 5) if len(vols) >= 6 else 0.0
         close = closes[-1]
         # 日涨跌幅（日线口径）：与 backtest_daily.py:1271 的 crash 判定同口径
