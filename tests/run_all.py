@@ -122,6 +122,7 @@ def _collect_tests():
             # 连续 6 日零 BUY 的绑定约束。落盘 0.15（四窗最差 dSh +0.115）。
             # 锁死：默认 0.0 零行为变化 + 开启后真变 + 子集单调 + 生产/验证器同值。
             "tests.test_momentum_min_mom",
+            "tests.test_pool_membership_no_lookahead",
             # 【2026-09-28 R10】验证器 base_cfg 与生产配置的口径漂移守卫。
             # 该坑已踩两次（09-18 top_n/rpt、09-28 northbound_mode）。
             "tests.test_evolve_baseline_sync",

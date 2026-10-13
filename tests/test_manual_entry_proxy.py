@@ -51,9 +51,15 @@ from strategy.backtest_daily import run_backtest  # noqa: E402
 #   旧口径在样本后期（权益 2~3 百万）允许单仓 30 万 ⇒ **IS 收益虚高 34.5pt**。
 #   注意本次是收益**下降**而 Sharpe **上升**（1.86→1.90）：少了后期超配的
 #   那部分暴露，波动降得比收益多 —— 与 R23 的尺度效应方向相反，勿混淆。
-BASE_IS_RET = 1.300260      # +130.03%（原 +164.49%）
-BASE_IS_SHARPE = 1.898559   # 1.90（原 1.86）
-BASE_IS_MDD = -0.069412     # -6.94%（原 -7.60%）
+# 【2026-10-13 R28】因 momentum_min_mom 0.0→**0.15** 落盘而**第四次**重算
+#   （第 13 次基线同步；910 根 20230105→20261013）：
+#   ret +130.03%→**+131.93%**、Sh 1.90→**1.89**、MDD −6.94%→**−7.04%**、
+#   成交 169→**163** 笔。常量已与 test_rotation_proxy 对齐到同一 R28 基线。
+# ★ 数据源：本文件（及另两个基线守卫）现已钉死到 tushare 面板
+#   （tests/_baseline_tushare_panel.py），不再随 xtdata 可达性漂移。
+BASE_IS_RET = 1.319320      # +131.93%（R28，tushare 确定源）
+BASE_IS_SHARPE = 1.889559   # 1.89（R28）
+BASE_IS_MDD = -0.070443     # -7.04%（R28）
 TOL_RET = 0.02
 TOL_SH = 0.05
 TOL_MDD = 0.01
@@ -63,13 +69,9 @@ TOL_MDD = 0.01
 TEST_BASKET = ("300502.SZ", "300308.SZ", "002415.SZ", "000977.SZ", "603986.SH")
 
 
-def _is_result(cfg):
-    """全样本 IS 回测（复用验证器的预加载与对齐逻辑）。"""
-    codes = W.wide_universe()
-    data = W.preload(codes + [W.MARKET_INDEX_CODE, "000300.SH"], 900)
-    _d0, panel = W.aligned_universe(data, codes)
-    ks = [k for k in panel.keys() if k not in W.INDEX_CODES]
-    return run_backtest(ks, cfg, count=900, preloaded=panel)
+# 数据源自确定性 tushare 面板（见 tests/_baseline_tushare_panel.py），
+# 避免 xtdata 可达性波动导致基线守卫误报失败（R28 校准即在该源上完成）。
+from tests._baseline_tushare_panel import baseline_is_result as _is_result
 
 
 def test_default_empty_basket_keeps_validated_baseline():

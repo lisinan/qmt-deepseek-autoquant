@@ -59,13 +59,9 @@ TOL_SH = 0.05
 TOL_MDD = 0.01
 
 
-def _is_result(cfg):
-    """全样本 IS 回测（复用验证器的预加载与对齐逻辑）。"""
-    codes = W.wide_universe()
-    data = W.preload(codes + [W.MARKET_INDEX_CODE, "000300.SH"], 900)
-    _d0, panel = W.aligned_universe(data, codes)
-    ks = [k for k in panel.keys() if k not in W.INDEX_CODES]
-    return run_backtest(ks, cfg, count=900, preloaded=panel)
+# 数据源自确定性 tushare 面板（见 tests/_baseline_tushare_panel.py），
+# 避免 xtdata 可达性波动导致基线守卫误报失败（R28 校准即在该源上完成）。
+from tests._baseline_tushare_panel import baseline_is_result as _is_result
 
 
 def test_default_rotation_off_keeps_validated_baseline():

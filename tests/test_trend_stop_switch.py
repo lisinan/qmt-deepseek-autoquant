@@ -32,12 +32,9 @@ import strategy._evolve_wf as W  # noqa: E402
 from strategy.backtest_daily import run_backtest  # noqa: E402
 
 
-def _is_result(cfg):
-    codes = W.wide_universe()
-    data = W.preload(codes + [W.MARKET_INDEX_CODE, "000300.SH"], 900)
-    _d0, panel = W.aligned_universe(data, codes)
-    ks = [k for k in panel.keys() if k not in W.INDEX_CODES]
-    return run_backtest(ks, cfg, count=900, preloaded=panel)
+# 数据源自确定性 tushare 面板（见 tests/_baseline_tushare_panel.py），
+# 避免 xtdata 可达性波动导致基线守卫误报失败（R28 校准即在该源上完成）。
+from tests._baseline_tushare_panel import baseline_is_result as _is_result
 
 
 def test_switches_default_off_and_zero_behaviour_change():
@@ -47,10 +44,12 @@ def test_switches_default_off_and_zero_behaviour_change():
     assert b.trend_chandelier_mult == 0.0, "研究开关默认必须为 0（关闭）"
     r = _is_result(b)
     # 与「完全不传这两个字段」等价（dataclass 默认值即 0.0，故此处只钉数值）
-    assert abs(r["total_return"] - 1.300260) < 0.02, \
-        f"P0 基线漂移：期望 +130.03%，实际 {r['total_return']:.4f}"
-    assert abs(r["sharpe"] - 1.898559) < 0.05, \
-        f"P0 Sharpe 漂移：期望 1.90，实际 {r['sharpe']:.4f}"
+    # R28（2026-10-13）动量闸门 momentum_min_mom 0.0→0.15 落盘后，P0 基线同步为
+    #   +131.93%（1.319320）/ Sh 1.89（1.889559）。数据源已钉死 tushare 面板。
+    assert abs(r["total_return"] - 1.319320) < 0.02, \
+        f"P0 基线漂移：期望 +131.93%，实际 {r['total_return']:.4f}"
+    assert abs(r["sharpe"] - 1.889559) < 0.05, \
+        f"P0 Sharpe 漂移：期望 1.89，实际 {r['sharpe']:.4f}"
 
 
 def test_static_atr_stop_really_changes_result_when_tight():
