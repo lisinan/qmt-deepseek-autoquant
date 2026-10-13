@@ -147,6 +147,14 @@ def base_cfg() -> BacktestConfig:
         exit_mode="trend", trend_exit_ma=60, hard_stop_pct=-0.18,
         trend_max_hold_days=120,
         momentum_rank=True, momentum_top_n=3, momentum_lookback=60,
+        # 【2026-10-13 AM-EVOLVE 第 28 轮】0.0 → **0.15，与生产对齐**（第 13 次基线同步）。
+        #   四窗共识（911 根 tushare 面板）：0.14/0.15/0.16 三档最差窗 dSh
+        #   +0.115/+0.115/+0.101 连续过闸，取高原中部 0.15；负阈值档四窗全 +0.000
+        #   （完全惰性）。证据全文见 config/settings.py 的 momentum_min_mom 注释。
+        #   ⇒ 自本轮起 P0 基线更新为：IS **+131.9% / Sh 1.89 / MDD −7.04%**；
+        #     四窗 OOS 均值 Sh **1.960**（旧 1.765）、正收 **23/26**（旧 22/26）。
+        #     旧基线（+128.38% / 1.86 / −6.99% / 1.765）自本轮起**作废**，勿再引用。
+        momentum_min_mom=0.15,
         risk_per_trade=0.020,
         # 【2026-10-09 第 25 轮 PM-EVOLVE】30 万 → **18 万，与生产对齐**
         #   （第 12 次同型「口径漂移」复现，且是本项目**第一次**由「生产收紧而
@@ -668,6 +676,31 @@ def candidates_final() -> dict:
     out["W2_vwap滚动40"] = replace(b, vwap_window=40)
     out["W3_vwap滚动60"] = replace(b, vwap_window=60)
     out["W4_vwap滚动90"] = replace(b, vwap_window=90)
+
+    # ---- AM-EVOLVE R28（2026-10-13）：动量闸门「正动量硬过滤」阈值 ----
+    # 动机（**今日实盘铁证**，非凭空假设）：2026-10-13 上午 09:15~10:15 共 7 次
+    #   「无入场信号：动量闸门后候选池为空（当前宇宙无 60 日正动量标的）」
+    #   （数据源=xtdata 真实，非 mock）。⇒ 绑定约束已由前 5 日的「评分 4.0 阈值」
+    #   **换成动量闸门的 m>0 硬过滤**。tushare 独立复核（截至 2026-10-13 收盘）：
+    #   静态 12 只里 60 日动量 >0 的仅 **2 只**（688111.SH +2.60% / 002415.SZ +1.30%），
+    #   其余 −4.9%~−35.2% ⇒ 该硬过滤**确实在实盘生效**且极紧。
+    # 两侧现状同源：回测 ``raw <= 0`` / 实盘 ``top_momentum`` 的 ``m > 0``。
+    # 实盘读取点已同步（strategy/daily_context.py::top_momentum 读
+    # STRATEGY_PARAMS.momentum_min_mom，默认未配置 ⇒ 0.0 ⇒ 与旧行为逐位相同）。
+    # 【2026-10-13 第 28 轮·已落盘】生产与 base_cfg 已改为 **0.15** ⇒ 本组 X 系列
+    #   现在是「相对 0.15 的剂量对照」，其中 X0(0.0) = **旧现状**（dSh 应为约 −0.23，
+    #   即回退到旧行为的代价），X4(0.20) 是最优值外侧的邻居（防过冲）。勿删：
+    #   高原位置须可复现，日后换基线重扫时这些档位是唯一的锚。
+    # X0 = 旧现状（0.0），仅作回退代价对照；
+    # X1~X4 = 正阈值（更严）；X5~X6 = 负阈值（放宽，做反向对照）。
+    # 命名用 X 前缀：M 前缀已被「突破入场 M1~M5」占用，重名会**静默覆盖**历史候选。
+    out["X0_动量阈值0_现状"] = replace(b, momentum_min_mom=0.0)
+    out["X1_动量阈值+5%"] = replace(b, momentum_min_mom=0.05)
+    out["X2_动量阈值+10%"] = replace(b, momentum_min_mom=0.10)
+    out["X3_动量阈值+15%"] = replace(b, momentum_min_mom=0.15)
+    out["X4_动量阈值+20%"] = replace(b, momentum_min_mom=0.20)
+    out["X5_动量阈值-10%"] = replace(b, momentum_min_mom=-0.10)
+    out["X6_动量阈值-35%"] = replace(b, momentum_min_mom=-0.35)
     return out
 
 

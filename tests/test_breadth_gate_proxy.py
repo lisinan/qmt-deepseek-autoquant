@@ -53,10 +53,14 @@ def test_off_keeps_legacy_behaviour():
     #   max_order_amount 而**第二次**重算（量测口径修正，生产零改动）：
     #   关闭态 ret +165.84%→**+132.33%**、Sh 1.74→**1.79**、MDD −8.46%→**−7.50%**。
     #   收益大幅下降是因为旧口径允许单仓 30 万而生产只有 18 万（虚高 25%）。
-    assert abs(r_off["total_return"] - 1.323260) < 0.02, \
-        f"关闭态应复现基线 +132.33%，实际 {r_off['total_return']:.4f}"
-    assert abs(r_off["sharpe"] - 1.786041) < 0.05, \
-        f"关闭态应复现基线 Sh 1.79，实际 {r_off['sharpe']:.4f}"
+    # 【2026-10-13 R28】因 momentum_min_mom 0.0→**0.15** 落盘而**第三次**重算
+    #   （第 13 次基线同步）：入池下限收紧后坏交易减少 ⇒ 关闭态
+    #   ret +132.33%→**+128.62%**、Sh 1.79→**1.83**、MDD −7.50%→**−7.61%**。
+    #   注意方向：宽度闸门关闭态的 Sharpe **升**（1.79→1.83）而收益**降**。
+    assert abs(r_off["total_return"] - 1.286210) < 0.02, \
+        f"关闭态应复现基线 +128.62%，实际 {r_off['total_return']:.4f}"
+    assert abs(r_off["sharpe"] - 1.828340) < 0.05, \
+        f"关闭态应复现基线 Sh 1.83，实际 {r_off['sharpe']:.4f}"
 
 
 def test_enabled_gate_really_changes_result():

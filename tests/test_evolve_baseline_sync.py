@@ -34,6 +34,10 @@ MUST_MATCH = {
     "momentum_rank": None,        # True
     "momentum_top_n": None,       # 3
     "momentum_lookback": None,    # 60
+    # 【2026-10-13 AM-EVOLVE 第 28 轮】动量闸门入池下限 0.15（原隐含 0.0 硬编码在
+    #   两侧：回测 `raw <= 0` / 实盘 `top_momentum` 的 `m > 0`）。两侧**逐位同源**，
+    #   任一侧漂移都会让「入池集合」静默分叉 ⇒ 纳入 MUST_MATCH。
+    "momentum_min_mom": None,     # 0.15
     "risk_per_trade": None,       # 0.020（2026-10-08 R23 回补）
     "max_positions": None,        # 5
     "buy_score_threshold": None,  # 4.0
@@ -185,6 +189,9 @@ OPT_HARNESS_MUST_MATCH = {
     #   （受 MUST_MATCH 覆盖），但 opt_harness.base_cfg 漏同步 → 权威复验 _verify_live_quality.py
     #   会用旧 0.012 跑「当前状态」。这是第 11 次同型漂移，现补锁。
     "risk_per_trade": None,      # 0.020（2026-10-08 R23 回补）
+    # 【2026-10-13 第 28 轮】同 momentum_min_mom（_evolve_wf 侧已锁，此处补
+    #   opt_harness 侧）：权威复验 _verify_live_quality.py 用 oh.base_cfg 作当前状态。
+    "momentum_min_mom": None,    # 0.15
 }
 
 

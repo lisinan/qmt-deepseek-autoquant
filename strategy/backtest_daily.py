@@ -667,6 +667,17 @@ class BacktestConfig:
     momentum_rank: bool = False      # 只交易 60 日动量前 N 名
     momentum_top_n: int = 6
     momentum_lookback: int = 60
+    # ---- 动量闸门「正动量硬过滤」阈值【AM-EVOLVE R28 2026-10-13】----
+    # 两侧现状都要求 60 日动量**严格为正**才进动量池：
+    #   回测 backtest_daily.py  ``if raw <= 0: continue``
+    #   实盘 strategy/daily_context.py::top_momentum  ``if m > 0:``
+    # 2026-10-13 上午实盘日志 7 次（09:15~10:15，数据源=xtdata 真实）
+    #   「无入场信号：动量闸门后候选池为空（当前宇宙无 60 日正动量标的）」
+    #   ⇒ 该硬过滤**当日成为绑定约束**（与前 5 个交易日的「评分 4.0 阈值」不同），
+    #   是连续 6 日零 BUY 的直接原因之一。
+    # 默认 **0.0 与两侧现状逐位相同** ⇒ 零行为变化，不破坏任何历史结论。
+    #   < 0：允许弱负动量进池（矮子里拔将军）；> 0：更严。
+    momentum_min_mom: float = 0.0
     down_day_exit_pct: float = -99.0  # 单日暴跌清仓阈值（-99 关闭）
     # 强制最小预热长度。walk-forward 调参时必须固定，否则不同参数
     # （如 momentum_lookback 20 vs 120）会产生不同的交易起点，窗口不可比。
@@ -1747,8 +1758,9 @@ def run_backtest(codes: List[str], cfg: BacktestConfig,
                     if base <= 0:
                         continue
                     raw = cc[i] / base - 1
-                    if raw <= 0:
-                        continue          # 入池条件不变：原始动量必须为正
+                    # 【R28】阈值提升为可配置（默认 0.0 ⇒ 与旧「必须为正」逐位相同）
+                    if raw <= cfg.momentum_min_mom:
+                        continue          # 入池条件：动量必须高于 momentum_min_mom
                     if cfg.mom_metric == "sharpe":
                         seg = cc[i - lb:i + 1]
                         rr = [seg[k] / seg[k - 1] - 1

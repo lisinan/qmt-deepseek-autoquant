@@ -117,6 +117,11 @@ def _collect_tests():
             # 本轮补登记（与「import 失败必须报错」同一类纪律）。
             "tests.test_entry_half_when_one",
             "tests.test_vwap_window_alignment",
+            # 【2026-10-13 AM-EVOLVE 第 28 轮】动量闸门「正动量硬过滤」阈值守卫。
+            # 起因是当日实盘铁证：7 次「宇宙无 60 日正动量标的」⇒ 该硬过滤才是
+            # 连续 6 日零 BUY 的绑定约束。落盘 0.15（四窗最差 dSh +0.115）。
+            # 锁死：默认 0.0 零行为变化 + 开启后真变 + 子集单调 + 生产/验证器同值。
+            "tests.test_momentum_min_mom",
             # 【2026-09-28 R10】验证器 base_cfg 与生产配置的口径漂移守卫。
             # 该坑已踩两次（09-18 top_n/rpt、09-28 northbound_mode）。
             "tests.test_evolve_baseline_sync",

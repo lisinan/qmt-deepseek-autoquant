@@ -71,7 +71,12 @@ def test_confirm_days_really_changes_and_slows_exit():
     更慢离场的两个可观测指纹：成交笔数**不增**（出场次数减少）、
     平均持仓天数**不减**。
     """
-    base = W.base_cfg()
+    # 【2026-10-13 R28】锚定 momentum_min_mom=0.0：本代理的「可观测性」是在
+    #   0.0 基线下标定的。R28 把入池下限收紧到 0.15 后，confirm_days/buffer
+    #   在**新基线下变为逐位惰性**（见 test_*_inert_under_tightened_pool），
+    #   这是与 R26「trend_break 是持续状态、无 whipsaw 可回收」同向的新证据，
+    #   而不是代理断开。故此处显式锚定原验证条件。
+    base = replace(W.base_cfg(), momentum_min_mom=0.0)
     on = replace(base, trend_break_confirm_days=3)
     r_base, r_on = _is_result(base), _is_result(on)
     changed = (r_base["total_return"] != r_on["total_return"]
@@ -84,7 +89,7 @@ def test_confirm_days_really_changes_and_slows_exit():
 
 def test_buffer_really_changes_and_slows_exit():
     """门锁 3+4：buffer=0.02 必须真变，且方向同为「更慢离场」。"""
-    base = W.base_cfg()
+    base = replace(W.base_cfg(), momentum_min_mom=0.0)   # 锚定理由同上（R28）
     on = replace(base, trend_break_buffer_pct=0.02)
     r_base, r_on = _is_result(base), _is_result(on)
     changed = (r_base["total_return"] != r_on["total_return"]
@@ -104,3 +109,31 @@ def test_impact_stays_within_drawdown_budget():
         r = _is_result(cfg)
         assert r["max_drawdown"] > -0.20, (
             f"放宽离场击穿回撤预算：IS MDD={r['max_drawdown']*100:.2f}%")
+
+
+def test_slower_exit_is_inert_under_tightened_momentum_pool():
+    """【2026-10-13 R28 新事实】入池下限收紧到 0.15 后，「更慢离场」**完全惰性**。
+
+    实测（910 根，P0 = momentum_min_mom 0.15）：
+        confirm_days=1（现状） ret +131.93% Sh 1.8896 n=163
+        confirm_days=3         ret +131.93% Sh 1.8896 n=163   ← 逐位相同
+        buffer_pct=0.02        ret +131.93% Sh 1.8896 n=163   ← 逐位相同
+    而在旧基线（0.0）下两者都会变（ret 128.38%→129.43%、n 170→169）。
+
+    ⇒ 机理：收紧入池后**被剔除的正是那些「破位后立刻反弹」的摇摆仓**，
+      剩下的仓位破位即持续破位 ⇒ 没有任何 whipsaw 可回收。
+    这与 R26「trend_break 一旦成立必连续 ≥2 日成立、几乎全由 MA20<MA60 触发」
+    是同一事实的**第二条独立证据**，并进一步说明：
+      **退出侧在收紧入池后已无任何可调空间（快慢两向皆惰性）。**
+    """
+    base = W.base_cfg()
+    assert base.momentum_min_mom == 0.15, "本用例的前提是 R28 已落盘的 0.15"
+    for cfg in (replace(base, trend_break_confirm_days=3),
+                replace(base, trend_break_confirm_days=5),
+                replace(base, trend_break_buffer_pct=0.02),
+                replace(base, trend_break_buffer_pct=0.05)):
+        r = _is_result(cfg)
+        assert r["total_return"] == _is_result(base)["total_return"], (
+            "收紧入池后更慢离场应完全惰性；若此处变红 ⇒ 退出侧重新出现 whipsaw，"
+            "须重做退出轴审计")
+        assert r["n_trades"] == _is_result(base)["n_trades"]

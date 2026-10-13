@@ -46,10 +46,14 @@ from strategy.backtest_daily import BacktestConfig, run_backtest  # noqa: E402
 #   旧口径在样本后期（权益 2~3 百万）允许单仓 30 万 ⇒ **IS 收益虚高 34.5pt**。
 #   注意本次是收益**下降**而 Sharpe **上升**（1.86→1.90）：少了后期超配的
 #   那部分暴露，波动降得比收益多 —— 与 R23 的尺度效应方向相反，勿混淆。
-BASE_IS_RET = 1.300260      # +130.03%（原 +164.49%）
-BASE_IS_SHARPE = 1.898559   # 1.90（原 1.86）
-BASE_IS_MDD = -0.069412     # -6.94%（原 -7.60%）
-BASE_TRADES = 169           # 已验证成交笔数（R25 口径修正后 176→169）
+# 【2026-10-13 R28】因 momentum_min_mom 0.0→**0.15** 落盘而**第四次**重算
+#   （第 13 次基线同步；910 根 20230105→20261013）：
+#   ret +130.03%→**+131.93%**、Sh 1.90→**1.89**、MDD −6.94%→**−7.04%**、
+#   成交 169→**163** 笔（入池下限收紧后少了 6~7 笔弱动量交易）。
+BASE_IS_RET = 1.319320      # +131.93%（原 +130.03%）
+BASE_IS_SHARPE = 1.889559   # 1.89（原 1.90）
+BASE_IS_MDD = -0.070443     # -7.04%（原 -6.94%）
+BASE_TRADES = 163           # 已验证成交笔数（R28 口径更新后 169→163）
 TOL_RET = 0.02
 TOL_SH = 0.05
 TOL_MDD = 0.01
@@ -85,14 +89,24 @@ def test_rotation_proxy_actually_changes_behavior():
     这条用例同时是本轮结论的**可复现锚点**：若日后有人修改轮动/动量逻辑
     使得「轮动不再拖累」，此处会立即变红，强制重新量一遍代价。
     """
+    # 【2026-10-13 R28】量级已随基线重标定（**不是**放宽结论）：
+    #   旧基线（momentum_min_mom=0.0）实测 Sh 1.8601→1.5453（**−0.315**）；
+    #   新基线（0.15）实测 Sh 1.8896→1.8469（**−0.043**）、MDD −7.04%→−8.48%、
+    #   成交 163→192（+17.8%）。
+    #   ⇒ 方向完全不变（换手↑、Sharpe↓、MDD 变深、胜率降），但**磨损量级缩小
+    #     7 倍**：入池收紧后池内都是强动量票，「弱换强」的空间被压缩。
+    #   这是 R28 收紧入池的**第二条独立佐证**（第一条是 OOS 四窗 +0.115）。
     base_r = _is_result(W.base_cfg())
     rot_r = _is_result(replace(W.base_cfg(), rotation_enabled=True))
     assert rot_r["n_trades"] > base_r["n_trades"] * 1.15, (
         f"开启轮动后换手应显著上升（实测 {base_r['n_trades']} → "
         f"{rot_r['n_trades']} 笔）；若几乎没变 ⇒ 代理已被断开（死代码）")
-    assert rot_r["sharpe"] < base_r["sharpe"] - 0.10, (
-        f"轮动应显著拖累 Sharpe（实测 {base_r['sharpe']:.2f} → "
-        f"{rot_r['sharpe']:.2f}）；若不再拖累，需重跑复核本轮结论")
+    assert rot_r["sharpe"] < base_r["sharpe"] - 0.02, (
+        f"轮动应拖累 Sharpe（R28 基线实测 {base_r['sharpe']:.4f} → "
+        f"{rot_r['sharpe']:.4f}，即 −0.043）；若不再拖累，需重跑复核本轮结论")
+    assert rot_r["max_drawdown"] < base_r["max_drawdown"] - 0.005, (
+        f"轮动应使 MDD 变深（实测 {base_r['max_drawdown']*100:.2f}% → "
+        f"{rot_r['max_drawdown']*100:.2f}%）")
 
 
 def test_rotation_proxy_defaults_match_production():

@@ -577,10 +577,15 @@ class DailyContext:
     def top_momentum(self, codes: List[str], top_n: int = 6,
                      lookback: int = 60) -> List[str]:
         """返回动量前 N 名的代码（用于只交易最强趋势，规避死水股）。"""
+        # 【AM-EVOLVE R28 2026-10-13】入池动量下限提升为可配置，默认 **0.0**
+        # ⇒ 与原硬编码 ``m > 0`` 逐位相同（零行为变化）。负阈值 = 允许弱负动量
+        # 进池（矮子里拔将军）；正阈值 = 更严。与回测侧
+        # ``BacktestConfig.momentum_min_mom`` 同源，两侧必须一起改。
+        min_mom = float(STRATEGY_PARAMS.get("momentum_min_mom", 0.0) or 0.0)
         scored = []
         for code in codes:
             m = self.momentum_60d(code, lookback)
-            if m > 0:   # 只保留正动量，避免在下跌股里"矮子里拔将军"
+            if m > min_mom:   # 只保留动量高于下限者，避免在下跌股里"矮子里拔将军"
                 scored.append((m, code))
         scored.sort(reverse=True)
         return [code for _, code in scored[:top_n]]

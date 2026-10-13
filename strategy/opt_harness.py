@@ -126,6 +126,11 @@ def base_cfg() -> BacktestConfig:
         exit_mode="trend", trend_exit_ma=60, hard_stop_pct=-0.18,
         trend_max_hold_days=120,
         momentum_rank=True, momentum_top_n=3, momentum_lookback=60,
+        # 【2026-10-13 AM-EVOLVE 第 28 轮】0.0 → **0.15，与生产对齐**。
+        #   本函数被权威全量复验 _verify_live_quality.py 用作「当前状态」基线，
+        #   漏同步会让复验报告不反映线上策略（与 10-03 的 -9.0/2.0/缺gate 同型，
+        #   第 13 次基线同步）。证据见 config/settings.py 的 momentum_min_mom 注释。
+        momentum_min_mom=0.15,
         risk_per_trade=0.020, fixed_amount=300000.0,  # 2026-10-08 R23 由 0.012 回补，须与生产同步
         # 【2026-10-03 SYNTHESIZE 基线同步】原 down_day_exit_pct=-9.0 / atr_stop_mult=2.0
         #   / 缺 northbound_mode 三处全部漂移自生产（生产已落盘 -3.25 / 2.9 / "gate"）。
