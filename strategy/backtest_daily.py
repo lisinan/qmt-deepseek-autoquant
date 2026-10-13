@@ -692,6 +692,18 @@ class BacktestConfig:
     regime_ma: int = 60
     regime_breadth_thresh: float = 0.5
     regime_force_exit: bool = False   # True=状态转差时强制清仓（防御）
+    # ----【PM-EVOLVE R29 路径②】AI 强势期「信心加仓」（regime-conditional conviction sizing）----
+    # 用户授权方向：AI 动量广度（宇宙内站上 MA(regime_ma) 的比例）高时，策略信号高置信，
+    # 应「**主动放大**」暴露（与 regime_mode 的「弱势期关门」方向相反：那是减暴露，
+    # 这是加暴露）。它是路径①纯杠杆的**条件版**——只在强 AI 景气期加杠杆、弱期维持常态，
+    # 避免在不可避免空仓期也背杠杆成本。
+    # 默认 **off / boost=1.0 / thr=0.6** ⇒ 零行为变化，不破坏任何历史结论与测试。
+    #   conviction_mode        "off"=关闭（原行为）；"breadth"=广度≥阈值时放大新开仓 tgt
+    #   conviction_boost       >1.0 的乘数，作用于 tgt（在 min 上限与 wf/rpw 之后）
+    #   conviction_breadth_thr 触发放大的最小广度（0~1，宇宙内站上 MA 的比例）
+    conviction_mode: str = "off"
+    conviction_boost: float = 1.0
+    conviction_breadth_thr: float = 0.6
     # ---- regime 抗抖动（anti-whipsaw）----
     # 二值闸门 close>MA60 在均线附近会反复翻转：每次翻转都触发「全部清仓
     # → 隔日重新建仓」，双向各付 0.15% 成本，还会错杀刚起步的趋势。
@@ -1264,6 +1276,26 @@ def run_backtest(codes: List[str], cfg: BacktestConfig,
     else:
         regime_ok = [True] * n
 
+    # ----【PM-EVOLVE R29 路径②】AI 强势期信心加仓信号 ----
+    # 与 regime_mode 的「弱势期关门」正交：这里在**强 AI 景气期**放大新开仓目标仓位。
+    # 复用与 regime breadth 完全相同的广度定义（宇宙内站上 MA(regime_ma) 的比例），
+    # 当广度 ≥ conviction_breadth_thr 时，conv_boost_sig[i]=conviction_boost，否则=1.0。
+    # 仅 conviction_mode=="breadth" 时计算（关闭时恒为 1.0，零开销、零行为变化）。
+    conv_boost_sig: List[float] = [1.0] * n
+    if cfg.conviction_mode == "breadth":
+        _rma = max(2, int(cfg.regime_ma))
+        _ma_b = {c: I.sma(d["close"], _rma) for c, d in panel.items()}
+        for _i in range(n):
+            _tot = _above = 0
+            for c, d in panel.items():
+                _m = I.last(_ma_b[c][: _i + 1])
+                if _m and d["close"][_i] > 0:
+                    _tot += 1
+                    if d["close"][_i] > _m:
+                        _above += 1
+            if _tot and (_above / _tot) >= cfg.conviction_breadth_thr:
+                conv_boost_sig[_i] = cfg.conviction_boost
+
     # ---- 北向资金协同闸门（全新正交轴，研究用）----
     # 北向滚动 nb_lookback 日累计净买入<0 → 该日不开新仓（已有持仓照常离场）。
     # 机理：外资系统性撤离期防御，对冲隔夜跳空/接飞刀；与价格趋势闸门正交。
@@ -1540,6 +1572,9 @@ def run_backtest(codes: List[str], cfg: BacktestConfig,
             else:
                 tgt = min(cfg.fixed_amount, _cap)
             tgt = tgt * wf * rpw
+            # 【PM-EVOLVE R29 路径②】AI 强势期信心加仓：广度达标时再乘 conviction_boost
+            if cfg.conviction_mode == "breadth":
+                tgt = tgt * conv_boost_sig[i]
             # 组合级 DD 控制：缩放新开仓目标仓位（exp_scale<=1.0）
             if cfg.dd_ctrl and exp_scale < 1.0:
                 tgt = tgt * exp_scale

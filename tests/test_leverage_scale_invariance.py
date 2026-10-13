@@ -131,9 +131,21 @@ def test_zero_sharpe_delta_does_not_mean_zero_value():
 
 
 def test_risk_per_trade_within_hard_limit():
-    """不可越底线：risk_per_trade ≤ 0.02。"""
+    """risk_per_trade 不得超过 R29 授权的上限 0.03。
+
+    历史：≤0.02 曾是「硬底线」（见工作记忆 §一 生产铁律）。
+    R29（2026-10-13）用户显式授权越过该底线以协调杠杆（路径 1：纯杠杆），
+    落盘 L1 = risk_per_trade 0.020→0.030 / max_single_position_pct 0.19→0.30 /
+    max_position_amount & max_order_amount 180000→300000（约 1.5–1.67× 杠杆）。
+    本用例的护栏含义随之升级为「不得超过用户已授权上限」，
+    防止任何未经授权的进一步上调（例如误回到 0.04/0.05）。
+    若需再上调，必须重新取得用户授权并同步更新此处断言。
+    """
+    R29_AUTHORIZED_CEILING = 0.03
     rpt = float(STRATEGY_PARAMS["risk_per_trade"])
-    assert rpt <= 0.02 + 1e-9, f"risk_per_trade={rpt} 越过 ≤0.02 硬底线"
+    assert rpt <= R29_AUTHORIZED_CEILING + 1e-9, (
+        f"risk_per_trade={rpt} 超过 R29 授权上限 {R29_AUTHORIZED_CEILING}；"
+        f"若需再上调须重新取得用户授权")
     assert rpt > 0.0
 
 

@@ -1,0 +1,19 @@
+scripts/_pm_conviction_20261013.py: line 14: PM-EVOLVE R29 风险路径②（用户授权：AI 强势期主动放大暴露 = conviction sizing）。
+
+与路径①（纯杠杆，恒放大）正交：本路径只在 AI 动量广度（宇宙内站上 MA 的比例）
+≥ 阈值时，放大新开仓目标仓位（conviction_boost > 1.0）。弱 AI 景气期维持常态，
+避免在不可避免空仓期也背杠杆成本。预期：强 AI 趋势段吃到更多收益，
+且因只在高置信期加仓，回撤放大应小于同量级恒杠杆。
+
+数据口径：同路径①，强制注入 R28 同款 tushare 面板，基线 P0 与 +131.93% 对齐。
+
+用法：
+  python scripts/_pm_conviction_20261013.py --boost 1.5 [--thr 0.6] [--mode consensus|span]
+  python scripts/_pm_conviction_20261013.py --boost 2.0 --mode span
+: No such file or directory
+scripts/_pm_conviction_20261013.py: line 15: from: command not found
+scripts/_pm_conviction_20261013.py: line 17: import: command not found
+scripts/_pm_conviction_20261013.py: line 18: import: command not found
+scripts/_pm_conviction_20261013.py: line 19: from: command not found
+scripts/_pm_conviction_20261013.py: line 21: syntax error near unexpected token `('
+scripts/_pm_conviction_20261013.py: line 21: `ROOT = Path(__file__).resolve().parent.parent'

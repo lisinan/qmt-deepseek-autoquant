@@ -1,0 +1,24 @@
+scripts/_pm_leverage_20261013.py: line 19: PM-EVOLVE R29 风险路径①（用户授权：放开 risk_per_trade>0.02 纯杠杆）。
+
+测量「协调放大仓位上限」对回测的影响。杠杆是 Sharpe 不变、绝对收益线性放大的
+尺度型改动（R23 已证），本脚本量化其在当前基线下到底放大多少绝对收益、回撤是否
+仍在 KPI#3(≥−22%) 预算内。
+
+协调改法（回测侧 base_cfg + 实盘侧 RISK/STRATEGY 参数须同步）：
+  risk_per_trade       0.020 -> L1=0.030 / L2=0.040
+  max_single_position_pct 0.19 -> L1=0.30 / L2=0.40
+  fixed_amount         180000 -> L1=300000 / L2=400000   (回测侧单仓金额上限)
+（实盘侧对应 max_position_amount / max_order_amount 同额放大）
+
+数据口径：强制注入 R28 同款 tushare 面板（ts_panel_25_901_20211201_20261013.pkl），
+确保本脚本打出的「基线 P0」与 R28 文档基线 +131.93%/Sh1.89/MDD−7.04% 逐位对齐，
+杠杆增量只看「候选 vs 自身基线」的 dSh / 回撤预算使用率。
+
+用法：python scripts/_pm_leverage_20261013.py --level 1 [--mode consensus|span]
+: No such file or directory
+scripts/_pm_leverage_20261013.py: line 20: from: command not found
+scripts/_pm_leverage_20261013.py: line 22: import: command not found
+scripts/_pm_leverage_20261013.py: line 23: import: command not found
+scripts/_pm_leverage_20261013.py: line 24: from: command not found
+scripts/_pm_leverage_20261013.py: line 26: syntax error near unexpected token `('
+scripts/_pm_leverage_20261013.py: line 26: `ROOT = Path(__file__).resolve().parent.parent'

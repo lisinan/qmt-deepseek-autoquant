@@ -141,6 +141,11 @@ def _collect_tests():
             # 尺度不变量 ⇒ 「最差窗 dSh ≥ +0.10」会系统性否决一切仓位放大。
             # 20 轮网格无果的真正原因在此（ deficiency 在方法层不在策略层）。
             "tests.test_leverage_scale_invariance",
+            # 【2026-10-13 PM-EVOLVE R29】路径 2 信念仓位（conviction）研究开关守卫。
+            # 弱市/强市 AI 宽度不对称：仅在「宇宙内站上 MA 比例 ≥ 阈值」的强市态下
+            # 对目标仓位乘 conviction_boost（1.5/2.0）。锁死：默认 off 零行为变化
+            # + 开启后真变 + 杠杆型增量有界（Δret<2.0 且 ΔSh<0.5，Sharpe 不变量）。
+            "tests.test_conviction_boost",
             # 【2026-09-30 R15】账本断供守卫：账本只依赖 OBSERVE 的 review JSON
             # ⇒ 三级单点故障让 KPI #4 连续 4 个交易日静默无法计算。
             "tests.test_ledger_db_fallback",

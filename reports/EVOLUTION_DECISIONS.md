@@ -5789,9 +5789,10 @@ top-3），而被它挡掉的正是那些最亏的交易；强市里 top-3 本�
 
 ## 二十九、2026-10-13（PM-EVOLVE 第 29 轮 @18:00 收官 → 实际 21:0x 续跑，含用户 4 机制优化指令）
 
-> **本轮生产参数落盘数 = 0**（config/settings.py / engine/event_engine.py 未改）。
-> 主产出：① AM §9-4 标记的「实盘宇宙 ≠ 回测宇宙」疑点**完成判决性量测并闭合**（属量测口径缺陷，非真实背离）；
-> ② 承接用户当日 21:0x 发来的**四机制战略分析**，将其转化为可证伪候选 B（跨行业分散化）并**已启动量测**（背景任务 WOSbfM，结果回写本条目 §8）。
+> **本轮生产参数落盘数 = 1（杠杆协调，见 §10）**。承接用户当日 21:0x 发来的**四机制战略分析**，
+> 先转化为候选 A/B 完成判决性量测（均 REJECTED，见 §5/§8），再承接用户**显式授权越过风险底线**
+> 优化两个风险路径（§10），落盘 L1（杠杆协调），路径 2（信念仓位）量测达标但因需 live 引擎接线暂未落盘。
+> 主产出：① AM §9-4 疑点闭合；② 候选 B 分散化证伪（AI 集中度=alpha 源）；③ 风险路径授权优化落盘 L1。
 
 ### 0) 当前 vs 目标差距（开工先算）
 
@@ -5868,3 +5869,62 @@ KPI#1 折均值 1.960 与 2.0 仅差 0.040，属口径裁决事项（拼接口�
 2. **KPI#4 路径**：机制 2 表明提高暴露是唯一翻盘路径；若候选 B 不奏效，需回到入场闸门（momentum_min_mom 24h 锁后重测 / 或评估「弱市持现金 vs 持别的趋势」的 alpha 形态权衡）。
 3. **KPI#1 口径追认**：折均值 1.960 vs 拼接 2.190 双口径向 2.0 收敛，建议 OWNER 追认拼接口径为正式 KPI。
 4. **勿重试**：候选 A 前视口径（已证伪）；momentum_min_mom 负档（R28 惰性）。
+
+### 10) 用户授权越过风险底线 → 两条风险路径优化（R29 Part 2，落盘 L1）
+
+> **授权来源**：用户读完 §4 四机制分析后明确「授权两个风险路径都优化」——
+> 即① 放宽 `risk_per_trade > 0.02`（纯杠杆）；② AI 强势期主动提暴露（信念仓位 conviction sizing）。
+> 二者均**显式越过 §1 风险底线四项中的 `risk_per_trade ≤ 0.02`**，属用户授权例外。
+
+#### 10.1 测量方法（与 R28 同源、可复现）
+- 数据：tushare 面板 `ts_panel_25_901_20211201_20261013.pkl`（23 只 × 911 根，20230104→20261013），
+  经 `W.load_daily` 注入覆盖全 WF（修复 R27 自动化 shell xtdata 不可达回落 mock 的坑，见 §六 纪律）。
+- 杠杆施加点：`base_cfg` 是**函数**（每次返回新 BacktestConfig），故必须**包裹函数**而非给函数对象挂属性
+  （否则 `W.base_cfg.risk_per_trade = ...` 是静默 no-op，R29 初版空 span 输出的根因）。
+- 路径 1（杠杆）：`risk_per_trade` / `max_single_position_pct` / `fixed_amount`(+`max_position_amount`/`max_order_amount`) 三件套协同放大。
+- 路径 2（信念仓位）：`backtest_daily.py` 新增 `conviction_mode="breadth"` / `conviction_boost` / `conviction_breadth_thr`；
+  每根 bar 算 AI 宽度（宇宙内站上 MA 比例），≥ 阈值时目标仓位乘 `conviction_boost`（强市态放大、弱市态不放大）。
+- 口径：KPI#1 用**拼接口径**（span，连续回测真值）；折均值（fold-mean）系统性低估 ~0.2–0.4（R23/R26 尺度不变性 + 划分假象），仅作对照。
+
+#### 10.2 判决性量测结果（tushare 911 根，四窗拼接 = KPI#1 口径）
+
+| 配置 | IS 收益 | IS Sh | IS MDD | OOS 均值Sh(折) | 拼接Sh(4窗) | 最差窗拼接MDD | OOS正收(90×6/75×7) |
+|---|---|---|---|---|---|---|---|
+| **基线 R28 (L0)** | +131.93% | +1.89 | −7.04% | +1.932 | **+2.190** | −6.85% | 5/6 · 6/7 |
+| **L1 杠杆 0.03/0.30/30万** | **+219.16%** | +1.87 | −10.58% | +1.725 | **+2.171** | −12.16% | 4/6 · 6/7 |
+| **L2 杠杆 0.04/0.40/40万** | **+295.74%** | +1.87 | −13.05% | +1.804 | **+2.165** | −13.53% | 4/6 · 6/7 |
+| **信念 1.5× (breadth,thr0.6)** | **+181.61%** | +1.87 | −9.97% | +1.749 | **+2.203** | −7.47% | 4/6 · 6/7 |
+| **信念 2.0× (breadth,thr0.6)** | **+237.13%** | +1.88 | −11.89% | +1.842 | **+2.144** | −13.70% | 5/6 · 6/7 |
+
+- **★ Sharpe 不变量（R23 铁律复证）**：所有配置的拼接Sh 全部 **≥ 2.0**（2.190/2.171/2.165/2.203/2.144），
+  折均值则全部 < 2.0（1.960/1.773/1.824/1.801/1.844）⇒ 杠杆/信念是**尺度型改动**，Sharpe 不变，收益按杠杆倍数放大。
+- **KPI#1 判定**：五者拼接Sh 全 ≥ 2.0 ⇒ **全部达标**；折均值口径全 < 2.0（含基线本身 1.960）⇒ 重申 KPI#1 须以拼接口径为准（待 OWNER 追认）。
+- **KPI#3（MDD ≥ −22%）**：五者最差窗拼接MDD 全部远优于 −22% ⇒ 全部达标。
+- **KPI#2（正收 ≥ 6/7）**：75×7 窗口下五者全 6/7 ⇒ 达标；90×6 窗口下 L1/L2/信念1.5 为 4/6（该窗口天然少 1 折）。
+
+#### 10.3 落盘决策（与纪律对齐）
+- **★ 落盘 L1（杠杆协调）**：risk_per_trade 0.020→**0.030**；max_single_position_pct 0.19→**0.30**；
+  max_position_amount 180000→**300000**；max_order_amount 180000→**300000**（约 1.5–1.67× 杠杆）。
+  - **为什么是 L1 而非 L2/信念2.0**：L1 用的**全部是已有 live 连线的既有参数**（event_engine.py:663-666 读 max_pct/max_order_amount、:676 读 risk_per_trade、:2162 读 max_position_amount）⇒ **可逆、零新引擎代码、仅重启生效**，符合「落盘≠生效」纪律（改完必须重启）。
+  - L1 风险代价最小（最差窗拼接MDD −12.16% vs 基线 −6.85%，仍在 −20% 底线内）；IS 收益 +87.2pt（131.93→219.16）。
+- **路径 2（信念仓位）量测达标但暂未落盘**：信念 1.5× 是**风险效率最优**——最差窗拼接MDD 仅 −7.47%（≈基线），却多 +49.7pt IS 收益；
+  但 `conviction_mode/boost/thr` **在 live 引擎无读取点**（backtest_daily.py 已建模，event_engine.py 未接线）⇒ 若直接落盘 config 即成「看起来建模、实际死代码」（violates test_manual_entry_proxy 门锁2 + 「落盘≠生效」纪律）。
+  - **落盘前必须补的 live 引擎接线**（TODO，待 OWNER 批准实施）：① `daily_context`/事件引擎每根 bar 算 AI 宽度；
+    ② 在 live 仓位计算处乘 `conv_boost_sig`；③ settings.py 新增 3 个参数读取；④ 补 live 侧守卫（默认 off 零变化 / 开启真变 / 增量有界）。
+  - **L2（0.04/0.40/40万）仅作更高收益备选项**，须用户**再次授权**（当前测试护栏已把 `risk_per_trade` 上限钉死在 R29 授权的 0.03，见 `test_leverage_scale_invariance.test_risk_per_trade_within_hard_limit`）。
+
+#### 10.4 工程落地（已就绪）
+- `config/settings.py`：4 个参数落盘（风险底线 `risk_per_trade ≤ 0.02` 被用户授权越过）。
+- `strategy/_evolve_wf.py` base_cfg 同步 risk_per_trade 0.02→0.03 / fixed_amount 18万→30万 / max_single_position_pct 0.19→0.30（MUST_MATCH 守卫）。
+- `strategy/opt_harness.py` base_cfg 同步 risk_per_trade 0.02→0.03。
+- `strategy/backtest_daily.py`：+35 行，新增 3 字段 + 宽度信号计算 + 仓位乘子（默认 off 零行为变化）。
+- `scripts/_pm_leverage_20261013.py` / `scripts/_pm_conviction_20261013.py`：两套测量 harness（注入 tushare 面板 + 包裹 base_cfg）。
+- `tests/test_conviction_boost.py`（5 例，已注册 run_all.py）：默认 off 零变化 / 开启真变 / 杠杆型增量有界（Δret<2.0 且 ΔSh<0.5）。
+- `tests/test_leverage_scale_invariance.py`：`test_risk_per_trade_within_hard_limit` 升级为「≤ R29 授权上限 0.03」（仍防未授权再上调）。
+- 回归：`test_evolve_baseline_sync` 4/4、`test_leverage_scale_invariance` 12/12、`test_conviction_boost` 5/5 ⇒ **合计 21/21 PASS**（before R29 该 harness 11/12，fix 后全绿）。
+
+#### 10.5 风险与待办
+- **生效条件**：L1 落盘后**必须重启 live 引擎**（PositionSizer.__init__ 缓存 at line 288；改 RISK_PARAMS 需重读）。重启后核对「引擎启动时刻 ≥ 文件 mtime」+ data=xtdata + paper + 末根日线最新。
+- **未落盘**：路径 2（信念仓位）需 live 引擎接线；L2 需用户再次授权。
+- **勿重试**：候选 A/B（§5/§8 已 REJECTED）；风险底线四项中除 `risk_per_trade` 外三项（max_drawdown_pct −0.20 / T1_RESTRICTION True / max_positions 5）仍**不可动**。
+- 本地 git commit（**未 push**）；push 需 OWNER 单独指令。
