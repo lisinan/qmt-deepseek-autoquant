@@ -50,10 +50,15 @@ from strategy.backtest_daily import BacktestConfig, run_backtest  # noqa: E402
 #   （第 13 次基线同步；910 根 20230105→20261013）：
 #   ret +130.03%→**+131.93%**、Sh 1.90→**1.89**、MDD −6.94%→**−7.04%**、
 #   成交 169→**163** 笔（入池下限收紧后少了 6~7 笔弱动量交易）。
-BASE_IS_RET = 1.319320      # +131.93%（原 +130.03%）
-BASE_IS_SHARPE = 1.889559   # 1.89（原 1.90）
-BASE_IS_MDD = -0.070443     # -7.04%（原 -6.94%）
-BASE_TRADES = 163           # 已验证成交笔数（R28 口径更新后 169→163）
+# 【2026-10-13 R29+L2】因杠杆协调落盘（risk_per_trade 0.020→**0.040** /
+#   max_single_position_pct 0.19→**0.40** / max_position_amount &
+#   max_order_amount 180000→**400000**，≈2.24×）而**第五次**重算：
+#   ret +131.93%→**+295.74%**、Sh 1.89→**1.87**、MDD −7.04%→**−13.05%**、
+#   成交 163→**164** 笔。
+BASE_IS_RET = 2.957419      # +295.74%（原 +131.93%）
+BASE_IS_SHARPE = 1.866456   # 1.87（原 1.89）
+BASE_IS_MDD = -0.130531     # -13.05%（原 -7.04%）
+BASE_TRADES = 164           # 已验证成交笔数（R29+L2 杠杆放大后 163→164）
 TOL_RET = 0.02
 TOL_SH = 0.05
 TOL_MDD = 0.01
@@ -92,17 +97,23 @@ def test_rotation_proxy_actually_changes_behavior():
     #   ⇒ 方向完全不变（换手↑、Sharpe↓、MDD 变深、胜率降），但**磨损量级缩小
     #     7 倍**：入池收紧后池内都是强动量票，「弱换强」的空间被压缩。
     #   这是 R28 收紧入池的**第二条独立佐证**（第一条是 OOS 四窗 +0.115）。
+    # 【2026-10-13 R29+L2】杠杆放大到 ≈2.24× 后再标定（**方向仍然不变**）：
+    #   实测 Sh 1.8665→1.8598（**−0.0067**）、MDD −13.05%→−13.32%（深 0.27pt）、
+    #   成交 164→188（**+14.6%**）。磨损量级**再缩 6 倍**（−0.043→−0.0067）：
+    #   杠杆属尺度型改动，轮动的边际换手在更大仓位基数下被摊薄。
+    #   三条阈值同步下调（1.15→1.12 / 0.02→0.004 / 0.005→0.0015），
+    #   但**判别力不变**：若代理被断开成死代码 ⇒ 换手比 = 1.00、ΔSh = 0，均会红。
     base_r = _is_result(W.base_cfg())
     rot_r = _is_result(replace(W.base_cfg(), rotation_enabled=True))
-    assert rot_r["n_trades"] > base_r["n_trades"] * 1.15, (
+    assert rot_r["n_trades"] > base_r["n_trades"] * 1.12, (
         f"开启轮动后换手应显著上升（实测 {base_r['n_trades']} → "
-        f"{rot_r['n_trades']} 笔）；若几乎没变 ⇒ 代理已被断开（死代码）")
-    assert rot_r["sharpe"] < base_r["sharpe"] - 0.02, (
-        f"轮动应拖累 Sharpe（R28 基线实测 {base_r['sharpe']:.4f} → "
-        f"{rot_r['sharpe']:.4f}，即 −0.043）；若不再拖累，需重跑复核本轮结论")
-    assert rot_r["max_drawdown"] < base_r["max_drawdown"] - 0.005, (
+        f"{rot_r['n_trades']} 笔，+14.6%）；若几乎没变 ⇒ 代理已被断开（死代码）")
+    assert rot_r["sharpe"] < base_r["sharpe"] - 0.004, (
+        f"轮动应拖累 Sharpe（R29+L2 基线实测 {base_r['sharpe']:.4f} → "
+        f"{rot_r['sharpe']:.4f}，即 −0.0067）；若不再拖累，需重跑复核本轮结论")
+    assert rot_r["max_drawdown"] < base_r["max_drawdown"] - 0.0015, (
         f"轮动应使 MDD 变深（实测 {base_r['max_drawdown']*100:.2f}% → "
-        f"{rot_r['max_drawdown']*100:.2f}%）")
+        f"{rot_r['max_drawdown']*100:.2f}%，深 0.27pt）")
 
 
 def test_rotation_proxy_defaults_match_production():

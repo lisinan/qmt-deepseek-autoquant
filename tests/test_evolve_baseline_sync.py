@@ -38,7 +38,7 @@ MUST_MATCH = {
     #   两侧：回测 `raw <= 0` / 实盘 `top_momentum` 的 `m > 0`）。两侧**逐位同源**，
     #   任一侧漂移都会让「入池集合」静默分叉 ⇒ 纳入 MUST_MATCH。
     "momentum_min_mom": None,     # 0.15
-    "risk_per_trade": None,       # 0.020（2026-10-08 R23 回补）
+    "risk_per_trade": None,       # 0.040（R29+L2 2026-10-13 落盘，用户授权越 ≤0.02 底线）
     "max_positions": None,        # 5
     "buy_score_threshold": None,  # 4.0
     "min_signals": None,          # 3
@@ -128,7 +128,7 @@ IGNORED = {
 #   （生产 0.19 / 回测 0.30）默默漂移了很久无人察觉——这是第 6 次同型漂移，
 #   也是第一次「漂移发生在守卫视野之外」。故把 RISK_PARAMS 也纳入比对。
 RISK_MUST_MATCH = {
-    "max_single_position_pct": None,   # 0.19
+    "max_single_position_pct": None,   # 0.40（R29+L2 2026-10-13 落盘）
     "daily_stop_flatten_pct": None,    # -0.06（同批第 7 次漂移，剂量扫描零差异）
 }
 
@@ -188,7 +188,7 @@ OPT_HARNESS_MUST_MATCH = {
     # 【2026-10-08 R23】risk_per_trade 由 0.012 回补到 0.020 时，_evolve_wf.base_cfg 已同步
     #   （受 MUST_MATCH 覆盖），但 opt_harness.base_cfg 漏同步 → 权威复验 _verify_live_quality.py
     #   会用旧 0.012 跑「当前状态」。这是第 11 次同型漂移，现补锁。
-    "risk_per_trade": None,      # 0.020（2026-10-08 R23 回补）
+    "risk_per_trade": None,      # 0.040（R29+L2 2026-10-13 落盘）
     # 【2026-10-13 第 28 轮】同 momentum_min_mom（_evolve_wf 侧已锁，此处补
     #   opt_harness 侧）：权威复验 _verify_live_quality.py 用 oh.base_cfg 作当前状态。
     "momentum_min_mom": None,    # 0.15
@@ -238,7 +238,7 @@ def test_no_undocumented_shared_params():
     """两侧同名却未登记的字段 = 漏登记（STRATEGY_PARAMS **和** RISK_PARAMS 都要查）。
 
     【2026-09-30 第 14 轮扩展】原实现只扫 ``STRATEGY_PARAMS``，于是
-    ``max_single_position_pct``（RISK_PARAMS 0.19 / BacktestConfig 0.30）在守卫
+    ``max_single_position_pct``（RISK_PARAMS 0.40 / BacktestConfig 0.40）在守卫
     视野之外默默漂移——第 6 次同型漂移第一次发生在 RISK 侧。这里一并覆盖。
     """
     from dataclasses import fields as dc_fields

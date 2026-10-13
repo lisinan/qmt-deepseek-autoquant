@@ -44,12 +44,15 @@ def test_switches_default_off_and_zero_behaviour_change():
     assert b.trend_chandelier_mult == 0.0, "研究开关默认必须为 0（关闭）"
     r = _is_result(b)
     # 与「完全不传这两个字段」等价（dataclass 默认值即 0.0，故此处只钉数值）
-    # R28（2026-10-13）动量闸门 momentum_min_mom 0.0→0.15 落盘后，P0 基线同步为
-    #   +131.93%（1.319320）/ Sh 1.89（1.889559）。数据源已钉死 tushare 面板。
-    assert abs(r["total_return"] - 1.319320) < 0.02, \
-        f"P0 基线漂移：期望 +131.93%，实际 {r['total_return']:.4f}"
-    assert abs(r["sharpe"] - 1.889559) < 0.05, \
-        f"P0 Sharpe 漂移：期望 1.89，实际 {r['sharpe']:.4f}"
+    # 基线沿革：R28（momentum_min_mom 0.0→0.15）为 +131.93%（1.319320）/ Sh 1.889559；
+    #   【2026-10-13 R29+L2】杠杆协调落盘（risk_per_trade 0.020→0.040 /
+    #   max_single_position_pct 0.19→0.40 / max_position_amount & max_order_amount
+    #   180000→400000，≈2.24×）后**第五次**重钉：P0 = +295.74%（2.957419）/
+    #   Sh 1.87（1.866456）、MDD −13.05%。数据源已钉死 tushare 面板。
+    assert abs(r["total_return"] - 2.957419) < 0.02, \
+        f"P0 基线漂移：期望 +295.74%，实际 {r['total_return']:.4f}"
+    assert abs(r["sharpe"] - 1.866456) < 0.05, \
+        f"P0 Sharpe 漂移：期望 1.87，实际 {r['sharpe']:.4f}"
 
 
 def test_static_atr_stop_really_changes_result_when_tight():

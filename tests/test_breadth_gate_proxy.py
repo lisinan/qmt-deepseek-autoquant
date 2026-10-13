@@ -30,11 +30,17 @@ from strategy.backtest_daily import run_backtest  # noqa: E402
 
 
 def _is_result(cfg):
-    codes = W.wide_universe()
-    data = W.preload(codes + [W.MARKET_INDEX_CODE, "000300.SH"], 900)
-    _d0, panel = W.aligned_universe(data, codes)
-    ks = [k for k in panel.keys() if k not in W.INDEX_CODES]
-    return run_backtest(ks, cfg, count=900, preloaded=panel)
+    """确定性 tushare 面板（与另三个基线守卫同源）。
+
+    【2026-10-13 R29+L2】原实现走 ``W.preload`` ⇒ ``load_daily`` ⇒ **xtdata**，
+    与已钉死 tushare 面板的另三个基线守卫（test_trend_stop_switch /
+    test_manual_entry_proxy / test_rotation_proxy）**不同源**：R28 配置下两源
+    差约 2.17pt，远超本守卫 ±0.02 的容差 ⇒ 常量无法两源共用，且会随 miniQMT
+    可达性静默漂移。为使 ``run_all.py`` 裸跑确定性，改用共享源
+    （与 R28 17:00 那次「回归门禁非确定性」工程修复的做法一致）。
+    """
+    from tests._baseline_tushare_panel import baseline_is_result
+    return baseline_is_result(cfg)
 
 
 def test_off_keeps_legacy_behaviour():
@@ -57,10 +63,14 @@ def test_off_keeps_legacy_behaviour():
     #   （第 13 次基线同步）：入池下限收紧后坏交易减少 ⇒ 关闭态
     #   ret +132.33%→**+128.62%**、Sh 1.79→**1.83**、MDD −7.50%→**−7.61%**。
     #   注意方向：宽度闸门关闭态的 Sharpe **升**（1.79→1.83）而收益**降**。
-    assert abs(r_off["total_return"] - 1.286210) < 0.02, \
-        f"关闭态应复现基线 +128.62%，实际 {r_off['total_return']:.4f}"
-    assert abs(r_off["sharpe"] - 1.828340) < 0.05, \
-        f"关闭态应复现基线 Sh 1.83，实际 {r_off['sharpe']:.4f}"
+    # 【2026-10-13 R29+L2】杠杆协调落盘（≈2.24×）后**第四次**重算，且数据源
+    #   统一到共享确定性 tushare 面板（原走 xtdata，与另三个守卫不同源）：
+    #   关闭态 ret +128.62%→**+286.98%**（2.869846）、Sh 1.83→**1.80**（1.804430）、
+    #   MDD −7.61%→**−14.21%**、成交 172 笔。
+    assert abs(r_off["total_return"] - 2.869846) < 0.02, \
+        f"关闭态应复现基线 +286.98%，实际 {r_off['total_return']:.4f}"
+    assert abs(r_off["sharpe"] - 1.804430) < 0.05, \
+        f"关闭态应复现基线 Sh 1.80，实际 {r_off['sharpe']:.4f}"
 
 
 def test_enabled_gate_really_changes_result():

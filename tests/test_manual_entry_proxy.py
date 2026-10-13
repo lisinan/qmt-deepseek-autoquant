@@ -55,11 +55,16 @@ from strategy.backtest_daily import run_backtest  # noqa: E402
 #   （第 13 次基线同步；910 根 20230105→20261013）：
 #   ret +130.03%→**+131.93%**、Sh 1.90→**1.89**、MDD −6.94%→**−7.04%**、
 #   成交 169→**163** 笔。常量已与 test_rotation_proxy 对齐到同一 R28 基线。
+# 【2026-10-13 R29+L2】因杠杆协调落盘（risk_per_trade 0.020→**0.040** /
+#   max_single_position_pct 0.19→**0.40** / max_position_amount &
+#   max_order_amount 180000→**400000**，≈2.24×）而**第五次**重算：
+#   ret +131.93%→**+295.74%**、Sh 1.89→**1.87**、MDD −7.04%→**−13.05%**、
+#   成交 163→**164** 笔。
 # ★ 数据源：本文件（及另两个基线守卫）现已钉死到 tushare 面板
 #   （tests/_baseline_tushare_panel.py），不再随 xtdata 可达性漂移。
-BASE_IS_RET = 1.319320      # +131.93%（R28，tushare 确定源）
-BASE_IS_SHARPE = 1.889559   # 1.89（R28）
-BASE_IS_MDD = -0.070443     # -7.04%（R28）
+BASE_IS_RET = 2.957419      # +295.74%（R29+L2，tushare 确定源）
+BASE_IS_SHARPE = 1.866456   # 1.87（R29+L2）
+BASE_IS_MDD = -0.130531     # -13.05%（R29+L2）
 TOL_RET = 0.02
 TOL_SH = 0.05
 TOL_MDD = 0.01

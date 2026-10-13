@@ -131,7 +131,7 @@ def base_cfg() -> BacktestConfig:
         #   漏同步会让复验报告不反映线上策略（与 10-03 的 -9.0/2.0/缺gate 同型，
         #   第 13 次基线同步）。证据见 config/settings.py 的 momentum_min_mom 注释。
         momentum_min_mom=0.15,
-        risk_per_trade=0.030, fixed_amount=300000.0,  # 【R29 2026-10-13 落盘】同步生产（用户授权越过 ≤0.02 硬底线）
+        risk_per_trade=0.040, fixed_amount=400000.0,  # 【R29+L2 2026-10-13 落盘】同步生产（用户授权越 ≤0.02 硬底线，协调杠杆至 L2）
         # 【2026-10-03 SYNTHESIZE 基线同步】原 down_day_exit_pct=-9.0 / atr_stop_mult=2.0
         #   / 缺 northbound_mode 三处全部漂移自生产（生产已落盘 -3.25 / 2.9 / "gate"）。
         #   _evolve_wf.py::base_cfg 在 09-29/10-03 已同步，但本函数（被权威复验

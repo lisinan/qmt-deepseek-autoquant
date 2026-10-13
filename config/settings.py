@@ -570,8 +570,8 @@ STRATEGY_PARAMS = {
     # 可逆：改回 0.020/180000 即可（回测侧须同步改 strategy/_evolve_wf.py::base_cfg，
     #       否则 tests/test_evolve_baseline_sync.py 的 MUST_MATCH 会红）。
     # ★ 走 PositionSizer.__init__ 缓存（engine/event_engine.py:288）⇒ **需重启**生效。
-    "risk_per_trade": 0.030,  # 【R29 2026-10-13 落盘】用户授权越过 ≤0.02 硬底线，协调杠杆
-    "max_position_amount": 300000,  # 单标的最大仓位(元)（R29 与 risk_per_trade 协同放宽，单仓≈30%权益）
+    "risk_per_trade": 0.040,  # 【R29+L2 2026-10-13 落盘】用户授权越过 ≤0.02 硬底线，协调杠杆至 L2（0.04/0.40/40万）
+    "max_position_amount": 400000,  # 单标的最大仓位(元)（R29+L2 与 risk_per_trade 协同放宽，单仓≈40%权益）
     # 集中度上限（并发持仓数）：经 IS/OOS + 多折 walk-forward 双验证，
     # max_positions=5 显著优于 8（OOS +1.3%→+12.3%、Sharpe +0.24→+0.70、alpha 转正 +1.6pt；
     # 多折均值 Sharpe +0.84 为全部配置最高、最差折/平均 MDD 最优）。机制：只持动量前5名，
@@ -712,9 +712,9 @@ RISK_PARAMS = {
     "halt_recover_days": 1,             # 连续亏损/日亏熔断后冷却 N 日自动恢复（默认 1 日）
     "max_consecutive_losses": 3,        # 连续亏损 3 次降仓
     "max_consecutive_losses_halt": 5,   # 连续亏损 5 次暂停
-    "max_single_position_pct": 0.30,    # 单标的占总资产上限【R29 2026-10-13 落盘】与杠杆协同放宽（0.30×5=1.5 仍受 max_positions 夹紧）
+    "max_single_position_pct": 0.40,    # 单标的占总资产上限【R29+L2 2026-10-13 落盘】与杠杆协同放宽（0.40×5=2.0 仍受 max_positions 夹紧）
     "max_daily_trades": 10,             # 日内最大交易次数
-    "max_order_amount": 300000,         # 单笔金额上限（与 max_position_amount 对齐，R29 协同放宽至 30万）
+    "max_order_amount": 400000,         # 单笔金额上限（与 max_position_amount 对齐，R29+L2 协同放宽至 40万）
 }
 
 # ============================================================
