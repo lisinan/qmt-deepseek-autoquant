@@ -980,6 +980,26 @@ class EventEngine:
             self._daily_trade_count = 0
             self._day_open_asset = None  # 新交易日重新基线
             self._daily_flatten_done = False  # 新交易日允许再次日内强平
+            # 【2026-10-14 AM-EVOLVE 第 30 轮 P0 修复】日内**已实现盈亏**必须一起归零。
+            # ★ 实盘铁证（storage/qmt.db engine_state，2026-10-14 11:29:42）：
+            #     trade_date=2026-10-14、daily_pnl=**-7964.0**，而当日 fills **0 笔**
+            #     ⇒ 今日一笔未成交，日内已实现盈亏却是 -7,964（源自 10-09 唯一一笔
+            #     SELL 300394.SZ）。
+            # ★ 根因：RiskManager.reset_daily() 的清零条件是 ``today != self._today``，
+            #   而 ``self._today`` 在 __init__ 里就等于今天 ⇒ 只有在**进程内跨日**时
+            #   才清零。引擎**每天早晨重启**（今日日志 08:05/08:09/08:13/08:14 四次）
+            #   ⇒ 走的是 ``_restore_engine_state()``，该路径把 DB 里的 daily_pnl
+            #   原样读回（event_engine.py:2950），而本方法此前只复位了交易笔数 /
+            #   开盘基线 / 强平标志，**漏了 risk._daily_pnl** ⇒ 永不复位。
+            # ★ 影响（量化）：生效阈值 _daily_loss_limit() = max(5000, 3%×972,533.6)
+            #   = 29,176 元 ⇒ -7,964 已占 **27.3%**；且每个亏损日的已实现亏损都会
+            #   **跨日累加**进这个基线（引擎每日重启 ⇒ 进程内跨日分支永不执行）
+            #   ⇒ 日内亏损预算单调缩水，直至触发 daily_loss 熔断（halted 冻结开仓）。
+            # ★ 口径背离（本项目第 14 例同型）：回测 backtest_daily.py 每根 bar 结束
+            #   执行 ``_dl_day_pnl = 0.0  # 日切归零（实盘 reset_daily）`` ⇒ 回测恒从
+            #   0 起算、实盘从历史残留值起算 ⇒ 实盘比回测更易熔断。
+            # 可逆：删掉本行即恢复旧行为（守卫 tests/test_daily_pnl_crossday_reset.py）。
+            self.risk._daily_pnl = 0.0
             logger.info("日内交易计数跨日重置: daily_trade_count=0 (date=%s)", today)
 
     def _warmup_bars(self, codes: List[str], download: bool = None,
