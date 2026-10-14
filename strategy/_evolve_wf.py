@@ -701,6 +701,26 @@ def candidates_final() -> dict:
     out["X4_动量阈值+20%"] = replace(b, momentum_min_mom=0.20)
     out["X5_动量阈值-10%"] = replace(b, momentum_min_mom=-0.10)
     out["X6_动量阈值-35%"] = replace(b, momentum_min_mom=-0.35)
+
+    # ---- PM-EVOLVE R31（2026-10-14 收官）：Y 系列 = 弱市「相对动量门槛回退」----
+    # 目标：把「KPI#4（live 近 4 周滚动收益 > 0）在现行配置下数学上不可能达标」
+    #   这一死锁**定价** —— 即量化「为了让弱市也有暴露，需要付出多少 dSh」。
+    # 机制（与 X 系列「整体放宽绝对门槛」**不同**）：绝对门槛在强势市完全保留，
+    #   只在「通过数 < min_passing_candidates」的弱市把门槛回退到宇宙动量横截面
+    #   第 q 分位 ⇒ 语义是「弱市只买相对最强」，而非全局矮子里拔将军。
+    #   Y0 = 关闭（= P0 基线，惰性对照，dSh 必为 0；若非 0 说明代理退化）；
+    #   Y1~Y4 = 分位档剂量轴（越大越严，越接近现状）；
+    #   Y5~Y6 = 同档位加「绝不买负动量」下限，检验亏损是来自「买了下跌股」
+    #           还是来自「弱市根本不该在场」。
+    out["Y0_相对回退关闭_现状"] = replace(b, mom_rel_fallback=0.0)
+    out["Y1_相对回退_50分位"] = replace(b, mom_rel_fallback=50.0)
+    out["Y2_相对回退_70分位"] = replace(b, mom_rel_fallback=70.0)
+    out["Y3_相对回退_80分位"] = replace(b, mom_rel_fallback=80.0)
+    out["Y4_相对回退_90分位"] = replace(b, mom_rel_fallback=90.0)
+    out["Y5_相对回退_70分位_非负下限"] = replace(b, mom_rel_fallback=70.0,
+                                        mom_rel_floor=0.0)
+    out["Y6_相对回退_90分位_非负下限"] = replace(b, mom_rel_fallback=90.0,
+                                        mom_rel_floor=0.0)
     return out
 
 

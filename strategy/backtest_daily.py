@@ -678,6 +678,22 @@ class BacktestConfig:
     # 默认 **0.0 与两侧现状逐位相同** ⇒ 零行为变化，不破坏任何历史结论。
     #   < 0：允许弱负动量进池（矮子里拔将军）；> 0：更严。
     momentum_min_mom: float = 0.0
+    # ---- 【PM-EVOLVE R31 2026-10-14】弱市「相对动量门槛回退」（研究开关）----
+    # 起因（实盘铁证，非假设）：R28 把 momentum_min_mom 收紧到 0.15 后，入池条件
+    #   变成「60 日涨幅 > +15%」这一**绝对值硬门槛**；2026-10-14 上午 09:15~11:25
+    #   连续 14 次「无入场信号：动量闸门后候选池为空」，tushare 独立复核 23 只 AI
+    #   宇宙 60 日动量最高仅 +5.52%、> +15% 的 **0 只** ⇒ 闸门恒定关闭、账户 100%
+    #   现金 ⇒ KPI#4（live 近 4 周滚动收益 > 0）在现行配置下**数学上不可能达标**。
+    # 机制：绝对门槛在**强势市**完全保留（通过数 ≥ 要求 ⇒ 不触发），只在
+    #   「全宇宙普遍弱、通过数不足」时把门槛回退到**当日宇宙动量的横截面第 q 分位**
+    #   ⇒ 语义是「弱市里只买相对最强的那几只」，而不是「无条件矮子里拔将军」。
+    # 剂量轴（本机制能否成立的判别力来源）：
+    #   mom_rel_fallback = 0   关闭（**默认** ⇒ 与旧行为逐位相同，零行为变化）
+    #                    50/70/80/90 = 取宇宙动量第 q 分位作为回退门槛（越大越严）
+    #   mom_rel_floor    = -9.9 不夹下限（默认）/ 0.0 绝不买入负动量标的
+    # 默认 off ⇒ 不破坏任何历史结论；仅用于**量化「恢复弱市暴露」要付多少 dSh**。
+    mom_rel_fallback: float = 0.0
+    mom_rel_floor: float = -9.9
     down_day_exit_pct: float = -99.0  # 单日暴跌清仓阈值（-99 关闭）
     # 强制最小预热长度。walk-forward 调参时必须固定，否则不同参数
     # （如 momentum_lookback 20 vs 120）会产生不同的交易起点，窗口不可比。
@@ -1784,7 +1800,12 @@ def run_backtest(codes: List[str], cfg: BacktestConfig,
                     _ic = regime_panel["close"]
                     if i >= lb and _ic[i] > 0 and _ic[i - lb] > 0:
                         idx_ret = _ic[i] / _ic[i - lb] - 1
-                moms = []
+                # ---- 【PM-EVOLVE R31 2026-10-14】弱市「相对动量门槛回退」 ----
+                # 旧路径是「一遍算 raw 一遍按绝对门槛过滤」。改为**两遍**：
+                # 先把全宇宙 raw 收齐，再决定当日生效门槛 —— 这是回退机制能
+                # 看见「宇宙整体强弱」的前提（单遍无法知道通过数）。
+                # mom_rel_fallback=0（默认）时两遍与旧单遍**逐位相同**。
+                _raws: Dict[str, float] = {}
                 for code, d in panel.items():
                     cc = d["close"]
                     if i < lb or cc[i] <= 0:
@@ -1792,10 +1813,25 @@ def run_backtest(codes: List[str], cfg: BacktestConfig,
                     base = cc[i - lb]
                     if base <= 0:
                         continue
-                    raw = cc[i] / base - 1
-                    # 【R28】阈值提升为可配置（默认 0.0 ⇒ 与旧「必须为正」逐位相同）
-                    if raw <= cfg.momentum_min_mom:
-                        continue          # 入池条件：动量必须高于 momentum_min_mom
+                    _raws[code] = cc[i] / base - 1
+                _thr = float(cfg.momentum_min_mom)
+                if cfg.mom_rel_fallback > 0 and _raws:
+                    # 触发条件：绝对门槛下通过数 < 入场宽度要求（min_passing_candidates）
+                    _need = max(1, int(cfg.min_passing_candidates or 1))
+                    _n_abs = sum(1 for v in _raws.values() if v > _thr)
+                    if _n_abs < _need:
+                        _vals = sorted(_raws.values())
+                        _q = max(0.0, min(100.0, float(cfg.mom_rel_fallback)))
+                        _idx = int(round(_q / 100.0 * (len(_vals) - 1)))
+                        _pct = _vals[_idx]
+                        # 回退门槛 = 分位值（弱市里必然 < 绝对门槛），再夹到下限
+                        _thr = max(min(_thr, _pct), float(cfg.mom_rel_floor))
+                moms = []
+                for code, raw in _raws.items():
+                    d = panel[code]
+                    cc = d["close"]
+                    if raw <= _thr:
+                        continue          # 入池条件：动量必须高于当日生效门槛
                     if cfg.mom_metric == "sharpe":
                         seg = cc[i - lb:i + 1]
                         rr = [seg[k] / seg[k - 1] - 1
