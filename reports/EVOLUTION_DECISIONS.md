@@ -6522,3 +6522,14 @@ AM 疑点为「双重收紧后测的峰，解绑任一条可能移动」⇒ **�
 5. ★★ **结构平台期确认**：至此 `top_n` / `min_mom` / `max_positions`（≥4 饱和）/ `hard_stop_pct`（死代码）/ `atr_stop_mult` / `down_day_exit_pct` / `min_passing_candidates` 全部闭合；下一轮若继续追 KPI#1 折均值（噪声口径）只会拟合 3~36 笔成交的噪声，**建议停止单/双参数扫描，进入低频观察**，等待 OWNER 对 KPI 口径的裁决或市场态切换（动量恢复）。
 6. **勿重试新增**：本交互 9 格全部 fail ⇒ `momentum_top_n × momentum_min_mom` 任何组合均闭合；另见历史累计清单（top_n≠3 / min_mom≠0.15 / max_positions≥4 / hard_stop_pct / 不追高类 / 扩宇宙 / 轮动 / nb / regime 等）。
 7. 新疑点（若 OWNER 仍要突破）：唯一尚未穷尽的是 **`min_passing_candidates` 与 `top_n` 的协同**（宽度闸门 K=2 在 tn3 下把弱市压到 0 只），但 R31 已定价「解除宽度约束 = 恢复弱市暴露 = OOS -0.11~-0.22」，故同样无参数正解。
+
+### 7b) 铁律变更（OWNER 2026-10-15 授权）— 风险底线重构，冲突解除
+- **OWNER 显式指令**：「风险偏好已经变化，铁律可以变更」⇒ 解除本任务模板陈旧硬约束 `risk_per_trade ≤ 0.02 / max_drawdown_pct ≤ −0.15` 对生产 L2 值的封锁。
+- **处置（规则书对齐实盘，不改敞口）**：
+  1. `config/settings.py:573` `risk_per_trade=0.040` 注释升级为「**sanctioned 铁律值**」（取代旧 ≤0.02 约束），并在 line 566-570 补 2026-10-15 授权落记。
+  2. `docs/AUTOMATIONS.md` §六 铁律表 + §七 闸门⑦：(a) `risk_per_trade` 行由过时 `0.020 恰为不可越底线（≤0.02）` 改写为 `0.040（R29+L2…OWNER 2026-10-15 正式固化铁律）`；(b) 闸门⑦由 `风险底线不可动：…risk_per_trade ≤ 0.02…` 改写为「风险底线（OWNER 2026-10-15 变更）：risk_per_trade = 0.040 … **取代任务模板陈旧的 ≤0.02 约束**」；(c) scale 通道 S5 由 `risk_per_trade ≤ 0.02` 改写为引用现铁律值 0.040/-0.20。
+  3. `strategy/_evolve_wf.py:797` scale_gate S5 docstring 同步（旧 `≤ 0.02` → 现 0.040/-0.20）。
+- **`max_drawdown_pct = −0.20` 不构成冲突**：生产值 −0.20 本就严于模板 `≤ −0.15`，予以保留。
+- **后续自进化口径**：本策略铁律现 = `risk_per_trade=0.040 / max_drawdown_pct=−0.20 / T1_RESTRICTION=True / max_positions≥3 / EXECUTION_MODE=paper`；任何候选（含杠杆/尺度型）须以此为准绳走晋升闸门，**旧模板 ≤0.02 约束作废**。
+- **未做**：未进一步提高敞口（OWNER 未给目标数值）；若后续要在 L2 之上继续加杠杆，须另行授权并给目标值。
+- 文件改动：`config/settings.py` / `docs/AUTOMATIONS.md` / `strategy/_evolve_wf.py`（注释/文档，零行为变化）；`tests/run_all.py` 无需重跑（无代码逻辑改动，仅 docstring）。

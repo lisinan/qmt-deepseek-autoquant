@@ -794,7 +794,7 @@ def scale_gate(rows, budget_pct=None):
       S2 MDD 仍在预算内，并给出回撤预算使用率 = |MDD| / |max_drawdown_pct|
       S3 正收折数**不退化**（放大到最大时不比基线少）
       S4 最差单折 > −15%
-      S5 风险底线（risk_per_trade ≤ 0.02 等）由调用方/守卫另行钉住
+      S5 风险底线（现 = risk_per_trade=0.040 / max_drawdown_pct=-0.20，OWNER 2026-10-15 固化，取代旧 ≤0.02）由调用方/守卫另行钉住
 
     ``rows`` 为 grid 模式已算好的每档结果（dict 含 value/is_ret/is_mdd/pos/worst）。
     """
