@@ -618,15 +618,18 @@ class DailyContext:
             return True
         return c[-1] > ma_v
 
-    def breadth_above_ma(self, ma: int = 60, thresh: float = 0.5) -> bool:
-        """宽度门：缓存个股中收盘 > 各自 MA(ma) 的比例 >= thresh → True。
+    def breadth_ratio(self, ma: int = 60) -> Optional[float]:
+        """AI 宇宙宽度：缓存个股中收盘 > 各自 MA(ma) 的比例（0~1）。
 
-        比单一指数更稳健，避免单指数失真。无数据 / 无可评估标的时返回 True。
+        ★ 与回测同源于 `backtest_daily.py` 的 conviction breadth 定义
+          （close > MA(regime_ma) 的宇宙占比，见 backtest_daily.py:1296-1313），
+          两侧必须一起改，避免第 N 次「回测有效、实盘无效」口径背离。
+        无数据 / 无可评估标的时返回 **None**（调用方须 fail-safe：不放大）。
         """
         with self._lock:
             closes = dict(self._closes)
         if not closes:
-            return True
+            return None
         above = 0
         total = 0
         for code, c in closes.items():
@@ -637,8 +640,44 @@ class DailyContext:
             if ma_v and ma_v > 0 and c[-1] > ma_v:
                 above += 1
         if total == 0:
+            return None
+        return above / total
+
+    def breadth_above_ma(self, ma: int = 60, thresh: float = 0.5) -> bool:
+        """宽度门：缓存个股中收盘 > 各自 MA(ma) 的比例 >= thresh → True。
+
+        比单一指数更稳健，避免单指数失真。无数据 / 无可评估标的时返回 True。
+        """
+        r = self.breadth_ratio(ma=ma)
+        if r is None:
             return True
-        return (above / total) >= thresh
+        return r >= thresh
+
+    # ----【PM-EVOLVE R35】信念仓位（conviction sizing）实盘读取点------------
+    # 背景：R29（10-13）在回测里把「AI 强势期放大新开仓目标金额」建模完毕
+    #   （BacktestConfig.conviction_mode / conviction_boost / conviction_breadth_thr），
+    #   但 live 引擎**没有读取点** ⇒ 直接落盘 config 会变成「回测有效、实盘死代码」
+    #   （违反 §7 口径纪律）。本方法即实盘侧的乘子计算，与回测同源。
+    # 语义：AI 宽度（宇宙内站上 MA(regime_ma) 的比例）≥ 阈值时返回 conviction_boost，
+    #   否则 1.0。`conviction_mode != "breadth"` 或宽度不可得 ⇒ 恒 1.0（零行为变化）。
+    # 热读 STRATEGY_PARAMS（不在 __init__ 缓存）⇒ 改值无需重启即可生效。
+    def conviction_multiplier(self) -> float:
+        """返回新开仓目标金额的乘子（默认 1.0 = 不放大）。"""
+        mode = str(STRATEGY_PARAMS.get("conviction_mode", "off") or "off")
+        if mode != "breadth":
+            return 1.0
+        try:
+            boost = float(STRATEGY_PARAMS.get("conviction_boost", 1.0) or 1.0)
+            thr = float(STRATEGY_PARAMS.get("conviction_breadth_thr", 0.6) or 0.6)
+            _ma = int(STRATEGY_PARAMS.get("regime_ma", 60) or 60)
+        except (TypeError, ValueError):
+            return 1.0
+        if boost <= 0:
+            return 1.0
+        r = self.breadth_ratio(ma=_ma)
+        if r is None:
+            return 1.0
+        return boost if r >= thr else 1.0
 
     def snapshot(self) -> dict:
         with self._lock:

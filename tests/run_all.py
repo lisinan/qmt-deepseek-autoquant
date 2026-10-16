@@ -165,6 +165,12 @@ def _collect_tests():
             # 对目标仓位乘 conviction_boost（1.5/2.0）。锁死：默认 off 零行为变化
             # + 开启后真变 + 杠杆型增量有界（Δret<2.0 且 ΔSh<0.5，Sharpe 不变量）。
             "tests.test_conviction_boost",
+            # 【2026-10-16 PM-EVOLVE R35】信念仓位的 **live 引擎读取点**守卫。
+            # 与上面 test_conviction_boost（回测侧建模）互补：钉死
+            #   settings → daily_context.conviction_multiplier() → event_engine qty 乘子
+            # 这条实盘链路真实存在且默认 off 恒 1.0；并拒绝「启用 mode 却留 boost<=1」
+            # 的静默空操作陷阱（比回测侧多出的正是「实盘读点」这一层）。
+            "tests.test_conviction_live_readpoint",
             # 【2026-09-30 R15】账本断供守卫：账本只依赖 OBSERVE 的 review JSON
             # ⇒ 三级单点故障让 KPI #4 连续 4 个交易日静默无法计算。
             "tests.test_ledger_db_fallback",

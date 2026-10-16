@@ -89,6 +89,14 @@ MUST_MATCH = {
     #   一旦回测默认 0 而生产 2，P0 基线的成交/暴露就会少一整块，
     #   所有历史 dSh 与 KPI 失真（与观察篮、轮动同型）。
     "min_passing_candidates": None,  # 2
+    # 【2026-10-16 第 35 轮 PM-EVOLVE】信念仓位（conviction）三个字段首次登记即**两侧同值**
+    #   （第 11 次同型登记）。为什么必须 MUST_MATCH：它是**新开仓金额的乘子**，
+    #   一旦回测默认 off/1.0 而生产 breadth/1.15，P0 基线就会静默少一整块敞口，
+    #   所有历史 dSh 与 KPI 失真（与观察篮、轮动、宽度闸门同型）。
+    #   本轮**只接线不启用** ⇒ 两侧同为 off / 1.0 / 0.6，恒等。
+    "conviction_mode": None,             # "off"（未启用，见 settings 内 R35 证据）
+    "conviction_boost": None,            # 1.0
+    "conviction_breadth_thr": None,      # 0.6
 }
 
 # 已知、尚未裁决的历史差异：(回测侧值, 生产侧值)。钉住数值 ⇒ 任一侧变动即红。

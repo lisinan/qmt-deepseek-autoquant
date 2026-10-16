@@ -2584,7 +2584,24 @@ class EventEngine:
         else:
             raw_qty = self.sizer.size(price, self._total_asset(), atr_pct,
                                       fixed_stop=STRATEGY_PARAMS.get("stop_loss"))
-        qty = int(raw_qty * scale)
+        # ----【PM-EVOLVE R35】信念仓位乘子（AI 强势期放大新开仓目标金额）--------
+        # 与回测同源：BacktestConfig.conviction_mode/boost/breadth_thr
+        #   （backtest_daily.py:1296-1313 计算宽度信号、:1591-1593 乘在 tgt 上）；
+        #   实盘侧乘子由 DailyContext.conviction_multiplier() 给出（宽度 = 宇宙内
+        #   收盘站上 MA(regime_ma) 的比例 ≥ 阈值时放大，否则 1.0）。
+        # ★ 默认 conviction_mode="off" ⇒ 恒 1.0 ⇒ **零行为变化**（可安全常驻）。
+        # ★ 放大后仍必经下方 _clamp_to_buying_power 现金夹紧 ⇒ 不会超配/负现金。
+        # ★ 热读 STRATEGY_PARAMS ⇒ 改值无需重启；宽度不可得/异常 ⇒ fail-safe 不放大。
+        conv_mult = 1.0
+        try:
+            conv_mult = float(self.daily.conviction_multiplier())
+        except Exception as _conv_e:      # 宽度不可得 ⇒ 保守不放大
+            conv_mult = 1.0
+            logger.debug("信念仓位乘子不可用（按 1.0 处理）: %s", _conv_e)
+        if conv_mult > 1.0 and getattr(self, "_conv_log_date", None) != date.today():
+            self._conv_log_date = date.today()
+            logger.info("[信念仓位] AI 宽度达标 ⇒ 新开仓目标金额 ×%.2f", conv_mult)
+        qty = int(raw_qty * scale * conv_mult)
         # ---- 买入力（buying power）夹紧【P0 修正 2026-09-02】----
         # 原实现完全没有现金校验，paper 分支直接 ``self._cash -= qty*price``。
         # 配置上 max_single_position_pct(0.30) × max_positions(5) = 150%，本身就
