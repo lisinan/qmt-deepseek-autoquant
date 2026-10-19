@@ -187,7 +187,31 @@ def _collect_tests():
             "tests.test_span_measure",
             # 【2026-10-08 S2】业绩预告上修提取（earnrev_cache）NaN 数据完整性守卫：
             # 旧实现 float(nan) or 0.0 返回 nan，json.dumps(nan) 写坏缓存。
-            "tests.test_earnrev_cache"]
+            "tests.test_earnrev_cache",
+            # 【2026-10-16 工程缺陷修复轮】可观测性 + 测试卫生守卫（5 个缺陷）：
+            # ① sqlite 连接泄漏 —— record_ledger._conn 返回裸连接，而
+            #    sqlite3.Connection 的 with 协议只管事务、从不 close() ⇒
+            #    Windows 上临时库文件删不掉，16 个账本用例假失败
+            #    （基线 461/478 里除 flask 外的全部失败都是它）；
+            # ② review_daily.disconnect_n 把 paper 启动横幅
+            #    「券商=disconnected」误判为断线（10-16 实盘 28 次 vs 真实 0 次，
+            #    稳定分被扣满 25 分并产出误导性 P1 发现）；
+            # ③ 行情陈旧守卫在时段边界（09:27 / 12:57 / 15:02）误报 ERROR；
+            # ④ 无入场信号日志只报漏斗第 1 层（min_mom 文案谎报「无正动量」
+            #    + 缺 trend_up 通过数 ⇒ 下次排查仍要从零复算）；
+            # ⑤ min_daily_bias=2.0 超出 bias 值域 [-1,1] ⇒ bias 通道永不可达，
+            #    却无任何启动播报（一次「看似无害」的改小就会从关闭跳成生效）。
+            # 本模块锁死 15 条语义；**全部为零策略参数改动的工程修复**。
+            "tests.test_observability_fixes_20261016",
+            # 【AM-EVOLVE R37 2026-10-19】生产两条「风控降级通道」
+            #   （连亏降仓阶梯 / 日内已实现亏损熔断）与回测代理的**语义对齐**守卫。
+            #   背景：生产长期开启这两条通道，而验证器 P0 基线两者默认关闭
+            #   ⇒ 第 15/16 例「实盘有、回测无」型口径背离（R37 实测价签：
+            #     两条全开 vs P0：OOS 均值 dSh −0.017、最差 −0.058、
+            #     IS 收益 +295.74%→+266.56%、IS MDD −13.05%→−15.61%）。
+            #   本模块钉死「值对齐 / 基线关闭态 / 阶梯地板不可达 / union-max 语义」，
+            #   **生产参数值零改动**。
+            "tests.test_derisk_channel_parity"]
     tests = []
     import_errors = []
     for m in mods:
