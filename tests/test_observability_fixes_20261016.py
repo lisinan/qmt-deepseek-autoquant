@@ -234,7 +234,89 @@ def _bare_engine() -> EE.EventEngine:
     eng._last_market_stale_warn_ts = 0.0
     eng._market_stale_code_set = set()
     eng._session_grace_until = 0.0
+    eng._session_exit_grace_until = 0.0
+    eng._last_market_max_age = -1.0
     return eng
+
+
+# ============================================ C2. R37 补强（10-19 实盘暴露）
+
+def test_exit_grace_suppresses_post_close_false_alarm():
+    """★ 门锁 15：已离开交易时段的宽限内不判失效（收盘后不再误报）。
+
+    实盘铁证：10-19 15:02:02「24 只标的快照已陈旧 2 分钟」ERROR。
+    收盘（15:00 竞价结束）后最后一根行情必然开始变旧，age 单调上升，
+    与真断线在 age 维度上同形；但此时本就不该建仓，报「已暂停建仓」纯属噪声。
+    """
+    eng = _bare_engine()
+    eng._session_exit_grace_until = time.time() + 60.0    # 收盘宽限内
+    age = EE.EventEngine.MARKET_STALE_SEC + 60
+    raw = {f"C{i}": {"stale_age_sec": age, "lastPrice": 10.0} for i in range(10)}
+    eng._update_market_staleness(raw)
+    assert eng._market_stale is False, (
+        "收盘宽限内不得判行情源失效——这正是 10-19 15:02 误报的根因")
+
+
+def test_stale_still_detected_after_exit_grace_expires():
+    """★ 门锁 16（防过度修正）：收盘宽限过期后 age 仍涨 ⇒ 必须照常判失效。
+
+    若这条失败 ⇒ 「收盘后 miniQMT 整个挂掉」会被永久静默。
+    """
+    eng = _bare_engine()
+    eng._session_exit_grace_until = time.time() - 1.0     # 宽限已过
+    age = EE.EventEngine.MARKET_STALE_SEC + 3600
+    raw = {f"C{i}": {"stale_age_sec": age, "lastPrice": 10.0} for i in range(10)}
+    eng._update_market_staleness(raw)
+    assert eng._market_stale is True, "收盘宽限过期后必须照常判定失效"
+
+
+def test_recovering_age_suppresses_alarm_even_beyond_grace():
+    """★ 门锁 17：age 正在下降（推送已恢复、正在追上来）⇒ 不判失效。
+
+    实盘铁证：10-19 12:58:41 age=**89 分钟**（进段 90s 时首根真实 tick 仍未
+    到达，参考点停在 11:30 上午收盘）⇒ 单纯 90s 宽限不够。正确判据是**方向**：
+    age 在降说明行情正在追上来，此时无论绝对值多大都不该报警。
+    """
+    eng = _bare_engine()
+    # 进段宽限已过，靠「age 下降」续命
+    eng._session_grace_until = time.time() - 1.0
+    eng._session_exit_grace_until = 0.0
+    big = EE.EventEngine.MARKET_STALE_SEC + 6000      # 远超阈值（如 89 分钟）
+    raw = {f"C{i}": {"stale_age_sec": big, "lastPrice": 10.0} for i in range(10)}
+    eng._update_market_staleness(raw)                 # 首轮：记录 age，无历史可比
+    # 第二轮：age 明显下降 ⇒ 推送正在恢复
+    raw2 = {f"C{i}": {"stale_age_sec": big - 300, "lastPrice": 10.0}
+            for i in range(10)}
+    eng._update_market_staleness(raw2)
+    assert eng._market_stale is False, (
+        "age 正在下降说明行情在追上来，不应判失效（午休边界 89 分钟的根因）")
+
+
+def test_rising_age_is_never_treated_as_recovering():
+    """★ 门锁 18（防过度修正，最重要）：age 持续上升 ⇒ 必须判失效。
+
+    真断线（09-25 停更 47 小时）的形态就是 age 只增不减。若「age 下降」判据
+    被误实现成「age 大就算恢复中」，真事故会被永久静默 —— 这条钉死方向。
+    """
+    eng = _bare_engine()
+    eng._session_grace_until = time.time() - 1.0
+    eng._session_exit_grace_until = 0.0
+    age = EE.EventEngine.MARKET_STALE_SEC + 600
+    for k in range(4):      # age 逐轮上升（真断线形态）
+        raw = {f"C{i}": {"stale_age_sec": age + k * 60, "lastPrice": 10.0}
+               for i in range(10)}
+        eng._update_market_staleness(raw)
+    assert eng._market_stale is True, (
+        "age 持续上升 = 真断线，必须判失效（09-25 停更 47 小时即此形态）")
+
+
+def test_exit_grace_window_is_bounded():
+    """门锁 19：收盘宽限必须有上限且远小于真事故时长。"""
+    g = EE.EventEngine.MARKET_STALE_EXIT_GRACE_SEC
+    assert 0 < g < 3600, (
+        f"收盘宽限 {g}s 应为正且小于 1 小时，否则等同放松阈值")
+    r = EE.EventEngine.MARKET_STALE_RECOVER_ROUNDS
+    assert r >= 2, f"恢复判定轮数 {r} 应 >=2（单轮不平就判死会误杀批次间隔）"
 
 
 def test_session_grace_suppresses_boundary_false_alarm():

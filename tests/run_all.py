@@ -211,7 +211,17 @@ def _collect_tests():
             #     IS 收益 +295.74%→+266.56%、IS MDD −13.05%→−15.61%）。
             #   本模块钉死「值对齐 / 基线关闭态 / 阶梯地板不可达 / union-max 语义」，
             #   **生产参数值零改动**。
-            "tests.test_derisk_channel_parity"]
+            "tests.test_derisk_channel_parity",
+            # 【2026-10-19 PM-EVOLVE 第 38 轮】生产「组合级回撤断路器」
+            #   （risk/manager.py max_drawdown_pct=-0.20 / dd_recover_days=3
+            #    冷却自愈 + 峰值重置）vs 回测 P0 默认关闭 = 第 **17** 例
+            #   「实盘有、回测无」。本轮结论：**休眠的潜伏陷阱**——
+            #   生产阈值下与 P0 逐位相同（IS MDD −13.05%，余量 ~7pt），
+            #   但 −0.10 档 IS 收益 −15.6pt 且 **MDD 反而深 3.18pt**
+            #   （与 R37 两条通道同向，第 3 条「降风险放大回撤」证据）。
+            #   另钉死研究旋钮 equity_dd_stop 的**吸收态**缺陷
+            #   （resume 轴完全惰性，两段式第二段按构造不可达）。
+            "tests.test_rm_dd_pause_parity"]
     tests = []
     import_errors = []
     for m in mods:

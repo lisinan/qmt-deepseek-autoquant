@@ -39,6 +39,7 @@
 from __future__ import annotations
 
 import inspect
+import re
 import sys
 from datetime import date, timedelta
 from pathlib import Path
@@ -143,8 +144,24 @@ def test_restore_path_invokes_cross_day_reset():
     结构性守卫：修复依赖「恢复路径会调用复位」这一前提。若日后重构把该调用
     摘掉，则 ``risk._daily_pnl = row["daily_pnl"]`` 会再次直接生效，
     缺陷静默回归（R22 peak_equity 同型教训）。
+
+    ★【2026-10-19 R37 加固】``inspect.getsource`` 依赖 ``linecache``，而
+    linecache 的首个条目来自 **`.pyc` 里记录的源文件大小/mtime**。当
+    ``__pycache__`` 里留着旧版 `.pyc`（本项目实测发生过：engine/event_engine.py
+    在 10-19 被两个会话先后改动，`.pyc` 滞后）时，``co_firstlineno`` 指向旧文件
+    的行号，`getsource` 会在**新文件**上按旧行号切块 ⇒ 返回另一函数的源码，
+    本用例报「恢复路径不再调用 _reset_daily_if_needed」的**假失败**
+    （实盘铁证：2026-10-19 run_all 基线 498/501，清掉 __pycache__ 后 499/501）。
+
+    改为**直接读磁盘源码**（``Path.read_text``）⇒ 与 `.pyc`/行号彻底解耦，
+    只认「当前文件内容」。这也让守卫对「源码被改但 pyc 未更新」同样有效。
     """
-    src = inspect.getsource(EventEngine._restore_engine_state)
-    assert "_reset_daily_if_needed()" in src, (
+    src = (ROOT / "engine" / "event_engine.py").read_text(encoding="utf-8")
+    # 取 _restore_engine_state 方法体（到下一个同级 def 为止）
+    m = re.search(r"def _restore_engine_state\(self.*?\n(    def |\nclass |\Z)",
+                  src, re.DOTALL)
+    assert m, "_restore_engine_state 未找到"
+    body = m.group(0)
+    assert "_reset_daily_if_needed()" in body, (
         "恢复路径不再调用 _reset_daily_if_needed，跨日复位将失效")
-    assert "_daily_pnl" in src, "恢复路径不再读写 daily_pnl，本守卫前提已变，须重审"
+    assert "_daily_pnl" in body, "恢复路径不再读写 daily_pnl，本守卫前提已变，须重审"

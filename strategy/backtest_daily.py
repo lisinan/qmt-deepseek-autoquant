@@ -951,6 +951,15 @@ class BacktestConfig:
     #       用于量化"永久熔断"的机会成本，决定该旋钮是否应改为可恢复式断路器）。
     rm_dd_pause_pct: float = 0.0
     rm_dd_pause_recoverable: bool = False
+    # 【2026-10-19 PM-EVOLVE 第 38 轮】**冷却自愈 + 峰值重置**（生产真语义建模）。
+    #   生产 risk/manager.py::_maybe_recover：halt 后冷却 dd_recover_days(=3) 个
+    #   **自然日**即自动解除，并 `self._peak_asset = total_asset` **重置回撤基线**
+    #   （避免解除后立即再熔断）。旧代理只有两种语义：
+    #     recoverable=False → 永久熔断（比生产**严得多**）
+    #     recoverable=True  → 创新高才解除（仍比生产严：净值须回到崩前峰值）
+    #   ⇒ 两种都不是生产的真实行为。本字段补上第三种：冷却 bars 根后无条件解除
+    #   并重置峰值。默认 0 = 不启用（与改前逐位相同，零行为变化）。
+    rm_dd_pause_bars: int = 0
 
 
 def _vec_slope(series: List[float], lookback: int = 5) -> List[Optional[float]]:
@@ -1388,6 +1397,7 @@ def run_backtest(codes: List[str], cfg: BacktestConfig,
     rm_halted = False
     rm_halted_ever = False
     rm_halted_days = 0
+    rm_halted_bars = 0      # 【R38】熔断已持续的交易日数（生产按自然日 dd_recover_days）
     for i in range(WARMUP, n):
         # ================= A0) 顺延离场（trend_break 次日开盘成交） =================
         # exit_next_open=True 时生效，默认 False ⇒ 本段恒为空、零行为变化。
@@ -2192,13 +2202,24 @@ def run_backtest(codes: List[str], cfg: BacktestConfig,
         if cfg.rm_dd_pause_pct < 0 and equity > 0:
             _rm_dd = equity / peak_equity - 1.0
             if rm_halted:
-                if cfg.rm_dd_pause_recoverable and equity >= peak_equity:
+                # 【2026-10-19 R38】生产语义：冷却 rm_dd_pause_bars 根后**无条件**
+                # 解除并重置峰值（向 risk/manager.py::_maybe_recover 对齐）。
+                # 旧语义（创新高才解除）保留在 else 分支，默认路径逐位不变。
+                if cfg.rm_dd_pause_bars > 0:
+                    if rm_halted_bars >= cfg.rm_dd_pause_bars:
+                        rm_halted = False
+                        rm_halted_bars = 0
+                        peak_equity = equity   # 重置回撤基线（与生产一致）
+                elif cfg.rm_dd_pause_recoverable and equity >= peak_equity:
                     rm_halted = False      # 创新高解除（可恢复式断路器）
             elif _rm_dd <= cfg.rm_dd_pause_pct:
                 rm_halted = True
                 rm_halted_ever = True
+                rm_halted_bars = 0
         if rm_halted:
             rm_halted_days += 1
+            if cfg.rm_dd_pause_bars > 0:
+                rm_halted_bars += 1
         # ---- 组合权益回撤硬止损状态机（两段式）----
         # 入场门看「峰值回撤」：净值自峰值回撤超 stop_pct → 进入防御态（清仓）。
         # 离场门看「低点反弹」：防御态内自 trough 反弹超 resume_pct 或创新高

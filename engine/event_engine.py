@@ -282,6 +282,8 @@ class EventEngine:
         # 【2026-10-16】行情陈旧判定的时段宽限截止时刻（0 = 不在宽限内）。
         # 见 EventEngine.MARKET_STALE_SESSION_GRACE_SEC 与 _log_session_transition。
         self._session_grace_until: float = 0.0
+        # 【2026-10-19 R37】上一轮观测到的最大 age（判「age 是否在下降」用）。
+        self._last_market_max_age: float = -1.0
 
         # strategy 解析（"single" 用 TrendStrategy，"portfolio" 用 PortfolioStrategy）
         # 日线多周期上下文（MTF）：为分钟级策略提供趋势偏置 + 波动率
@@ -1360,6 +1362,10 @@ class EventEngine:
             # 判定恢复正常（不放松任何真失效的判定）。
             self._session_grace_until = (time.time()
                                          + self.MARKET_STALE_SESSION_GRACE_SEC)
+            # 重新进段：清掉上一段的 age 历史（否则「下降」判据会拿收盘前的
+            # age 当基准，第一轮就误判为「正在恢复」）。
+            self._last_market_max_age = -1.0
+            self._session_exit_grace_until = 0.0
             # 【2026-09-30 AM-EVOLVE R14 · P0】单例在 import 时（常在夜间）就已
             # 定型为 mock；开盘时补一次重连，否则整个交易日都在合成价上运行。
             try:
@@ -1388,6 +1394,16 @@ class EventEngine:
             mins = seconds_to_next_session() / 60.0
             logger.info("非交易时段（%s）：休眠中，距下一时段约 %.0f 分钟",
                         session_label(), mins)
+            # ★【2026-10-19 R37】离开交易时段即开启「收盘宽限」。
+            # 收盘（15:00）后最后一根行情必然开始变旧、age 单调上升，与真断线
+            # 在 age 维度上同形；但此时本就不该建仓（会话守卫随即休眠），
+            # 报「已暂停建仓」纯属噪声。实盘铁证：10-19 15:02:02 一条 ERROR。
+            # 宽限有上限 ⇒ 过期后 age 仍涨则照常报警（防收盘后真断线被静默）。
+            self._session_exit_grace_until = (
+                time.time() + self.MARKET_STALE_EXIT_GRACE_SEC)
+            # 离开时段时清掉进段宽限与 age 历史，避免下一段用错基准。
+            self._session_grace_until = 0.0
+            self._last_market_max_age = -1.0
 
     def _maybe_heartbeat(self) -> None:
         """每 HEARTBEAT_SEC 输出一次存活 + 效率系统提示。"""
@@ -1767,6 +1783,38 @@ class EventEngine:
     # ``test_session_grace`` 系列守卫。
     MARKET_STALE_SESSION_GRACE_SEC = 90.0
 
+    # ★★【2026-10-19 工程缺陷修复（第 37 轮）】时段宽限的两个补强。
+    #
+    # 【10-16 那轮只修了一半，10-19 实盘立刻暴露另外两半】：
+    #   12:58:41 行情源失效：38 只标的快照已陈旧 **89 分钟**（午休结束进段后 90 秒）
+    #   15:02:02 行情源失效：24 只标的快照已陈旧 2 分钟（**收盘后**）
+    # ① **午休边界**：进段宽限 90s 到期时，首根真实 tick 可能仍未到达
+    #    （实测 age = 89 分钟，参考点停在 11:30 上午收盘）⇒ 90s 不够。
+    #    单纯把宽限加到 600s 是**错的**：那等于允许开盘后 10 分钟用旧价建仓，
+    #    而 10-16 的 09:27 误报（age 仅 2 分钟）说明开盘恢复通常只要十几秒。
+    #    正确判据是**方向**而非时长：时段切换后只要 age 在**下降**，说明推送
+    #    已经恢复、正在追上来，此时无论 age 绝对值多大都不该报警。
+    #    只有 age **停止下降**（连续多轮不再变小）才说明真的断了。
+    # ② **收盘后**：15:00 竞价结束 ⇒ 最后一根行情必然开始变旧，age 单调上升。
+    #    这与「真断线」在 age 维度上**完全同形**（都是 age 持续上升），
+    #    唯一的区别是：收盘后**本就不该建仓**（``is_trading_time()`` 为 False，
+    #    会话守卫已让引擎休眠），报「已暂停建仓」毫无意义，只是制造 ERROR 噪声。
+    #    故对「已离开交易时段」单独给一个宽限，让收盘/午休初的必然陈旧静默。
+    #    午休（11:30→12:57）本身就在时段外，本就不会跑 _update_market_staleness
+    #    （主循环休眠）⇒ 这个宽限实际只作用于**收盘后那几分钟**。
+    #
+    # 安全性（两条都不放松真失效判定）：
+    #   · ① 的「age 下降」判据在真断线时**永不成立**——行情停更 ⇒ age 只增不减
+    #     （09-25 停更 47 小时即此形态）⇒ 宽限到期后照常报警。
+    #   · ② 的宽限同样有上限（``MARKET_STALE_EXIT_GRACE_SEC``），过期后若仍在
+    #     时段外且 age 继续涨，仍会报警（防止「收盘后 miniQMT 整个挂掉」被静默）。
+    MARKET_STALE_RECOVER_ROUNDS = 6
+
+    # 收盘/午休初「已离开交易时段」的宽限（秒）。
+    # 取 300s：覆盖收盘后权益快照/复盘收尾的那几分钟（15:05 会话结束后引擎
+    # 主循环随即休眠，实际最多跑几十轮）。300s ≪ 47 小时的真事故，无放松风险。
+    MARKET_STALE_EXIT_GRACE_SEC = 300.0
+
     def _in_session_grace(self, now: Optional[float] = None) -> bool:
         """当前是否处于「交易时段刚切换」的宽限窗口内。
 
@@ -1778,6 +1826,42 @@ class EventEngine:
             return False
         now = time.time() if now is None else now
         return now < self._session_grace_until
+
+    def _in_exit_grace(self, now: Optional[float] = None) -> bool:
+        """【2026-10-19 R37】当前是否处于「刚离开交易时段」的宽限窗口内。
+
+        为什么要这个：收盘（15:00 竞价结束）后最后一根行情必然开始变旧，
+        age 单调上升 —— 这与「真断线」在 age 维度上**完全同形**。
+        唯一的区别是收盘后**本就不该建仓**（``is_trading_time()`` 为 False，
+        会话守卫随即让引擎休眠），报「已暂停建仓」毫无意义，只是制造 ERROR。
+        实盘铁证：10-19 15:02:02「24 只标的快照已陈旧 2 分钟」。
+
+        同样有上限（``MARK_STALE_EXIT_GRACE_SEC``）：过期后若 age 继续涨
+        仍会报警，防止「收盘后 miniQMT 整个挂掉」被永久静默。
+        """
+        if not getattr(self, "_session_exit_grace_until", 0.0):
+            return False
+        now = time.time() if now is None else now
+        return now < self._session_exit_grace_until
+
+    def _market_age_recovering(self, max_age: float) -> bool:
+        """age 是否正在下降（⇒ 推送已恢复、正在追上来）。
+
+        ★ 为什么用「方向」而不是「更大的宽限」：10-19 12:58:41 实测 age = **89 分钟**
+        （进段 90s 时首根真实 tick 仍未到达，参考点停在 11:30 上午收盘）。
+        把宽限加到 600s 是**错的**——那等于允许开盘后 10 分钟用旧价建仓，
+        而 10-16 的 09:27 误报（age 仅 2 分钟）说明开盘恢复通常只要十几秒。
+        正确判据是方向：时段切换后只要 age 在降，说明行情正在追上来，
+        此时无论 age 绝对值多大都不该报警。只有 age **停止下降**才说明真断了。
+
+        真断线时本判据**永不成立**：行情停更 ⇒ age 只增不减
+        （09-25 停更 47 小时即此形态）⇒ 宽限到期后照常报警。
+        """
+        prev = getattr(self, "_last_market_max_age", -1.0)
+        self._last_market_max_age = max_age
+        if prev < 0:
+            return False        # 首轮无历史，无从判断方向
+        return max_age < prev - 1e-6
 
     def _update_market_staleness(self, raw: Dict[str, dict]) -> None:
         """按本轮 tick 快照的交易所时间，判定行情源是否整体失效。"""
@@ -1808,6 +1892,14 @@ class EventEngine:
         # （页面新鲜度徽标可继续显示），只是不置位 ``_market_stale`` ⇒ 不告警、
         # 不阻断建仓。宽限期一过若推送仍未恢复，age 只会更大 ⇒ 判定照常触发。
         if self._market_stale and self._in_session_grace():
+            self._market_stale = False
+        # ★★【2026-10-19 R37 补强 1】进段宽限到期后仍可用「age 正在下降」续命。
+        # 覆盖 10-19 12:58:41 的午休边界误报（age=89 分钟，90s 宽限不够）。
+        # 安全性：真断线时 age 只增不减 ⇒ 本分支永不成立（见 _market_age_recovering）。
+        if self._market_stale and self._market_age_recovering(max_age):
+            self._market_stale = False
+        # ★★【2026-10-19 R37 补强 2】已离开交易时段的宽限（收盘后不再误报）。
+        if self._market_stale and self._in_exit_grace():
             self._market_stale = False
         if self._market_stale:
             self._warn_market_stale()

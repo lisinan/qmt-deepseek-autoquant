@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import sys
+from datetime import datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -21,6 +22,7 @@ if str(ROOT) not in sys.path:
 from strategy.backtest_minute import (   # noqa: E402
     MinuteConfig, load_minute, run_minute_backtest,
 )
+from core.data_models import Signal      # noqa: E402
 
 
 def _has_minute_data() -> bool:
@@ -56,34 +58,93 @@ def test_minute_backtest_returns_results_for_reasonable_sizing():
             f"fixed_amount=100000 必须能成交，实际 {good['n_trades']}"
 
 
-def test_minute_backtest_t1_restriction_defers_exit_to_next_day():
-    """T+1 开启时，最早离场必须在次日；T+1 关闭时可日内离场。
+def _forced_two_day_panel(bars_per_day: int = 60, price: float = 10.0):
+    """确定性 1m 面板：2 个交易日 × bars_per_day 根，价格恒定。
 
-    分钟级下 hold_minutes 自然最小为 1（同一根 bar 不会算两次）。所以比较
-    "最大 hold" vs "最小 hold" 即可：
-      T+1 关闭：最大 hold < 1 天（240 分钟）
-      T+1 开启：最小 hold >= 1 天
+    时间取 10:00~10:59，避开 is_eod（cur_time >= "1500"）导致的不开仓窗口。
     """
-    data = load_minute("300308.SZ", count=20000)
-    if data is None or len(data["close"]) < 5000:
-        return
-    r_off = run_minute_backtest(
-        ["300308.SZ"],
-        MinuteConfig(fixed_amount=100000.0, buy_threshold=0.0,
-                     t1_restriction=False),
-        {"300308.SZ": data})
-    r_on = run_minute_backtest(
-        ["300308.SZ"],
-        MinuteConfig(fixed_amount=100000.0, buy_threshold=0.0,
-                     t1_restriction=True),
-        {"300308.SZ": data})
-    if r_off["n_trades"] >= 5 and r_on["n_trades"] >= 5:
-        off_holds = [t["hold_minutes"] for t in r_off["trades"]]
-        on_holds = [t["hold_minutes"] for t in r_on["trades"]]
-        assert max(off_holds) < 240, \
-            f"关闭 T+1 时不应出现隔日离场，最大 hold={max(off_holds)}min"
-        assert min(on_holds) >= 240, \
-            f"开启 T+1 时不应出现日内离场，最小 hold={min(on_holds)}min"
+    code = "300308.SZ"
+    dates, times, ts_l = [], [], []
+    for d in ("20260105", "20260106"):
+        for m in range(bars_per_day):
+            dates.append(d)
+            times.append(f"10{m:02d}")
+            ts_l.append(datetime.strptime(f"{d}10{m:02d}", "%Y%m%d%H%M"))
+    n = len(dates)
+    return {code: {
+        "date": dates, "time": times, "ts": ts_l,
+        "open": [price] * n, "high": [price] * n, "low": [price] * n,
+        "close": [price] * n, "volume": [1000.0] * n, "amount": [price * 1000.0] * n,
+    }}
+
+
+def test_minute_backtest_t1_restriction_defers_exit_to_next_day():
+    """T+1 契约：关闭时**允许**日内离场，开启时最早离场必须落在次日。
+
+    ★ 为什么必须用「合成面板 + 强制信号」（2026-10-19 PM-EVOLVE 第 38 轮重写）
+      原实现拿**真实 1m 行情**跑真实 TrendStrategy，再断言「T1 关闭时最小
+      hold < 240 分钟」。这把两件独立的事耦合在了一起：
+        (a) 回测器的 T+1 门是否生效；
+        (b) 分钟级 TrendStrategy 在这段行情上恰好有没有产生过日内离场信号。
+      (b) 与数据源强相关：数据源不可达 / 取的行情段不同时，策略可能一笔日内
+      离场都不产生 —— AM R37 实测该用例失败于「最小 hold=10313min ≈ 43 个
+      交易日」，而同一份代码在 1m 数据齐备时（10-19 PM 复现：T1 关闭共 3336
+      笔、最小 hold=1min）却能通过 ⇒ **同一份测试、结论随数据翻转**。
+      这是本项目第 15 次同型「结果依赖加工链 / 数据源」，且在 CI 上表现为
+      随机红 ⇒ 必须消除。
+      【修正】用确定性合成面板，并把 on_bars / on_exit 强制为「永远 BUY /
+      永远 SELL」⇒ 唯一的自变量就是 T+1 开关本身，结论与行情数据无关。
+    """
+    from strategy.trend_strategy import TrendStrategy
+
+    data = _forced_two_day_panel()
+    orig_bars, orig_exit = TrendStrategy.on_bars, TrendStrategy.on_exit
+    try:
+        # 强制信号：把「策略是否给信号」这个变量彻底消掉
+        TrendStrategy.on_bars = lambda self, code, name, bars: Signal(
+            ts=datetime.now(), code=code, name=name, side="BUY",
+            score=10.0, price=(bars[-1].close if bars else 0.0), reason="forced")
+        TrendStrategy.on_exit = lambda self, code, position, price, bars: Signal(
+            ts=datetime.now(), code=code, name=code, side="SELL",
+            score=0.0, price=price, reason="forced")
+
+        def _run(t1: bool):
+            return run_minute_backtest(
+                ["300308.SZ"],
+                MinuteConfig(fixed_amount=100000.0, buy_threshold=0.0,
+                             t1_restriction=t1, decision_mode="minute",
+                             use_daily_gate=False),
+                data, daily=None)
+
+        r_off, r_on = _run(False), _run(True)
+    finally:
+        TrendStrategy.on_bars, TrendStrategy.on_exit = orig_bars, orig_exit
+
+    # 正向对照：强制信号下必须真的有成交，否则本测试是空转的假阳性
+    assert r_off["n_trades"] >= 3, \
+        f"T+1 关闭时应有连续日内往返成交，实际 {r_off['n_trades']} 笔"
+    assert r_on["n_trades"] >= 1, \
+        f"T+1 开启时应至少完成 1 笔跨日交易，实际 {r_on['n_trades']} 笔"
+
+    # 契约本身按**日期**判定（与合成面板的会话长度无关，最稳）：
+    #   关闭 ⇒ 存在「同日进出」的日内往返；开启 ⇒ 一笔同日进出都不能有。
+    def _same_day(t):
+        return t["entry_ts"][:10] == t["exit_ts"][:10]
+
+    off_same = [t for t in r_off["trades"] if _same_day(t)]
+    on_same = [t for t in r_on["trades"] if _same_day(t)]
+    assert off_same, \
+        f"关闭 T+1 时应存在同日进出的日内往返，实际 0/{len(r_off['trades'])} 笔"
+    assert not on_same, \
+        f"开启 T+1 时不应出现任何同日进出，实际 {len(on_same)} 笔"
+
+    # 辅助量（持仓时长）：关闭时是分钟级，开启时必须跨过整个合成会话（60 根）
+    off_holds = [t["hold_minutes"] for t in r_off["trades"]]
+    on_holds = [t["hold_minutes"] for t in r_on["trades"]]
+    assert min(off_holds) <= 2, \
+        f"关闭 T+1 时应允许日内离场，实际最小 hold={min(off_holds)}min"
+    assert min(on_holds) > 60, \
+        f"开启 T+1 时不可能在 60 根会话内离场，实际最小 hold={min(on_holds)}min"
 
 
 def test_minute_strategy_uses_same_code_as_production():
