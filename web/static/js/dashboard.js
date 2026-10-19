@@ -213,33 +213,59 @@
   function appendSignals(sigs) {
     if (!sigs || !sigs.length) return;
     var body = $('signal-table').querySelector('tbody');
-    var newest = '';
-    sigs.forEach(function (s) { if (s.ts > newest) newest = s.ts; });
-    if (newest) updateSignalFreshness(newest);
+    // 注：徽标刷新由 onmessage 统一调用 updateSignalFreshness(data) 完成
+    // （data.last_signal_ts 已含本次新增信号），此处不再单独调用，避免签名不一致。
     sigs.slice().reverse().forEach(function (s) {
       body.insertAdjacentHTML('afterbegin', signalRow(s));
     });
     while (body.children.length > 30) body.removeChild(body.lastChild);
   }
-  // 【2026-09-21】信号源新鲜度徽标。
-  // 背景：策略判定为 HOLD 的信号默认不入库（PERSIST_HOLD_SIGNALS=False），
-  // 市场转弱时会出现「连日零信号」。表格里残留的旧信号又没有日期，
-  // 很容易被误读成"策略在正常发信号但没成交"。这里显式给出停滞时长。
-  function updateSignalFreshness(ts) {
+  // 【2026-09-21 原始】信号源新鲜度徽标：原本仅在 last_signal_ts 陈旧时统一显示
+  // 「信号源停摆」，但这是误报——引擎在线、市场弱势导致「连日零买入信号」也属正常，
+  // 不应被贴上「停摆」标签。
+  // 【2026-10-14 修正】把「引擎是否真的离线」与「是否有新信号」拆开判断：
+  //   · SSE 超过 6s 无帧  → 引擎确实离线，才是真「信号源停摆」；
+  //   · SSE 在线但 last_signal_ts 陈旧 → 引擎在线，只是市场暂无满足阈值的标的，
+  //     标为「引擎在线 · 连续 N 天无满足阈值的买入信号（市场弱势，非故障）」，不再误报停摆。
+  function updateSignalFreshness(data) {
     var el = $('signal-fresh');
-    if (!el || !ts) return;
+    if (!el) return;
+    // 尚未收到过任何 SSE 帧（页面刚加载）：保持等待态，避免误报离线
+    if (_lastSseAt === 0) {
+      el.textContent = '等待信号数据...';
+      el.className = 'signal-fresh fresh-idle';
+      return;
+    }
+    // 引擎在线判定：最近 6 秒内收到过 SSE 帧（后端每 ~1s 推送一次）
+    var online = (Date.now() - _lastSseAt) < 6000;
+    if (!online) {
+      el.textContent = '⚠ 信号源停摆（引擎离线 / SSE 断开）';
+      el.className = 'signal-fresh fresh-stale';
+      return;
+    }
+    var ts = data && data.last_signal_ts;
+    if (!ts) {
+      el.textContent = '引擎在线 · 暂无历史信号';
+      el.className = 'signal-fresh fresh-idle';
+      return;
+    }
     var d = new Date(ts);
-    if (isNaN(d.getTime())) return;
+    if (isNaN(d.getTime())) {
+      el.textContent = '引擎在线 · 信号时间无效';
+      el.className = 'signal-fresh fresh-warn';
+      return;
+    }
     var mins = Math.floor((Date.now() - d.getTime()) / 60000);
     var txt, cls = 'fresh-ok';
     if (mins < 30) {
       txt = '最新信号 ' + mins + ' 分钟前';
     } else if (mins < 60 * 24) {
-      txt = '⚠ 已 ' + mins + ' 分钟无新信号';
+      txt = '⚠ 已 ' + mins + ' 分钟无新信号（引擎在线，市场暂无满足阈值的标的）';
       cls = 'fresh-warn';
     } else {
-      txt = '⚠ 已 ' + Math.floor(mins / 1440) + ' 天无新信号（信号源停摆）';
-      cls = 'fresh-stale';
+      var days = Math.floor(mins / 1440);
+      txt = '引擎在线 · 连续 ' + days + ' 天无满足阈值的买入信号（市场弱势，非故障）';
+      cls = 'fresh-idle';
     }
     el.textContent = txt;
     el.className = 'signal-fresh ' + cls;
@@ -541,6 +567,8 @@
 
   var sse = null;
   var sseReconnectTimer = null;
+  var _lastSseAt = 0;        // 最近一次收到 SSE 帧的时间（后端每 ~1s 推送一帧）
+  var _lastSignalData = null; // 缓存最近一帧信号相关数据，供离线自检重渲染
 
   function connectSSE() {
     if (sse) { try { sse.close(); } catch (e) {} sse = null; }
@@ -567,11 +595,13 @@
       try {
         var data = JSON.parse(ev.data);
         if (data.error) return;
+        _lastSseAt = Date.now();
+        _lastSignalData = data;
         if (data.snapshot) renderSnapshot(data.snapshot);
         if (data.snapshot) updateMarketFreshness(data.snapshot);
         if (data.ticks) renderTicks(data.ticks);
         if (data.new_signals) appendSignals(data.new_signals);
-        if (data.last_signal_ts) updateSignalFreshness(data.last_signal_ts);
+        updateSignalFreshness(data);
         if (data.new_fills) appendFills(data.new_fills);
         if (data.sector_heat) renderSectorHeat(data.sector_heat);
         if (data.dynamic_universe_summary) renderUniverse(data.dynamic_universe_summary);
@@ -580,6 +610,14 @@
       } catch (e) { console.debug('sse parse err', e); }
     };
   }
+
+  // 离线自检：SSE 超过 6s 无新帧时，用缓存的最后一帧重渲染徽标为「引擎离线/信号源停摆」。
+  // 这样即使引擎进程崩溃、Flask 端口断开，页面也能在数秒内反映真实停摆，而非一直显示陈旧绿标。
+  setInterval(function () {
+    if (_lastSseAt > 0 && (Date.now() - _lastSseAt) >= 6000 && _lastSignalData) {
+      updateSignalFreshness(_lastSignalData);
+    }
+  }, 4000);
 
   function scheduleReconnect() {
     if (sseReconnectTimer) return;

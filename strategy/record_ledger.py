@@ -161,9 +161,55 @@ def build_row(rep: dict) -> dict:
 
 
 def _conn(path=None):
+    """打开一个只读用途的 sqlite 连接。
+
+    ★【2026-10-16 工程缺陷修复】原实现返回裸 ``sqlite3.connect(...)``，调用方
+    一律写成 ``with _conn(path) as con:`` —— 而 **sqlite3.Connection 的上下文
+    管理器协议只管事务（commit/rollback），从不 ``close()`` 连接**。后果：
+
+      · 每个 helper 调用泄漏一个 file handle + WAL shm 映射，进程退出才回收；
+      · Windows 上文件句柄未关 ⇒ 临时数据库文件无法删除。实盘铁证：
+        ``tests/run_all.py`` 中 16 个用例（test_ledger_stale_mark_guard 9 例 +
+        test_ledger_db_fallback 7 例）全部因 ``TemporaryDirectory`` 清理时
+        ``PermissionError: [WinError 32]`` 而**失败**，而账本逻辑本身是正确的
+        ⇒ 基线 461/478，其中 16 例是「测试卫生」失败而非产品缺陷。
+      · 生产侧同样受影响：OBSERVE 每次跑 ``--check-gap`` 都多留一个句柄，
+        与 ``storage/qmt.db-wal`` 长期不归零、磁盘占用虚高直接相关。
+
+    这里包一层 ``contextlib.closing`` 语义：**进入时建连，退出时必 close**。
+    调用方 ``with _conn(path) as con:`` 的写法完全不用改（接口不变）。
+    """
     con = sqlite3.connect(str(path or DB_PATH))
     con.row_factory = sqlite3.Row
-    return con
+    return _ClosingConn(con)
+
+
+class _ClosingConn:
+    """让 ``with _conn(...) as con`` 退出时真正关闭连接。
+
+    为什么不用 ``contextlib.closing(sqlite3.connect(...))``：调用方在 with 体内
+    执行 ``con.execute(...)``，而 ``closing`` 包装对象只转发 ``close``（无
+    ``__getattr__``），会让每个调用点都改代码。本类把其余属性/方法原样转发，
+    **调用方零改动**。
+    """
+
+    __slots__ = ("_con",)
+
+    def __init__(self, con):
+        self._con = con
+
+    def __enter__(self):
+        return self._con
+
+    def __exit__(self, exc_type, exc, tb):
+        try:
+            self._con.close()
+        except Exception:
+            pass
+        return False
+
+    def __getattr__(self, name):
+        return getattr(self._con, name)
 
 
 def snapshot_days(path=None) -> list:

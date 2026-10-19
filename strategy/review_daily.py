@@ -860,8 +860,28 @@ def _optimization_insights(rep: dict, notices: list,
             err_n += 1
         elif lvl in ("WARNING", "WARN") or "warning" in mlow:
             warn_n += 1
-        if ("disconnect" in mlow or "断开" in msg or "重连" in msg
-                or "reconnect" in mlow or "连接失败" in msg or "connection" in mlow):
+        # ★【2026-10-16 工程缺陷修复】断线计数必须**排除「状态说明」类横幅**。
+        # 原实现只做关键词匹配（"disconnect"/"断开"/"重连"/"connection"...），
+        # 而 paper 模式每次启动都会播报一条 **SYSTEM 级**横幅：
+        #     「引擎已启动 | 策略=single 执行=paper 数据源=xtdata
+        #       券商=disconnected | 订阅标的=38 单实例锁=开」
+        # 其中 "disconnected" 是**常态状态描述**（paper 模式本来就不连券商），
+        # 不是断线事件。实盘铁证：`logs/review_2026-10-16.json` 的
+        #   disconnect_n = 28，stability 被扣 min(25, 28×8)=25 分（满扣），
+        #   并生成一条 P1「券商连接断开/重连 28 次」发现，action 指向
+        #   core/broker.py 的自修复 —— 而当日真实断线为 **0 次**
+        #   （该 28 几乎全是历次启动横幅 + 心跳里的「券商重连=0」字样）。
+        #   ⇒ 连续多个交易日稳定分被一条**语义误判**钉在低位，掩盖真实信号。
+        # 判据（三条同时满足才是真断线）：
+        #   ① 关键词命中；
+        #   ② 级别是 WARNING/ERROR（真断线一定告警；状态横幅是 SYSTEM）；
+        #   ③ 不是启动横幅 / 心跳这类「例行播报」（tag 为 系统/心跳）。
+        # 保留 ① 的行为：真断线自修复播报是 WARNING 级，仍被完整计数。
+        if (("disconnect" in mlow or "断开" in msg or "重连" in msg
+             or "reconnect" in mlow or "连接失败" in msg or "connection" in mlow)
+                and lvl in ("WARNING", "WARN", "ERROR", "ERR")
+                and "引擎已启动" not in msg
+                and "心跳" not in msg):
             disconnect_n += 1
         # 仅把「真实 WARNING 级」风险预算播报计入告警计数。
         # _notice_risk_budget 的常规 SYSTEM 级播报（最坏情形未触断路器、未超配）
@@ -964,7 +984,8 @@ def _optimization_insights(rep: dict, notices: list,
             "engine/event_engine.py 主循环异常隔离；core/notices.py")
     if disconnect_n:
         add("稳定", "P1", "warn", f"券商连接断开/重连 {disconnect_n} 次",
-            f"notices 含 disconnected/重连关键词 {disconnect_n} 次",
+            f"notices 中 WARNING/ERROR 级断线播报 {disconnect_n} 条"
+            f"（已剔除 paper 模式例行启动横幅与心跳，避免语义误判）",
             "复查断线自修复是否真正复用单一 XtQuantTrader 实例，避免 force 重连自伤",
             "core/broker.py / core/auto_reconnect.py")
     if tickgap_n:

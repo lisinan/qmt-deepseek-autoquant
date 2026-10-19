@@ -279,6 +279,9 @@ class EventEngine:
         self.session_guard = (SESSION_GUARD if session_guard is None
                               else bool(session_guard))
         self._session_state: Optional[bool] = None   # 用于状态切换时只记一条日志
+        # 【2026-10-16】行情陈旧判定的时段宽限截止时刻（0 = 不在宽限内）。
+        # 见 EventEngine.MARKET_STALE_SESSION_GRACE_SEC 与 _log_session_transition。
+        self._session_grace_until: float = 0.0
 
         # strategy 解析（"single" 用 TrendStrategy，"portfolio" 用 PortfolioStrategy）
         # 日线多周期上下文（MTF）：为分钟级策略提供趋势偏置 + 波动率
@@ -1166,6 +1169,33 @@ class EventEngine:
             f"订阅标的={len(codes)} 单实例锁={'开' if SINGLETON_LOCK else '关'}"
         )
         self._notice_risk_budget(_mp)
+        # ★【2026-10-16 工程缺陷修复】不可达参数启动校验。
+        # 案例：``STRATEGY_PARAMS["min_daily_bias"] = 2.0``，而 ``bias`` 由
+        # daily_context._compute 夹在 **[-1, +1]**（0.35+0.35+0.30 三项加权
+        # 后再 max(-1, min(1, ...))）⇒ ``bias >= 2.0`` **永为 False**。
+        # 于是入场闸门 ``trend_up or bias >= min_daily_bias``
+        # （strategy/trend_strategy.py:90-96）退化为**只认 trend_up 一个条件**。
+        # 这与注释声明的语义（「2.0 = 关闭 bias 通道」）一致、是有意为之，
+        # 但有两个可发现性问题：
+        #   ① 「关闭态」与「工作态」共用同一个字段，且关闭态取值落在值域外。
+        #      若有人把 2.0 改成 0.5 以为「略微放宽」，实际会从**永久关闭**
+        #      跳到一个真实生效的阈值 —— 一次「看起来无害」的调整就改写策略。
+        #   ② 读代码/读日志的人都无法一眼看出「这一项目前完全不生效」。
+        # 修复取向：**不改生产值**（改它等于改策略，需走自进化四窗共识），
+        # 而是在启动横幅里**显式播报该通道当前是否可达**，把「静默的死通道」
+        # 变成「可见的死通道」。可发现性修好了，误操作的概率才会下降。
+        _mdb = float(STRATEGY_PARAMS.get("min_daily_bias", 0.2) or 0.0)
+        if _mdb > 1.0:
+            logger.info(
+                "入场日线闸门：bias 通道不可达（min_daily_bias=%.2f 超出 bias "
+                "理论值域 [-1,1]）⇒ 当前等价于仅 trend_up 单通道生效；"
+                "这是 R22 有意的「关闭」取值，非配置错误", _mdb)
+            system_notice(
+                "SYSTEM", "策略",
+                f"入场日线闸门：bias 通道当前不可达（min_daily_bias={_mdb:.2f} "
+                f"超出 bias 值域 [-1,1]）⇒ 等价于仅 trend_up 单通道生效。"
+                f"这是有意的「关闭」取值（R22 四窗共识 dSh 全负），"
+                f"如需重新启用请走自进化共识，勿单手改小。")
         system_notice(
             "SYSTEM", "分析结论",
             f"策略配置已加载：趋势骑行退出(trend) + 波动率目标仓位 + "
@@ -1323,6 +1353,13 @@ class EventEngine:
         self._session_state = now_open
         if now_open:
             logger.info("交易时段开启（%s）：恢复行情轮询", session_label())
+            # ★【2026-10-16】进入交易时段即开启「行情陈旧判定宽限」。
+            # 见 MARKET_STALE_SESSION_GRACE_SEC 的实盘铁证：09:27 / 12:57 两条
+            # 「行情源失效」ERROR 都是进段后推送尚未到达、age 仍指上一时段收盘
+            # 所致的误报。宽限让首根真实 tick 有时间到达，之后 age 归零、
+            # 判定恢复正常（不放松任何真失效的判定）。
+            self._session_grace_until = (time.time()
+                                         + self.MARKET_STALE_SESSION_GRACE_SEC)
             # 【2026-09-30 AM-EVOLVE R14 · P0】单例在 import 时（常在夜间）就已
             # 定型为 mock；开盘时补一次重连，否则整个交易日都在合成价上运行。
             try:
@@ -1701,6 +1738,47 @@ class EventEngine:
     #   09-30 这类只有 1 条快照的日子样本不足，不判脏（保守，避免误杀）。
     STALE_SUSPECT_MIN_SNAPSHOTS = 30
 
+    # ★【2026-10-16 工程缺陷修复】行情陈旧守卫的**时段宽限**（秒）。
+    #
+    # 【实盘铁证（10-15 与 10-16 两天各 3 次，共 6 次）】``quant_system.log``：
+    #   09:27:01 行情源失效：27 只标的快照已陈旧 2 分钟（阈值 2 分钟）… ERROR
+    #   12:57:10 行情源失效：38 只标的快照已陈旧 87 分钟（阈值 2 分钟）… ERROR
+    #   15:02:01 行情源失效：27 只标的快照已陈旧 2 分钟（阈值 2 分钟）… ERROR
+    # 三个时刻**全部是时段边界**，且都是误报：
+    #   · 09:27 —— 引擎 09:15:46 进入交易时段并订阅，miniQMT 推送预热需数
+    #     秒到数十秒，而最后一根有效行情还停在**上一交易日收盘**（隔夜 17.5 小时）。
+    #     宽限期内 age 必然 > 120s ⇒ 27/38 只判陈旧 ⇒ 直接弹 ERROR。
+    #   · 12:57 —— 午休结束立刻进段（``DEFAULT_SESSIONS`` 第二段 12:57 起），
+    #     推送同样需要重新连上，age 仍指上午收盘 ⇒ 87 分钟。
+    #   · 15:02 —— 已过**收盘** 15:00/15:05，最后一根行情必然开始变旧。
+    # 三者共同点：**age 的参考点（上一根真实行情）本身是正常的，只是时段刚切换、
+    #     新行情还没到**。此时弹 ERROR「请检查 miniQMT 行情连接」会：
+    #     ① 把 ERROR 塞进当日 notices ⇒ review_daily 的 err_n +稳定分被扣；
+    #     ② 更重要的是**掩盖真问题**——连续多日稳定的 3 条 ERROR 让人脱敏，
+    #        真正的行情断线（如 09-25 那种停更 47 小时）反而不再引人注意。
+    # 机理上这与 R9 守卫本身不冲突：R9 要防的是「用 N 小时前的冻结价下单」，
+    # 而宽限期内 age 仍在增长、一旦推送恢复就会被立刻打回原形 ⇒ 宽限只推迟
+    # 判定，不放松判定。
+    #
+    # 取值：90s 覆盖「进段 → 首根真实 tick」的最坏观测（10-16 实测首根 tick
+    # 出现在进段后 ~10 秒量级，87 分钟那次是午休边界、恢复只需一次推送）。
+    # 90s ≪ MARKET_STALE_SEC(120s) 阈值本身，故**不改变任何真失效的判定结果**，
+    # 只是让「时段刚切换」这个正常状态不再触发告警。零行为变化保证见
+    # ``test_session_grace`` 系列守卫。
+    MARKET_STALE_SESSION_GRACE_SEC = 90.0
+
+    def _in_session_grace(self, now: Optional[float] = None) -> bool:
+        """当前是否处于「交易时段刚切换」的宽限窗口内。
+
+        只在 ``SESSION_GUARD`` 开启时有意义（否则没有时段切换事件）。
+        判定：距离最近一次「非交易时段 → 交易时段」切换不足宽限期。
+        午夜/长假后的首次开盘同样受益（切换点即开盘那一刻）。
+        """
+        if not getattr(self, "_session_grace_until", 0.0):
+            return False
+        now = time.time() if now is None else now
+        return now < self._session_grace_until
+
     def _update_market_staleness(self, raw: Dict[str, dict]) -> None:
         """按本轮 tick 快照的交易所时间，判定行情源是否整体失效。"""
         if not raw:
@@ -1724,6 +1802,13 @@ class EventEngine:
         self._market_stale_max_age = max_age
         self._market_stale = bool(judged) and (
             len(stale) / max(1, judged) >= self.MARKET_STALE_RATIO)
+        # ★【2026-10-16】时段宽限：切换后 MARKET_STALE_SESSION_GRACE_SEC 内不判失效。
+        # 见 MARKET_STALE_SESSION_GRACE_SEC 注释的实盘铁证（3 个时刻全是时段边界）。
+        # 注意：宽限内**仍然照常记录** ``_market_stale_codes`` / ``max_age``
+        # （页面新鲜度徽标可继续显示），只是不置位 ``_market_stale`` ⇒ 不告警、
+        # 不阻断建仓。宽限期一过若推送仍未恢复，age 只会更大 ⇒ 判定照常触发。
+        if self._market_stale and self._in_session_grace():
+            self._market_stale = False
         if self._market_stale:
             self._warn_market_stale()
 
@@ -2343,14 +2428,75 @@ class EventEngine:
         # 候选池空 / 评分不足 / 日线闸门拦截。这里每 10 分钟最多一条 INFO。
         self._maybe_log_no_signal(len(candidate_codes), best, regime_ok)
 
+    def _entry_funnel_stats(self, n_cand: int) -> dict:
+        """全宇宙的「入场漏斗」分层统计（只读诊断，不影响任何决策）。
+
+        ★【2026-10-16 工程缺陷修复】存在的理由：原 ``_maybe_log_no_signal`` 在
+        ``n_cand == 0`` 时只说一句「当前宇宙无 60 日正动量标的」。这句话在
+        ``momentum_min_mom == 0`` 时代是准确的，但 R28（2026-10-13）把入池下限
+        抬到 **0.15** 后，真实约束变成「无 60 日涨幅 > +15% 的标的」——
+        而日志文案没跟着改。更关键的是：**它只报了漏斗第 1 层**。
+        实盘铁证（2026-10-16 我逐层复算，34 只候选）：
+            漏斗1 动量闸门 (top3, min_mom=0.15)  通过 0/34
+            漏斗2 日线闸门 (trend_up)              通过 0/34   ← 真正的锁
+            漏斗3 评分阈值 (score>=4 且正因子>=3)  有 3 只达标，但在漏斗2 前被挡
+        ⇒ 即使有人照日志字面意思把 ``momentum_min_mom`` 调回 0.0，**BUY 仍是 0**
+        （日线闸门 ``above_ma60`` 通过数为 0，``trend_up`` 逻辑上恒 False）。
+        日志若只报第 1 层，下一次排查仍要从零复算一遍才能发现这一点。
+
+        本方法把每一层的通过数一次性打出来，让「该调哪个参数」变成日志里的
+        一行结论，而不是一次完整的独立诊断。计算全部走 DailyContext 缓存
+        （不拉网络），每 10 分钟最多执行一次（受 _maybe_log_no_signal 节流）。
+        """
+        out = {
+            "min_mom": float(STRATEGY_PARAMS.get("momentum_min_mom", 0.0) or 0.0),
+            "lookback": int(STRATEGY_PARAMS.get("momentum_lookback", 60) or 60),
+            "top_n": int(STRATEGY_PARAMS.get("momentum_top_n", 0) or 0),
+            "min_daily_bias": float(STRATEGY_PARAMS.get("min_daily_bias", 0.2) or 0.0),
+            "score_th": float(STRATEGY_PARAMS.get("buy_score_threshold", 4.0)),
+            "min_sig": int(STRATEGY_PARAMS.get("min_signals", 3) or 3),
+            "universe_n": 0, "trend_up_n": 0, "bias_ok_n": 0,
+            "score_ok_n": 0, "best_score": None, "best_code": None,
+        }
+        if self.daily is None:
+            return out
+        codes = sorted(self.daily.covered_codes())
+        out["universe_n"] = len(codes)
+        best = None
+        for c in codes:
+            f = self.daily.features(c)
+            if f is None:
+                continue
+            if f.trend_up:
+                out["trend_up_n"] += 1
+            if f.bias >= out["min_daily_bias"]:
+                out["bias_ok_n"] += 1
+            fac = f.factors or {}
+            pos = sum(1 for v in fac.values() if v and v > 0)
+            if f.score >= out["score_th"] and pos >= out["min_sig"]:
+                out["score_ok_n"] += 1
+            if best is None or f.score > best[1]:
+                best = (c, f.score)
+        if best:
+            out["best_code"], out["best_score"] = best[0], round(best[1], 2)
+        return out
+
     def _maybe_log_no_signal(self, n_cand: int, best, regime_ok: bool) -> None:
         if getattr(self, "_last_no_signal_log_ts", 0) and \
                 time.time() - self._last_no_signal_log_ts < 600:
             return
         self._last_no_signal_log_ts = time.time()
         if n_cand == 0:
-            logger.warning("无入场信号：动量闸门后候选池为空"
-                           "（当前宇宙无 60 日正动量标的）")
+            st = self._entry_funnel_stats(n_cand)
+            logger.warning(
+                "无入场信号：动量闸门后候选池为空（min_mom=%.2f lookback=%d "
+                "top_n=%d ⇒ 要求 60 日涨幅 > %.0f%%）| 漏斗分层: 宇宙 %d 只, "
+                "trend_up %d, bias>=%.2f %d, score>=%.1f且正因子>=%d %d 只"
+                "（最高分 %s）",
+                st["min_mom"], st["lookback"], st["top_n"],
+                st["min_mom"] * 100, st["universe_n"], st["trend_up_n"],
+                st["min_daily_bias"], st["bias_ok_n"], st["score_th"],
+                st["min_sig"], st["score_ok_n"], st["best_code"])
         elif best is None:
             logger.warning("无入场信号：候选 %d 只但全部无法评分", n_cand)
         else:

@@ -129,9 +129,16 @@ def ensure_engine(log=_log) -> bool:
             if p not in env.get("PATH", ""):
                 env["PATH"] = p + os.pathsep + env.get("PATH", "")
         # DETACHED_PROCESS: 引擎独立于守护进程存活
+        # 关键修复(R29 重启): 必须将 stdout/stderr 重定向到日志文件。否则父进程
+        # (health_check/guardian) 退出后子进程写管道会触发 BrokenPipe 崩溃，
+        # 导致引擎被拉起后秒退（崩溃循环，曾见 PID 26368/17292/6108 反复自退）。
+        _log_dir = BASE_DIR / "logs"
+        _log_dir.mkdir(parents=True, exist_ok=True)
+        _eng_out = open(_log_dir / "engine_stdout.log", "a", buffering=1, encoding="utf-8")
         subprocess.Popen(
             [CONDA_PY, "main.py", "--web"],
             cwd=str(BASE_DIR), env=env, creationflags=0x00000008,
+            stdout=_eng_out, stderr=subprocess.STDOUT,
         )
         log("[ACTION] 已尝试启动交易引擎 main.py --web")
         return True
