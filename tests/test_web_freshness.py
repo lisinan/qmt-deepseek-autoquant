@@ -201,9 +201,14 @@ def test_market_data_ts_picks_newest():
 
 
 def test_slow_round_threshold_default():
-    """慢轮告警阈值应显著小于观测到的故障耗时（58s），且大于正常轮（<1s）。"""
-    import inspect
-    from engine.event_engine import EventEngine
-    src = inspect.getsource(EventEngine.__init__)
+    """慢轮告警阈值应显著小于观测到的故障耗时（58s），且大于正常轮（<1s）。
+
+    ★【2026-10-19 加固】改用磁盘直读（``tests.source_guard.method_source``）而非
+    ``inspect.getsource`` —— 后者在 `.pyc` 陈旧时会在新文件上按旧行号切块、
+    返回另一个函数的源码，造成幽灵失败（实盘铁证见 tests/source_guard.py）。
+    """
+    from tests.source_guard import method_source
+    src = method_source("engine/event_engine.py", "__init__")
+    assert src is not None, "EventEngine.__init__ 未找到"
     assert "SLOW_ROUND_SEC" in src, "主循环慢轮阈值必须仍然是实例属性"
     assert "self._slow_rounds = 0" in src

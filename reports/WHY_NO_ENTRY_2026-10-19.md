@@ -142,8 +142,68 @@ AssertionError: 恢复路径不再调用 _reset_daily_if_needed，跨日复位�
 > `test_batch_e_daily_decision`）。本轮只改了**今天实际失败**的那一处；
 > 其余 5 处同型脆弱，建议后续统一改成读磁盘（未改，避免扩大本轮范围）。
 
-> ⚠ 另注：今日工作区有两个会话并行改动（上午的 AM-EVOLVE R37 与本轮）。
-> `tests/test_batch_b_minute.py` 的 13 行改动来自上午会话，非本轮。
+> ⚠ 另注：今日工作区有多个会话并行改动（上午的 AM-EVOLVE R37、下午的
+> PM-EVOLVE 第 38 轮，以及本轮）。`tests/test_batch_b_minute.py` 的确定性重写
+> 来自第 38 轮，非本轮。
+
+---
+
+## 七、追加：加固其余 5 处 `inspect.getsource` 结构守卫（本轮收尾）
+
+### 背景
+
+第三节定位到「`.pyc` 陈旧 ⇒ `inspect.getsource` 返回错位函数源码」这一
+**幽灵失败**模式后，本项目里还有 5 处同型守卫在用 `inspect.getsource`：
+
+| 文件 | 守卫对象 |
+|---|---|
+| `tests/test_batch_b_minute.py` | `backtest_minute` 模块 + `run_minute_backtest` |
+| `tests/test_daily_pnl_crossday_reset.py` | `backtest_daily` 模块 |
+| `tests/test_daily_stale_fallback.py` | `DailyContext._fetch_daily_tushare` |
+| `tests/test_sector_heat.py` | `EventEngine._run_once` |
+| `tests/test_web_freshness.py` | `EventEngine.__init__` |
+
+只要 `.pyc` 一滞后，它们就会**随机红**——而本仓库今日实测有 3 个会话并行改动，
+`.pyc` 滞后是常态而非例外。
+
+### 做法
+
+新增 `tests/source_guard.py`（共享 helper，磁盘直读 + 按 `def 名(` 切块），
+把 6 处守卫全部切过去：
+
+- `method_source(rel_path, name)` —— 按缩进切方法体
+- `module_source(rel_path)` —— 整文件
+- `fn_source(fn)` —— 模块级函数（只用 `__code__.co_filename` 定位文件，
+  不经过 linecache 的源码缓存）
+
+### 防「helper 自身退化」的 4 例自守卫
+
+| 门锁 | 钉住什么 |
+|---|---|
+| `test_source_guard_helper_extracts_known_methods` | 4 个真实方法都能取到且含关键串 |
+| `test_source_guard_is_pyc_independent` | 往 linecache 注入假缓存后返回值**不变** |
+| `test_source_guard_returns_none_for_missing_symbol` | 找不到符号返回 None，不抛不错块 |
+| `test_source_guard_fn_source_resolves_module_level_function` | 模块级函数能解析（首版实现的正则 bug 回归保护） |
+
+**反向验证**（证明守卫不是空转）：在内存里把 4 个关键调用/赋值删掉，
+用同一套正则重切，4/4 全部被检出。
+
+### 踩坑记录（首版 `fn_source` 的 bug）
+
+首版用 `__qualname__` 逐级 `getattr` 解析，对模块级函数（qualname 不含 `"."`）
+走了错误分支 ⇒ **恒返回 None** ⇒ 使我刚加固的那个测试假失败。
+已改用「只取 `__code__.co_filename` 定位文件 + `__name__` 切块」，
+并补门锁 23 钉死该场景。
+
+### 本轮后测试基线
+
+| | R37 PM 完成后 | 本轮加固后 |
+|---|---|---|
+| PASSED | 512 | **516** |
+| FAILED | 1 | 1（flask 未装，环境问题） |
+| TOTAL | 513 | 517 |
+
+⇒ **`.pyc` 幽灵失败模式已从本项目消除**（6 处守卫 + 4 例自守卫 + 反向验证）。
 
 ---
 
@@ -172,6 +232,9 @@ AssertionError: 恢复路径不再调用 _reset_daily_if_needed，跨日复位�
 | `tests/test_observability_fixes_20261016.py` | 新增 5 例守卫（门锁 15~19） | 立即 |
 | `tests/test_daily_pnl_crossday_reset.py` | 源码守卫改为读磁盘（修 `.pyc` 假失败） | 立即 |
 | `reports/WHY_NO_ENTRY_2026-10-19.md` | 本报告 | 立即 |
+| `tests/source_guard.py` | **新增**：源码守卫共享 helper（磁盘直读 + 切块） | 立即 |
+| `tests/test_batch_b_minute.py` / `test_daily_stale_fallback.py` / `test_sector_heat.py` / `test_web_freshness.py` | 4 处 `inspect.getsource` 守卫改用 helper | 立即 |
+| `tests/test_observability_fixes_20261016.py` | 追加 4 例 helper 自守卫（门锁 20~23） | 立即 |
 
 `config/settings.py` **零改动**。
 

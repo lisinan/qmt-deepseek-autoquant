@@ -216,8 +216,15 @@ def test_tushare_error_falls_back_to_local():
 
 
 def test_source_module_has_no_hardcoded_old_fields():
-    """源码级守卫：_fetch_daily_tushare 里不得再出现缺 trade_date 的 fields。"""
-    import strategy.daily_context as D
-    src = inspect.getsource(D.DailyContext._fetch_daily_tushare)
+    """源码级守卫：_fetch_daily_tushare 里不得再出现缺 trade_date 的 fields。
+
+    ★【2026-10-19 加固】改用磁盘直读（``tests.source_guard.method_source``）而非
+    ``inspect.getsource`` —— 后者依赖 linecache/`.pyc` 行号，`.pyc` 陈旧时会在
+    新文件上按旧行号切块、返回**另一个函数**的源码，造成幽灵失败
+    （实盘铁证见 tests/source_guard.py 顶部说明）。
+    """
+    from tests.source_guard import method_source
+    src = method_source("strategy/daily_context.py", "_fetch_daily_tushare")
+    assert src is not None, "_fetch_daily_tushare 未找到（方法被改名/删除？）"
     assert 'fields="trade_date,open,high,low,close,vol"' in src, (
         "tushare daily 的 fields 被改回了缺 trade_date 的版本")

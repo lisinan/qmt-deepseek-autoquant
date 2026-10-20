@@ -121,13 +121,16 @@ def test_sector_eval_every_round_by_default():
 
 def test_sector_eval_knob_is_reversible():
     """旋钮改成 5 必须立刻恢复「每 5 轮评估一次」的旧行为（可逆性要求）。"""
-    import inspect
     from engine.event_engine import EventEngine
     e = _real_engine()
     e.SECTOR_EVAL_EVERY_N_ROUNDS = 5
     assert e.SECTOR_EVAL_EVERY_N_ROUNDS == 5
     # _run_once 必须真的读这个旋钮，而不是仍然写死 5 或 1
-    src = inspect.getsource(EventEngine._run_once)
+    # ★【2026-10-19 加固】磁盘直读，避免 `.pyc` 陈旧导致的幽灵失败
+    # （见 tests/source_guard.py 顶部说明）。
+    from tests.source_guard import method_source
+    src = method_source("engine/event_engine.py", "_run_once")
+    assert src is not None, "_run_once 未找到"
     assert "self.SECTOR_EVAL_EVERY_N_ROUNDS" in src
     # 组合模式仍按 portfolio_every_n 节流（不能一并放开，select() 更重）
     assert "portfolio_every_n" in src

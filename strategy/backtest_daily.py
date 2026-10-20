@@ -839,6 +839,10 @@ class BacktestConfig:
     # 头部名字的跟随收益更可靠。默认关闭：须经 IS/OOS + 多折 walk-forward
     # 严格验证（OOS alpha 为正且多折稳健）后才并入生产。
     momentum_weight: bool = False
+    # 【2026-10-20 AM-EVOLVE 第 39 轮】动量倾斜**剂量**指数：1.0 = 线性 rank-weight
+    #   （与旧公式逐位相同，零行为变化）；>1 = 更强的头部集中。仅研究用，
+    #   生产无需此字段（生产侧只需实现 pow=1 的线性版）。
+    momentum_weight_pow: float = 1.0
     # ---- 量能突破确认（入场质量门，研究用，全新特征）----
     # 与上文所有「参数级」旋钮不同，这是**信号质量层的新特征**：
     # 仅在「因子共振 + 日线闸门」都通过之后，再要求入场当日出现
@@ -960,6 +964,46 @@ class BacktestConfig:
     #   ⇒ 两种都不是生产的真实行为。本字段补上第三种：冷却 bars 根后无条件解除
     #   并重置峰值。默认 0 = 不启用（与改前逐位相同，零行为变化）。
     rm_dd_pause_bars: int = 0
+
+
+def momentum_rank_weights(codes: List[str], mom_val: Dict[str, float],
+                          pow_: float = 1.0) -> Dict[str, float]:
+    """动量排名 rank-weight（纯函数，供回测与守卫测试共用）。
+
+    按 ``mom_val`` 降序给 ``codes`` 排名，返回每只标的的资金倾斜乘数，
+    **算术均值恒为 1.0**（总资本不变，只是向动量更强者集中）。
+
+    :param pow_: 1.0 = 线性 rank-weight（历史语义，逐位兼容）；
+                 >1 = 更强的头部集中（研究剂量）。
+    """
+    ranked = sorted(codes, key=lambda c: mom_val.get(c, 0.0), reverse=True)
+    k = len(ranked)
+    if k == 0:
+        return {}
+    if pow_ == 1.0:
+        mean_u = (k + 1) / 2.0
+        return {c: (k - r + 1) / mean_u for r, c in enumerate(ranked, start=1)}
+    raw = [(k - r + 1) ** pow_ for r in range(1, k + 1)]
+    mean_u = sum(raw) / float(k)
+    return {c: raw[r - 1] / mean_u for r, c in enumerate(ranked, start=1)}
+
+
+def size_target_with_wf(budget: float, stop_dist: float, wf: float,
+                        cap: float, fixed_amount: float,
+                        vol_sizing: bool = True) -> float:
+    """带资金倾斜乘数的目标仓位（纯函数）。
+
+    ★★ 【2026-10-20 AM-EVOLVE 第 39 轮 · 第 18 例「回测有、实盘无」口径背离修复】
+    ``wf`` **必须作用在风险预算上、并置于 ``min(...)`` 之内**，不能乘在最终
+    目标金额之后。原因：实盘 ``PositionSizer.size`` 的结构是
+    ``min(risk_budget/stop_pct, equity*max_pct, max_order_amount)``，
+    **单仓上限一定会夹紧**；而旧回测实现 ``tgt = tgt * wf`` 发生在夹紧之后
+    ⇒ wf=1.5 会把单仓推到 ``max_single_position_pct × 1.5``（0.40 → 0.60），
+    度量的是「不存在单仓上限的世界」。本函数保证返回值恒 <= cap。
+    """
+    if vol_sizing:
+        return min(budget * wf / stop_dist, cap, fixed_amount)
+    return min(fixed_amount * wf, cap)
 
 
 def _vec_slope(series: List[float], lookback: int = 5) -> List[Optional[float]]:
@@ -1594,10 +1638,18 @@ def run_backtest(codes: List[str], cfg: BacktestConfig,
             _cap = equity * cfg.max_single_position_pct
             if cfg.vol_sizing:
                 budget = equity * cfg.risk_per_trade
-                tgt = min(budget / stop_dist, _cap, cfg.fixed_amount)
             else:
-                tgt = min(cfg.fixed_amount, _cap)
-            tgt = tgt * wf * rpw
+                budget = 0.0
+            # 【2026-10-20 AM-EVOLVE 第 39 轮】momentum_weight 的 wf 作用在**风险
+            #   预算**上并置于 min(...) 之内（见 size_target_with_wf 的注释），
+            #   保证单仓上限仍然夹紧 —— 这是第 18 例「回测有、实盘无」背离的修复。
+            #   momentum_weight=False 时 wf 恒按 1.0 处理，随后仍走旧的后置乘法
+            #   （保 entry_half_when_one 的 0.5 语义逐位不变）。
+            tgt = size_target_with_wf(budget, stop_dist,
+                                      wf if cfg.momentum_weight else 1.0,
+                                      _cap, cfg.fixed_amount,
+                                      vol_sizing=cfg.vol_sizing)
+            tgt = tgt * (rpw if cfg.momentum_weight else wf * rpw)
             # 【PM-EVOLVE R29 路径②】AI 强势期信心加仓：广度达标时再乘 conviction_boost
             if cfg.conviction_mode == "breadth":
                 tgt = tgt * conv_boost_sig[i]
@@ -2150,12 +2202,9 @@ def run_backtest(codes: List[str], cfg: BacktestConfig,
             # （最强者更大、最弱者更小，均值=1），把资本集中于动量最确定的名字。
             wf_map: Dict[str, float] = {}
             if cfg.momentum_weight and cfg.momentum_rank and mom_val and picks:
-                ranked = sorted(picks, key=lambda sc: mom_val.get(sc[1], 0.0),
-                                reverse=True)
-                k = len(ranked)
-                mean_u = (k + 1) / 2.0
-                for rank, (_, code) in enumerate(ranked, start=1):
-                    wf_map[code] = (k - rank + 1) / mean_u
+                _pw = float(getattr(cfg, "momentum_weight_pow", 1.0) or 1.0)
+                wf_map = momentum_rank_weights(
+                    [c for _, c in picks], mom_val, pow_=_pw)
             # 横截面风险平价（资本倾斜，全新特征，研究用）：新入选名字按 ATR%
             # 倒数分配权重（低波动拿更多、高波动拿更少），在总风险预算不变下
             # 降低组合波动。权重之和=1，单名权重<=1，仅缩小、不放大，安全。

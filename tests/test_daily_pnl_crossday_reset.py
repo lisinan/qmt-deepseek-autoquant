@@ -128,8 +128,15 @@ def test_risk_manager_reset_daily_is_the_reference_semantics():
 # ------------------------------------------------- 4) 回测侧同口径（第 14 例）
 
 def test_backtest_side_resets_daily_pnl_each_bar():
-    """回测侧必须按日切归零，否则又是一次「回测更松、实盘更严」的背离。"""
-    src = inspect.getsource(BD)
+    """回测侧必须按日切归零，否则又是一次「回测更松、实盘更严」的背离。
+
+    ★【2026-10-19 加固】改用磁盘直读（``tests.source_guard.module_source``）而非
+    ``inspect.getsource`` —— 后者依赖 linecache/`.pyc`，`.pyc` 陈旧时会返回错位
+    内容，造成幽灵失败（实盘铁证见 tests/source_guard.py 顶部说明）。
+    """
+    from tests.source_guard import module_source
+    src = module_source("strategy/backtest_daily.py")
+    assert src is not None, "backtest_daily.py 未找到"
     assert "_dl_day_pnl = 0.0" in src, (
         "回测侧缺少日切归零赋值 `_dl_day_pnl = 0.0`；"
         "实盘若不同步清零，日内亏损熔断在两侧口径就不一致")
@@ -153,15 +160,13 @@ def test_restore_path_invokes_cross_day_reset():
     本用例报「恢复路径不再调用 _reset_daily_if_needed」的**假失败**
     （实盘铁证：2026-10-19 run_all 基线 498/501，清掉 __pycache__ 后 499/501）。
 
-    改为**直接读磁盘源码**（``Path.read_text``）⇒ 与 `.pyc`/行号彻底解耦，
-    只认「当前文件内容」。这也让守卫对「源码被改但 pyc 未更新」同样有效。
+    改为**直接读磁盘源码**（共享 helper ``tests.source_guard.method_source``）
+    ⇒ 与 `.pyc`/行号彻底解耦，只认「当前文件内容」。这也让守卫对「源码被改但
+    pyc 未更新」同样有效。
     """
-    src = (ROOT / "engine" / "event_engine.py").read_text(encoding="utf-8")
-    # 取 _restore_engine_state 方法体（到下一个同级 def 为止）
-    m = re.search(r"def _restore_engine_state\(self.*?\n(    def |\nclass |\Z)",
-                  src, re.DOTALL)
-    assert m, "_restore_engine_state 未找到"
-    body = m.group(0)
+    from tests.source_guard import method_source
+    body = method_source("engine/event_engine.py", "_restore_engine_state")
+    assert body is not None, "_restore_engine_state 未找到"
     assert "_reset_daily_if_needed()" in body, (
         "恢复路径不再调用 _reset_daily_if_needed，跨日复位将失效")
     assert "_daily_pnl" in body, "恢复路径不再读写 daily_pnl，本守卫前提已变，须重审"

@@ -148,15 +148,23 @@ def test_minute_backtest_t1_restriction_defers_exit_to_next_day():
 
 
 def test_minute_strategy_uses_same_code_as_production():
-    """回归保护：分钟回测必须 import 生产的 TrendStrategy（不是私有 fork）。"""
-    import inspect
-    import strategy.backtest_minute as BM
-    src = inspect.getsource(BM)
+    """回归保护：分钟回测必须 import 生产的 TrendStrategy（不是私有 fork）。
+
+    ★【2026-10-19 加固】改用磁盘直读（``tests.source_guard``）而非
+    ``inspect.getsource`` —— 后者依赖 linecache/`.pyc` 行号，`.pyc` 陈旧时会在
+    新文件上按旧行号切块、返回**另一个函数**的源码，造成幽灵失败
+    （实盘铁证：2026-10-19 本仓库多会话并行改动，`.pyc` 滞后；
+      详见 tests/source_guard.py 顶部说明）。
+    """
+    from tests.source_guard import fn_source, module_source
+    src = module_source("strategy/backtest_minute.py")
+    assert src is not None, "backtest_minute.py 未找到"
     assert "from strategy.trend_strategy import TrendStrategy" in src, \
         "分钟回测必须 import 生产用的 TrendStrategy"
     assert "TrendStrategy(" in src, \
         "分钟回测必须实例化生产用的 TrendStrategy"
-    src_fn = inspect.getsource(run_minute_backtest)
+    src_fn = fn_source(run_minute_backtest)
+    assert src_fn is not None, "run_minute_backtest 未找到"
     assert ".on_bars(" in src_fn and ".on_exit(" in src_fn, \
         "分钟回测必须调用 on_bars 与 on_exit（与生产同款调用路径）"
 

@@ -221,7 +221,15 @@ def _collect_tests():
             #   （与 R37 两条通道同向，第 3 条「降风险放大回撤」证据）。
             #   另钉死研究旋钮 equity_dd_stop 的**吸收态**缺陷
             #   （resume 轴完全惰性，两段式第二段按构造不可达）。
-            "tests.test_rm_dd_pause_parity"]
+            "tests.test_rm_dd_pause_parity",
+            # 【2026-10-20 AM-EVOLVE 第 39 轮】动量排名加权（momentum_weight）
+            #   的**第 18 例「回测有、实盘无」**口径背离修复：wf 原本乘在
+            #   max_single_position_pct 夹紧**之后**（回测可到 60% 单仓，
+            #   实盘 PositionSizer 必夹回 40%）。现抽出纯函数把 wf 作用在
+            #   风险预算上并置于 min(...) 之内 ⇒ 单仓上限恒夹紧。
+            #   同时钉死 R39 裁决指纹（IS 收益下降 + 剂量单调劣化），
+            #   并防止该未过闸旋钮被写进生产 STRATEGY_PARAMS。
+            "tests.test_momentum_weight_cap_parity"]
     tests = []
     import_errors = []
     for m in mods:

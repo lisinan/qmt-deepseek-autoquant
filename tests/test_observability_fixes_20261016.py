@@ -476,6 +476,78 @@ def test_engine_broadcasts_unreachable_bias_channel():
         "看似无害的调整改成真实生效的阈值")
 
 
+# ============================================================ F. 源码守卫 helper 自检
+
+def test_source_guard_helper_extracts_known_methods():
+    """门锁 20：``tests.source_guard`` 必须能取出本项目 4 个关键方法体。
+
+    若这条失败 ⇒ helper 的正则/路径解析坏了，所有改用它的守卫都会**假失败**
+    （这正是本轮要消除的那类问题，不能在 helper 上重演）。
+    """
+    from tests.source_guard import method_source, module_source
+    cases = [
+        ("engine/event_engine.py", "_restore_engine_state",
+         "_reset_daily_if_needed()"),
+        ("engine/event_engine.py", "_run_once",
+         "SECTOR_EVAL_EVERY_N_ROUNDS"),
+        ("engine/event_engine.py", "__init__", "SLOW_ROUND_SEC"),
+        ("strategy/daily_context.py", "_fetch_daily_tushare",
+         "trade_date,open,high,low,close,vol"),
+    ]
+    for f, name, needle in cases:
+        src = method_source(f, name)
+        assert src is not None, f"{f}::{name} 未找到（helper 解析失败）"
+        assert needle in src, f"{f}::{name} 缺关键串 {needle!r}（切块错位？）"
+    assert module_source("engine/event_engine.py") is not None
+
+
+def test_source_guard_is_pyc_independent():
+    """门锁 21：helper 必须走**磁盘**，不走 linecache/`.pyc`。
+
+    判据：把 linecache 清空并注入一条**假**缓存后，helper 的返回值不得改变。
+    （``inspect.getsource`` 在这种情况下会返回错位内容 —— 这正是 10-19
+     幽灵失败的根因。）
+    """
+    import linecache
+    from tests.source_guard import method_source
+    F = str(ROOT / "engine" / "event_engine.py")
+    before = method_source("engine/event_engine.py", "_run_once")
+    assert before is not None
+    # 注入假缓存：整文件只有一行 ⇒ 任何按行号切片的实现都会拿到错内容
+    linecache.cache[F] = (len("# fake\n"), None, ["# fake\n"], F)
+    try:
+        after = method_source("engine/event_engine.py", "_run_once")
+    finally:
+        linecache.cache.pop(F, None)
+    assert after == before, (
+        "helper 仍受 linecache 影响 —— 磁盘直读没有真正解耦，"
+        "`.pyc` 陈旧时会重演幽灵失败")
+
+
+def test_source_guard_returns_none_for_missing_symbol():
+    """门锁 22：找不到符号时返回 None（而不是抛异常或返回错块）。"""
+    from tests.source_guard import method_source, module_source
+    assert method_source("engine/event_engine.py", "__no_such_method__") is None
+    assert method_source("no/such/file.py", "x") is None
+    assert module_source("no/such/file.py") is None
+
+
+def test_source_guard_fn_source_resolves_module_level_function():
+    """门锁 23：``fn_source`` 必须能解析**模块级函数**（曾经的正则 bug 回归保护）。
+
+    2026-10-19 首版 ``fn_source`` 用 ``__qualname__`` 逐级 getattr 解析，
+    对模块级函数（qualname 不含 "."）走了错误分支 ⇒ 恒返回 None，
+    使 ``test_minute_strategy_uses_same_code_as_production`` 假失败。
+    本例直接钉死该场景。
+    """
+    from tests.source_guard import fn_source
+    from strategy.backtest_minute import run_minute_backtest
+    src = fn_source(run_minute_backtest)
+    assert src is not None, "fn_source 解析不了 run_minute_backtest"
+    assert ".on_bars(" in src and ".on_exit(" in src
+    assert fn_source(lambda: None) is None, "lambda 无源码文件时应返回 None"
+
+
 # ============================================================ 独立运行入口
 
 if __name__ == "__main__":
