@@ -229,7 +229,14 @@ def _collect_tests():
             #   风险预算上并置于 min(...) 之内 ⇒ 单仓上限恒夹紧。
             #   同时钉死 R39 裁决指纹（IS 收益下降 + 剂量单调劣化），
             #   并防止该未过闸旋钮被写进生产 STRATEGY_PARAMS。
-            "tests.test_momentum_weight_cap_parity"]
+            "tests.test_momentum_weight_cap_parity",
+            # R40（2026-10-20 PM 收官）：钉死「KPI#2 正收折数是划分方式依赖的
+            #   统计量」。实测同一条真实曲线（末 540 根）只改 fold 重切，
+            #   正收比例在 50.0%~77.8% 摆动（极差 27.8pp），7 种划分无一达到
+            #   85.7% 目标线；而拼接 Sharpe 恒为 2.1596（划分不变量）。
+            #   ⇒ 后续轮次不得再把「正收差 2 折」当策略缺陷去调参。
+            #   断言全部使用合成输入（第 19 条教训：钉契约不钉副产品）。
+            "tests.test_kpi2_granularity_is_fold_dependent"]
     tests = []
     import_errors = []
     for m in mods:

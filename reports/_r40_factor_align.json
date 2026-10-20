@@ -1,0 +1,18 @@
+{
+ "sample_n": 9200,
+ "score_mismatch_n": 2730,
+ "per_factor_mismatch": {
+  "vwap": 2730,
+  "momentum": 1,
+  "trend": 2
+ },
+ "non_vwap_driven_n": 0,
+ "non_vwap_examples": [],
+ "buy_full_n": 5498,
+ "missed_by_live_n": 1243,
+ "extra_by_live_n": 62,
+ "last_full_max": 7.6,
+ "last_live_max": 5.6,
+ "last_trend_up_n": 0,
+ "last_date": "20261019"
+}
