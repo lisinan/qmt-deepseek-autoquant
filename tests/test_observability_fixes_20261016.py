@@ -360,6 +360,36 @@ def test_grace_never_blocks_fresh_market():
         assert eng._market_stale is False, f"新鲜行情不得判失效（grace={grace}）"
 
 
+def test_age_history_recorded_during_grace_window():
+    """★ 门锁 24：宽限期内必须**照样记录 age 历史**，否则「下降即恢复」形同失效。
+
+    实盘铁证（2026-10-21 12:58:39.785）：进段 12:57:09.753 + 90s = 12:58:39.753，
+    告警只在宽限过后 **32 毫秒**触发。根因不是宽限短，而是旧实现把
+    ``_market_age_recovering()`` 放在 ``if self._market_stale and ...`` 链里
+    ⇒ 宽限期内它**从未被调用** ⇒ ``_last_market_max_age`` 恒为 -1
+    ⇒ 宽限一过首轮判定 "prev < 0" 直接返回 False ⇒ 补强形同虚设。
+    本例钉死：宽限内被抑制的那一轮，仍须把 max_age 写入历史。
+    """
+    eng = _bare_engine()
+    big = EE.EventEngine.MARKET_STALE_SEC + 5340        # ≈ 89 分钟
+    # 第 1 轮：处在进段宽限内
+    eng._session_grace_until = time.time() + 60.0
+    raw1 = {f"C{i}": {"stale_age_sec": big, "lastPrice": 10.0}
+            for i in range(10)}
+    eng._update_market_staleness(raw1)
+    assert eng._market_stale is False, "宽限内应被抑制"
+    assert eng._last_market_max_age == big, (
+        "宽限内的这一轮也必须把 max_age 写入历史，否则下一轮无基准可比")
+
+    # 第 2 轮：宽限已过，age 明显下降 ⇒ 应判为「正在恢复」而不告警
+    eng._session_grace_until = time.time() - 1.0
+    raw2 = {f"C{i}": {"stale_age_sec": big - 300, "lastPrice": 10.0}
+            for i in range(10)}
+    eng._update_market_staleness(raw2)
+    assert eng._market_stale is False, (
+        "宽限内记录过基准后，宽限外首轮应能识别『age 在下降』并继续抑制")
+
+
 def test_grace_window_is_short_and_below_threshold():
     """门锁 10：宽限必须远短于失效阈值 —— 否则等于把阈值本身抬高。
 

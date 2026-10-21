@@ -1,0 +1,318 @@
+{
+  "window": "2026-10-21",
+  "n_universe": 38,
+  "min_mom": 0.15,
+  "lookback": 60,
+  "top_n": 3,
+  "n_pass_mom": 0,
+  "n_trend_up": 0,
+  "n_bias_ok": 0,
+  "n_score_ok": 0,
+  "gated": [],
+  "rows": [
+    {
+      "code": "000001.SH",
+      "mom": -0.034704519524154986,
+      "trend_up": false,
+      "bias": -1.0,
+      "score": 1.19,
+      "last": null
+    },
+    {
+      "code": "688111.SH",
+      "mom": -0.05522116744092109,
+      "trend_up": false,
+      "bias": -0.3,
+      "score": 3.84,
+      "last": null
+    },
+    {
+      "code": "002415.SZ",
+      "mom": -0.06522358302477926,
+      "trend_up": false,
+      "bias": -1.0,
+      "score": 2.93,
+      "last": null
+    },
+    {
+      "code": "002230.SZ",
+      "mom": -0.1117505995203838,
+      "trend_up": false,
+      "bias": -1.0,
+      "score": 2.38,
+      "last": null
+    },
+    {
+      "code": "300394.SZ",
+      "mom": -0.11454545454545462,
+      "trend_up": false,
+      "bias": -0.39999999999999997,
+      "score": 1.62,
+      "last": null
+    },
+    {
+      "code": "000300.SH",
+      "mom": -0.12422126046240844,
+      "trend_up": false,
+      "bias": -1.0,
+      "score": 2.15,
+      "last": null
+    },
+    {
+      "code": "600487.SH",
+      "mom": -0.1315877251501001,
+      "trend_up": false,
+      "bias": -1.0,
+      "score": 1.34,
+      "last": null
+    },
+    {
+      "code": "300033.SZ",
+      "mom": -0.1493195074530136,
+      "trend_up": false,
+      "bias": -1.0,
+      "score": 2.75,
+      "last": null
+    },
+    {
+      "code": "601869.SH",
+      "mom": -0.16558393621733347,
+      "trend_up": false,
+      "bias": -0.39999999999999997,
+      "score": 1.2,
+      "last": null
+    },
+    {
+      "code": "399001.SZ",
+      "mom": -0.1726690676270507,
+      "trend_up": false,
+      "bias": -1.0,
+      "score": 2.17,
+      "last": null
+    },
+    {
+      "code": "300857.SZ",
+      "mom": -0.17870257037943693,
+      "trend_up": false,
+      "bias": -1.0,
+      "score": 1.61,
+      "last": null
+    },
+    {
+      "code": "600522.SH",
+      "mom": -0.184522090672827,
+      "trend_up": false,
+      "bias": -1.0,
+      "score": 1.28,
+      "last": null
+    },
+    {
+      "code": "601138.SH",
+      "mom": -0.2002295834699902,
+      "trend_up": false,
+      "bias": -1.0,
+      "score": 1.7,
+      "last": null
+    },
+    {
+      "code": "688120.SH",
+      "mom": -0.20123556075449633,
+      "trend_up": false,
+      "bias": -1.0,
+      "score": 2.15,
+      "last": null
+    },
+    {
+      "code": "000063.SZ",
+      "mom": -0.2098623853211009,
+      "trend_up": false,
+      "bias": -1.0,
+      "score": 1.73,
+      "last": null
+    },
+    {
+      "code": "688008.SH",
+      "mom": -0.22918943533697622,
+      "trend_up": false,
+      "bias": -1.0,
+      "score": 1.18,
+      "last": null
+    },
+    {
+      "code": "688361.SH",
+      "mom": -0.23047535883861825,
+      "trend_up": false,
+      "bias": -0.39999999999999997,
+      "score": 1.8,
+      "last": null
+    },
+    {
+      "code": "603019.SH",
+      "mom": -0.23518594196975884,
+      "trend_up": false,
+      "bias": -1.0,
+      "score": 1.37,
+      "last": null
+    },
+    {
+      "code": "002371.SZ",
+      "mom": -0.23920225624496372,
+      "trend_up": false,
+      "bias": -1.0,
+      "score": 1.65,
+      "last": null
+    },
+    {
+      "code": "603501.SH",
+      "mom": -0.24907244678773688,
+      "trend_up": false,
+      "bias": -1.0,
+      "score": 1.39,
+      "last": null
+    },
+    {
+      "code": "688082.SH",
+      "mom": -0.25358895705521467,
+      "trend_up": false,
+      "bias": -1.0,
+      "score": 1.56,
+      "last": null
+    },
+    {
+      "code": "399006.SZ",
+      "mom": -0.2568567451326911,
+      "trend_up": false,
+      "bias": -1.0,
+      "score": 2.15,
+      "last": null
+    },
+    {
+      "code": "002281.SZ",
+      "mom": -0.28310160427807485,
+      "trend_up": false,
+      "bias": -1.0,
+      "score": 1.21,
+      "last": null
+    },
+    {
+      "code": "688072.SH",
+      "mom": -0.2857703476964132,
+      "trend_up": false,
+      "bias": -1.0,
+      "score": 1.51,
+      "last": null
+    },
+    {
+      "code": "688012.SH",
+      "mom": -0.3172178773688985,
+      "trend_up": false,
+      "bias": -1.0,
+      "score": 2.11,
+      "last": null
+    },
+    {
+      "code": "688256.SH",
+      "mom": -0.3177878846239315,
+      "trend_up": false,
+      "bias": -1.0,
+      "score": 1.21,
+      "last": null
+    },
+    {
+      "code": "600584.SH",
+      "mom": -0.3240051954185855,
+      "trend_up": false,
+      "bias": -1.0,
+      "score": 1.7,
+      "last": null
+    },
+    {
+      "code": "688498.SH",
+      "mom": -0.33089403973509934,
+      "trend_up": false,
+      "bias": -1.0,
+      "score": 2.19,
+      "last": null
+    },
+    {
+      "code": "000977.SZ",
+      "mom": -0.3503270922625761,
+      "trend_up": false,
+      "bias": -1.0,
+      "score": 1.68,
+      "last": null
+    },
+    {
+      "code": "300604.SZ",
+      "mom": -0.36066037735849055,
+      "trend_up": false,
+      "bias": -1.0,
+      "score": 2.15,
+      "last": null
+    },
+    {
+      "code": "688981.SH",
+      "mom": -0.362625,
+      "trend_up": false,
+      "bias": -1.0,
+      "score": 1.2,
+      "last": null
+    },
+    {
+      "code": "603986.SH",
+      "mom": -0.4060732235610792,
+      "trend_up": false,
+      "bias": -1.0,
+      "score": 2.18,
+      "last": null
+    },
+    {
+      "code": "688702.SH",
+      "mom": -0.41778047792628603,
+      "trend_up": false,
+      "bias": -1.0,
+      "score": 2.18,
+      "last": null
+    },
+    {
+      "code": "301308.SZ",
+      "mom": -0.4192386099653914,
+      "trend_up": false,
+      "bias": -1.0,
+      "score": 2.18,
+      "last": null
+    },
+    {
+      "code": "300308.SZ",
+      "mom": -0.4299414895957063,
+      "trend_up": false,
+      "bias": -1.0,
+      "score": 2.16,
+      "last": null
+    },
+    {
+      "code": "688041.SH",
+      "mom": -0.4427190665544365,
+      "trend_up": false,
+      "bias": -1.0,
+      "score": 2.16,
+      "last": null
+    },
+    {
+      "code": "300502.SZ",
+      "mom": -0.4596117947695597,
+      "trend_up": false,
+      "bias": -1.0,
+      "score": 2.14,
+      "last": null
+    },
+    {
+      "code": "688347.SH",
+      "mom": -0.5716476444265675,
+      "trend_up": false,
+      "bias": -1.0,
+      "score": 2.17,
+      "last": null
+    }
+  ]
+}

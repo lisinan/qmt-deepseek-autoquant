@@ -1886,6 +1886,17 @@ class EventEngine:
         self._market_stale_max_age = max_age
         self._market_stale = bool(judged) and (
             len(stale) / max(1, judged) >= self.MARKET_STALE_RATIO)
+        # ★★【2026-10-21 缺陷修复】age 历史必须**每轮都记录**，不能只在需要判定时记。
+        #
+        # 【实盘铁证（10-21 12:58:39.785）】进段 12:57:09.753 + 90s 宽限 = 12:58:39.753，
+        # 而告警在 **12:58:39.785** 触发 —— 只差 **32 毫秒**就落在宽限内。
+        # 根因不是宽限太短，而是：原实现把 ``_market_age_recovering()`` 放在
+        # ``if self._market_stale and ...`` 链里 ⇒ **宽限期内它从未被调用** ⇒
+        # ``_last_market_max_age`` 一直是 -1 ⇒ 宽限一到、第一次判定时
+        # "prev < 0" 直接 return False ⇒ 「age 正在下降」这条补强形同失效。
+        # （10-19 那次侥幸落在宽限内 2 秒，所以通过了；10-21 就差 32ms 暴露。）
+        # 修复：无条件先算一次（它同时把本轮 max_age 写回历史），再用结果判定。
+        recovering = self._market_age_recovering(max_age)
         # ★【2026-10-16】时段宽限：切换后 MARKET_STALE_SESSION_GRACE_SEC 内不判失效。
         # 见 MARKET_STALE_SESSION_GRACE_SEC 注释的实盘铁证（3 个时刻全是时段边界）。
         # 注意：宽限内**仍然照常记录** ``_market_stale_codes`` / ``max_age``
@@ -1896,8 +1907,9 @@ class EventEngine:
         # ★★【2026-10-19 R37 补强 1】进段宽限到期后仍可用「age 正在下降」续命。
         # 覆盖 10-19 12:58:41 的午休边界误报（age=89 分钟，90s 宽限不够）。
         # 安全性：真断线时 age 只增不减 ⇒ 本分支永不成立（见 _market_age_recovering）。
-        if self._market_stale and self._market_age_recovering(max_age):
+        if self._market_stale and recovering:
             self._market_stale = False
+
         # ★★【2026-10-19 R37 补强 2】已离开交易时段的宽限（收盘后不再误报）。
         if self._market_stale and self._in_exit_grace():
             self._market_stale = False
