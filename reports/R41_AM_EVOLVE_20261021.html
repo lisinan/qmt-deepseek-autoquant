@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AM-EVOLVE 第 41 轮 · 2026-10-21 午休</title>
+<style>
+  :root{
+    --bg:#0f1419; --panel:#161c24; --panel2:#1c242e; --line:#2a3542;
+    --txt:#e6edf3; --dim:#8b98a5; --accent:#3fb9a5; --warn:#e8a33d;
+    --red:#e5534b; --green:#3fb950; --bad:#e5534b; --ok:#3fb950;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;padding:28px;background:var(--bg);color:var(--txt);
+    font-family:-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;line-height:1.65}
+  .wrap{max-width:1180px;margin:0 auto}
+  h1{font-size:24px;margin:0 0 4px;font-weight:650}
+  .sub{color:var(--dim);font-size:13px;margin-bottom:22px}
+  h2{font-size:17px;margin:30px 0 12px;padding-left:10px;border-left:3px solid var(--accent)}
+  table{width:100%;border-collapse:collapse;font-size:13px;margin:10px 0 6px}
+  th{background:var(--panel2);color:var(--dim);text-align:left;padding:8px 10px;
+    font-weight:600;border-bottom:1px solid var(--line);white-space:nowrap}
+  td{padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+  tr:hover td{background:#1a2129}
+  .num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+  .ok{color:var(--ok)} .bad{color:var(--bad)} .warn{color:var(--warn)} .dim{color:var(--dim)}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:8px;
+    padding:16px 18px;margin:14px 0}
+  .kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:16px 0}
+  .kpi{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:14px}
+  .kpi .t{font-size:11px;color:var(--dim);letter-spacing:.04em}
+  .kpi .v{font-size:23px;font-weight:650;margin:6px 0 2px;font-variant-numeric:tabular-nums}
+  .kpi .g{font-size:11px;color:var(--dim)}
+  .tag{display:inline-block;font-size:11px;padding:1px 7px;border-radius:99px;
+    border:1px solid var(--line);color:var(--dim);margin-left:6px}
+  .tag.ok{color:var(--ok);border-color:#245c34}
+  .tag.bad{color:var(--bad);border-color:#5c2a28}
+  .tag.warn{color:var(--warn);border-color:#5c4728}
+  .bar{height:8px;border-radius:4px;background:#22303d;overflow:hidden;margin-top:8px}
+  .bar>i{display:block;height:100%;background:var(--accent)}
+  ul{margin:8px 0 8px 20px;padding:0} li{margin:5px 0;font-size:13.5px}
+  code{background:#0b1016;padding:1px 6px;border-radius:4px;font-size:12.5px;color:#a9c7e8}
+  .foot{margin-top:34px;padding-top:14px;border-top:1px solid var(--line);
+    color:var(--dim);font-size:12px}
+  .neg{background:rgba(229,83,75,.10)}
+  .zero{background:rgba(232,163,61,.10)}
+</style>
+</head>
+<body><div class="wrap">
+
+<h1>AM-EVOLVE 第 41 轮 · 2026-10-21 午休窗口</h1>
+<div class="sub">
+  EXECUTION_MODE = <span class="ok">paper</span>（已确认，未改动） ·
+  数据面板 23 只 × 902 根 20230201→20261021 · 单边成本 0.15% ·
+  tests <span class="ok">532 / 532，0 失败</span> · commit <code>585bd46</code>（未 push）
+</div>
+
+<h2>一、当前 vs 目标</h2>
+<div class="kpis">
+  <div class="kpi"><div class="t">KPI#1 wf 均值 Sharpe</div>
+    <div class="v bad">1.669</div><div class="g">目标 2.0 ｜ 缺口 −0.331</div>
+    <div class="bar"><i style="width:83%;background:var(--red)"></i></div>
+    <div class="g" style="margin-top:6px">拼接口径 <span class="ok">2.143</span>（D4 待裁）</div></div>
+  <div class="kpi"><div class="t">KPI#2 wf 正收益折</div>
+    <div class="v bad">21/26</div><div class="g">80.8% ｜ 目标 85.7%</div>
+    <div class="bar"><i style="width:94%;background:var(--red)"></i></div>
+    <div class="g" style="margin-top:6px">剔零成交折 21/25 = 84.0%</div></div>
+  <div class="kpi"><div class="t">KPI#3 wf 最大回撤</div>
+    <div class="v ok">−9.97%</div><div class="g">底线 −22% ｜ <span class="ok">PASS</span></div>
+    <div class="bar"><i style="width:45%;background:var(--green)"></i></div>
+    <div class="g" style="margin-top:6px">IS MDD −12.97%（预算 −20%）</div></div>
+  <div class="kpi"><div class="t">KPI#4 live 近 4 周</div>
+    <div class="v bad">0.000%</div><div class="g">连续 12 日零 BUY</div>
+    <div class="bar"><i style="width:2%;background:var(--red)"></i></div>
+    <div class="g" style="margin-top:6px">累计 −2.75% ｜ 跨日 0.000%</div></div>
+</div>
+<div class="card">
+  <b>P0 基线未变</b>：IS <b>+301.05%</b> / Sh <b>1.9258</b> / MDD <b>−12.97%</b> / 163 笔 / 暴露 54.9%。
+  <span class="dim">（与 R40 逐位相同 ⇒ 本轮研究脚本零副作用，不变性检验 PASS）</span>
+</div>
+
+<h2>二、半日度量（真实 · storage/qmt.db）</h2>
+<table>
+  <tr><th style="width:190px">项</th><th>实测</th></tr>
+  <tr><td>快照区间</td><td>09:15:48 → 11:29:27，共 <b>134</b> 条，总资产<b>恒 972,533.60</b></td></tr>
+  <tr><td>持仓 / 现金</td><td>0 持仓、<b>100% 现金</b>；fills 0 笔、orders 0 笔</td></tr>
+  <tr><td>engine_state</td><td><code>trade_date=2026-10-21</code>、<code>daily_pnl=0.0</code>、
+      <code>consec_loss=1</code>、<code>peak_equity=1,005,860</code></td></tr>
+  <tr><td>收益</td><td>跨日 <b>0.000%</b>；累计 −2.75%（对 100 万）；对 peak 回撤 −3.31%</td></tr>
+  <tr><td>零 BUY 成因</td><td><code>halted=false</code> ⇒ <b>非熔断</b>。漏斗：宇宙 38 只 /
+      trend_up <b>0</b> / bias≥2.00 <b>0</b> / score≥4.0 且正因子≥3 <b>0~2</b> 只；
+      绑定约束为动量闸门 <code>min_mom=0.15 / lookback=60</code></td></tr>
+</table>
+
+<h2>三、★★ 头号产出：KPI 缺口是「周期依赖」，不是「参数缺陷」</h2>
+<div class="card">
+  <b>（a）回测近端与实盘一致</b>：P0 全样本权益自 <b>2026-07-15</b> 起逐日零变动直至 2026-10-21
+  （68 个交易日无建仓）。退出原因分布 <code>{crash:158, hard_stop:2, trend_break:2, daily_stop_flatten:1}</code>
+  ⇒ 回测与实盘在近端<b>同为零暴露</b>。<span class="dim">这不是第 20 例口径背离，反而是 D1 第 15 条独立证据。</span>
+</div>
+<table>
+  <tr><th>窗口·折</th><th>区间</th><th class="num">收益</th><th class="num">Sharpe</th><th class="num">成交</th><th>备注</th></tr>
+  <tr class="zero"><td>60×9 F9</td><td>20260722~20261021</td><td class="num">+0.00%</td><td class="num">0.000</td><td class="num">0</td><td class="warn">★ 唯一零成交折（收益恒 0 ⇒ 记非正收）</td></tr>
+  <tr class="neg"><td>75×7 F7</td><td>20260701~20261021</td><td class="num bad">−5.73%</td><td class="num">−3.736</td><td class="num">3</td><td>负折</td></tr>
+  <tr class="neg"><td>90×6 F6</td><td>20260609~20261021</td><td class="num bad">−9.97%</td><td class="num">−1.594</td><td class="num">12</td><td>负折 · 暴露仅 <b>15.6%</b>、胜率 25%</td></tr>
+  <tr class="neg"><td>120×4 F4</td><td>20260423~20261021</td><td class="num bad">−4.64%</td><td class="num">−0.239</td><td class="num">27</td><td>负折 · 暴露 36.7%</td></tr>
+</table>
+<div class="card">
+  <b>（b）结论（三条）</b>
+  <ul>
+    <li>26 折中零成交折<b>仅 1 个</b>。剔除后 KPI#2 由 80.8% 升到 <b>84.0%</b>、KPI#1 由 1.675 升到 <b>1.742</b>
+        —— <b>仍双双不达标</b> ⇒ <b>零成交折不是 KPI 缺口的主因</b>（回答 R22 交接 #3）。</li>
+    <li><b>★ 4 个负折全部是各窗口的「末折」，区间清一色 2026-04-23 ~ 2026-10-21；此前 22 折全部为正</b>
+        （最高 90×6 F3 <b>+148.62%</b>）。</li>
+    <li>⇒ <b>KPI#1/#2 的缺口本质是周期依赖，不是参数缺陷。</b>
+        任何单参数网格都不可能修好「最近 6 个月弱市」—— 因为同一批参数在那 22 折里恰是最优。
+        <b>参数空间已无可挖 alpha。</b></li>
+  </ul>
+</div>
+
+<h2>四、候选裁决（三候选全 REJECTED，生产参数零改动）</h2>
+
+<h2 style="font-size:15px;border-color:var(--warn)">候选 A · <code>min_signals</code>（补测 R39 未覆盖的 &gt;3 侧）</h2>
+<table>
+  <tr><th>值</th><th class="num">OOS 均值 Sh</th><th class="num">dSh</th><th class="num">IS 收益</th><th class="num">IS_Sh</th><th>判定</th></tr>
+  <tr><td><b>3（当前）</b></td><td class="num">1.854</td><td class="num">+0.000</td><td class="num">+301.0%</td><td class="num">1.93</td><td>峰</td></tr>
+  <tr><td>4</td><td class="num">1.806</td><td class="num bad">−0.049</td><td class="num">+225.6%</td><td class="num">1.71</td><td class="bad">负</td></tr>
+  <tr><td>5</td><td class="num">1.702</td><td class="num bad">−0.152</td><td class="num">+258.4%</td><td class="num">1.98</td><td class="bad">负</td></tr>
+</table>
+<div class="card dim">与 R39「≤3 恒不绑定」合并 ⇒ <b>该轴双向闭合</b>。两侧均有读取点
+  （<code>backtest_daily.py:1985/2156</code>、<code>event_engine.py:2549</code> 热读）。</div>
+
+<h2 style="font-size:15px;border-color:var(--warn)">候选 B · <code>trend_exit_ma</code>（★ 真实缺口：R39 只测过 90/120「更慢」侧）</h2>
+<table>
+  <tr><th>值</th><th class="num">OOS 均值 Sh</th><th class="num">dSh</th><th class="num">最差折</th><th class="num">IS 收益</th><th>判定</th></tr>
+  <tr><td>30</td><td class="num">1.847</td><td class="num bad">−0.007</td><td class="num">−8.8%</td><td class="num">+289.1%</td><td class="bad">负</td></tr>
+  <tr><td>40</td><td class="num">1.789</td><td class="num bad">−0.065</td><td class="num">−10.0%</td><td class="num">+284.9%</td><td class="bad">负</td></tr>
+  <tr><td>50</td><td class="num">1.719</td><td class="num bad">−0.135</td><td class="num">−10.0%</td><td class="num">+282.5%</td><td class="bad">负</td></tr>
+  <tr><td><b>60（当前）</b></td><td class="num"><b>1.854</b></td><td class="num">+0.000</td><td class="num">−10.0%</td><td class="num">+301.0%</td><td>峰</td></tr>
+  <tr><td>75</td><td class="num">1.854</td><td class="num">+0.000</td><td class="num">−10.0%</td><td class="num">+301.0%</td><td class="warn">逐位相同（惰性）</td></tr>
+</table>
+<div class="card dim">更快侧全负、更慢侧 <b>75≡60 逐位惰性</b> ⇒ <b>快慢两向全闭</b>。
+  副发现：60 与 75 完全相同说明 trend_break 对该均线周期已饱和，与 R26「trend_break 是持续状态、无 whipsaw」同源互证。</div>
+
+<h2 style="font-size:15px;border-color:var(--warn)">候选 C · <code>mom_metric</code>（从未测过的新轴：按风险调整动量选股）</h2>
+<table>
+  <tr><th>值</th><th class="num">OOS 均值 Sh</th><th class="num">dSh</th><th class="num">最差折</th><th class="num">IS 收益</th><th class="num">IS_MDD</th></tr>
+  <tr><td><b>raw（当前）</b></td><td class="num">1.854</td><td class="num">+0.000</td><td class="num">−10.0%</td><td class="num">+301.0%</td><td class="num">−12.97%</td></tr>
+  <tr><td>sharpe</td><td class="num">1.762</td><td class="num bad">−0.093</td><td class="num ok">−3.9%</td><td class="num bad">+276.2%</td><td class="num bad">−16.87%</td></tr>
+</table>
+<div class="card dim"><b>★ 又一条「削峰填谷」指纹</b>（R39 判据）：最差折 −10.0% → <b>−3.9%</b> 大幅改善，
+  但均值下行、IS 收益 −24.8pt、MDD 劣化 ⇒ 波动平滑，非 alpha。
+  另：回测有读点（<code>backtest_daily.py:754</code>）但<b>实盘零读点</b> ⇒ 即便过闸也须先补实现（纪律 7）。</div>
+
+<h2>五、闸门与落盘</h2>
+<table>
+  <tr><th>闸门</th><th>A <code>min_signals</code></th><th>B <code>trend_exit_ma</code></th><th>C <code>mom_metric</code></th></tr>
+  <tr><td>① IS 收益或 Sharpe 提升</td><td class="bad">FAIL（−75.4pt / −0.22）</td><td class="bad">FAIL（−11.9pt）</td><td class="bad">FAIL（−24.8pt / −0.21）</td></tr>
+  <tr><td>② 最差窗 dSh ≥ +0.10</td><td class="bad">FAIL</td><td class="bad">FAIL</td><td class="bad">FAIL（−0.093）</td></tr>
+  <tr><td>③ OOS/IS Sh 差 ≤ 25%</td><td class="ok">PASS</td><td class="ok">PASS</td><td class="ok">PASS（2.4%）</td></tr>
+  <tr><td>④⑤ MDD / 最差折</td><td class="ok">PASS</td><td class="ok">PASS</td><td class="ok">PASS</td></tr>
+  <tr><td>⑥ tests</td><td colspan="3" class="ok">PASS — 532 / 532、0 失败（87.58s）</td></tr>
+  <tr><td>⑦⑧ 风险底线 / paper</td><td colspan="3" class="ok">PASS（未动 <code>risk_per_trade=0.040</code> / <code>max_drawdown_pct=−0.20</code> / T1 / <code>max_positions=5</code>）</td></tr>
+</table>
+<div class="card">
+  <b>落盘：生产参数 <span class="ok">零改动</span></b>（<code>config/settings.py</code>、
+  <code>engine/event_engine.py</code> diff 均为空）。<br>
+  ⇒ <b>本轮无「13:00 下午开盘生效」项，也无需重启引擎。</b><br>
+  <span class="dim">新增（研究侧，零生产影响）：<code>scripts/_r41_exposure_align.py</code>、
+  <code>scripts/_r41_zero_trade_folds.py</code> + 5 个量测 JSON。</span>
+</div>
+
+<h2>六、交 OWNER / 交 18:00 PM-EVOLVE</h2>
+<ul>
+  <li><b>D4（KPI#1 口径）</b>：本轮再次复现 —— 折均值 <b>1.669</b> vs 拼接 <b>2.143</b>。
+      R18 / R40 / R41 三轮同证折均值是划分假象；<b>建议按拼接口径追认，#1 即达标</b>。</li>
+  <li><b>D9（KPI#2 目标本身）</b>：本轮给出<b>与 R40 独立的新证据</b> —— 不是「划分假象」而是
+      <b>周期集中</b>：4 个负折全是 2026-04~10 的末折，剔除零成交折后也只有 84.0%。</li>
+  <li><b>D1（KPI#4）</b>：第 15 条证据 —— 回测与实盘近端<b>同为零暴露</b>，非口径背离，是策略形态。</li>
+  <li><b>D10（新）</b>：是否正式接受「该策略在下降市不参与」这一形态，并把自进化重心
+      从单参数网格<b>整体转向「2026-04~10 弱市期独立诊断」</b>。</li>
+  <li><b>P2 量测卫生（新疑点）</b>：回测面板末端首次并入<b>当日未收盘 bar</b>（20261021 11:29，历史末端 20261019）；
+      本轮对 P0 逐位无影响，建议加「末端 bar 须属已收盘交易日」守卫（与 R20 陈旧报价守卫同族）。</li>
+  <li><b>勿重试新增 3 条</b>：<code>min_signals</code>（双向闭合）／<code>trend_exit_ma</code>（快慢两向闭合）／
+      <code>mom_metric=sharpe</code>（削峰填谷 + 实盘零读点）。
+      另：<code>atr_period</code> / <code>momentum_scope</code> / <code>volume_surge</code> /
+      <code>ma_short</code> / <code>rsi_period</code> / <code>macd_*</code> / <code>boll_*</code>
+      在回测器<b>无读取点</b>，不可扫描也不可落盘。</li>
+</ul>
+
+<div class="foot">
+  AM-EVOLVE 第 41 轮 · 2026-10-21 11:40 午休窗口 · 引擎全程未 kill ·
+  完整证据见 <code>reports/EVOLUTION_DECISIONS.md</code> 第 41 轮
+</div>
+</div></body></html>
