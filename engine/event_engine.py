@@ -1563,9 +1563,12 @@ class EventEngine:
         """入场闸门逐只明细（学习/排障用只读接口，见 Observability.gate_detail）。"""
         return self._obs.gate_detail()
 
-    def gate_timeline_row(self) -> dict:
-        """当日闸门时间线一行（见 Observability.gate_timeline_row）。"""
-        return self._obs.gate_timeline_row()
+    def gate_timeline_row(self, universe=None) -> dict:
+        """当日闸门时间线一行（见 Observability.gate_timeline_row）。
+
+        默认只统计**固定宇宙**（与历史序列同源），保证 universe_n 不跳变。
+        """
+        return self._obs.gate_timeline_row(universe)
 
     def _build_risk_snapshot(self, total_asset: float) -> dict:
         return self._obs._build_risk_snapshot(total_asset)

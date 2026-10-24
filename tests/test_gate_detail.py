@@ -118,3 +118,45 @@ def test_gate_detail_respects_strategy_params(monkeypatch=None):
             EE.STRATEGY_PARAMS.pop("momentum_min_mom", None)
         else:
             EE.STRATEGY_PARAMS["momentum_min_mom"] = old
+
+
+def test_fixed_universe_matches_wide_universe():
+    """时间线的固定宇宙必须与历史回填/验证器同源（否则 universe_n 会跳变）。
+
+    历史序列（tushare 面板 / xtdata 增量）用的是 ``_evolve_wf.wide_universe()``
+    = STOCK_CODES ∪ SECTOR_CONFIG；live 行必须用同一集合，否则 23 → 38 的跳变
+    会让「通过率」的分母在序列中间换掉。
+    """
+    from strategy._evolve_wf import wide_universe
+
+    fixed = Observability._fixed_universe()
+    assert fixed is not None, "固定宇宙取不到（_fixed_universe 返回 None）"
+    assert set(fixed) == set(wide_universe()), (
+        f"固定宇宙与 wide_universe 不一致：多 {sorted(set(fixed) - set(wide_universe()))}，"
+        f"少 {sorted(set(wide_universe()) - set(fixed))}")
+    assert len(fixed) == 23, f"固定宇宙应为 23 只，实际 {len(fixed)}"
+
+
+def test_gate_timeline_row_filters_to_fixed_universe():
+    """gate_timeline_row 默认只统计固定宇宙里的票（动态宇宙的票不计入）。"""
+    import engine.event_engine as EE
+    from config.settings import STOCK_CODES
+
+    inside = sorted(STOCK_CODES)[:2]
+    outside = "000001.SH" if "000001.SH" not in STOCK_CODES else "399001.SZ"
+    feats = {c: _feat(c) for c in inside}
+    feats[outside] = _feat(outside)
+    moms = {c: 0.30 for c in list(inside) + [outside]}
+    obs = Observability(_engine_with(_FakeDaily(feats, moms)))
+
+    row = obs.gate_timeline_row()
+    assert row["universe_n"] == len(inside), (
+        f"应只统计固定宇宙内的 {len(inside)} 只，实际 {row['universe_n']}")
+    assert row["source"] == "live"
+    assert set(row["pass"].keys()) == {
+        "above_ma20", "above_ma60", "ma20_over_ma60", "slope_up",
+        "macd_ok", "mom_ok", "score_ok"}
+
+    # 显式传 universe：应统计全部 3 只（测试/排障用途）
+    row2 = obs.gate_timeline_row(universe=set(feats.keys()))
+    assert row2["universe_n"] == 3, row2["universe_n"]

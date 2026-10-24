@@ -329,19 +329,29 @@ class Observability:
             "mom60": (best.get("mom60") if isinstance(best.get("mom60"), (int, float)) else None),
         }
 
-    def gate_timeline_row(self) -> dict:
-        """当日闸门时间线一行（与 logs/gate_timeline.jsonl 回填格式逐字段一致）。
+    def gate_timeline_row(self, universe=None) -> dict:
+        """当日闸门时间线一行（与 logs/gate_timeline.jsonl 历史行同口径）。
 
-        复用 gate_detail() 的逐只明细，统计 7 个子条件的**独立通过数** +
-        trend_up（四条件同时成立）只数，供 event_engine 每日实时追加到
-        gate_timeline.jsonl。口径与 scripts/_res_gate_timeline_backfill.py
-        完全对齐：{"date","universe_n","pass":{7 key},"trend_up","source"}。
+        【2026-10-24 口径统一 A 方案】时间线序列只统计**固定宇宙**
+        （``STOCK_CODES ∪ SECTOR_CONFIG`` = 与历史回填/xtdata 增量同源的那 23 只），
+        否则 live 行（动态宇宙 38 只）会与历史（23 只）在 ``universe_n`` 上跳变，
+        通过率虽可比、绝对数不可比，长期看图会失真。
+
+        ⚠ 逐只明细面板（``gate_detail``）**仍然**用实盘的动态宇宙（38 只）——
+        那是"今天有哪些票"，两者职责不同。
+
+        ``universe``：仅测试/排障用，显式指定统计范围；默认取固定宇宙。
         """
         from datetime import date as _date
         try:
             rows = self.gate_detail().get("rows") or []
         except Exception:
             rows = []
+        if universe is None:
+            universe = self._fixed_universe()
+        if universe is not None:
+            uni_set = set(universe)
+            rows = [r for r in rows if r.get("code") in uni_set]
         keys = ("above_ma20", "above_ma60", "ma20_over_ma60", "slope_up",
                 "macd_ok", "mom_ok", "score_ok")
         pass_n = {k: 0 for k in keys}
@@ -366,6 +376,23 @@ class Observability:
             "best": self._pick_best_candidate(rows),
             "source": "live",
         }
+
+    @staticmethod
+    def _fixed_universe():
+        """时间线用的固定宇宙（与 ``_evolve_wf.wide_universe()`` 同源）。
+
+        取 ``STOCK_CODES ∪ SECTOR_CONFIG.sectors[*].stocks`` 的代码集合；
+        任何异常返回 None（=不过滤，退化为当前 covered_codes，宁可少过滤也不静默清零）。
+        """
+        try:
+            from config.settings import SECTOR_CONFIG, STOCK_CODES
+            codes = set(STOCK_CODES)
+            for v in (SECTOR_CONFIG.get("sectors") or {}).values():
+                for item in (v.get("stocks") or []):
+                    codes.add(item[0])
+            return codes or None
+        except Exception:
+            return None
 
     def _degraded_list(self) -> list:
         """决策可观测的降级状态（C8）：元素为简短中文串，可安全 JSON 序列化。"""
