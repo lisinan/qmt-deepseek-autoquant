@@ -32,7 +32,7 @@ import json
 import logging
 import threading
 import time
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime
 from typing import Dict, Optional
 
@@ -113,11 +113,27 @@ class LLMReranker:
         self._cache: Dict[str, tuple] = {}   # (key) -> (RerankResult, ts)
         self._lock = threading.RLock()
         self._last_call_ts: float = 0
+        self._last_ok_ts: float = 0
         self._last_error: str = ""
+        self._last_error_ts: float = 0
+        # 【2026-10-21 C-B5-2】可诊断计数：calls / cached_hits
+        self._calls: int = 0
+        self._cached_hits: int = 0
 
     @property
     def enabled(self) -> bool:
         return (deepseek.enabled or openrouter.enabled)
+
+    @property
+    def _client(self):
+        """当前实际使用的客户端（DeepSeek 优先，回退 OpenRouter）。"""
+        return deepseek if deepseek.enabled else openrouter
+
+    def _record_error(self, model: str, err: str) -> None:
+        """失败统一入口：last_error 带模型名 + WARN 日志（不静默）。"""
+        self._last_error = f"{model} {err}".strip()
+        self._last_error_ts = time.time()
+        logger.warning("LLM rerank 失败 model=%s err=%s", model, err)
 
     def rerank(self,
                recommendations,
@@ -131,19 +147,23 @@ class LLMReranker:
 
         market_ctx = market_ctx or {}
         codes = [r.code for r in recommendations]
-        # 缓存键：基于 codes + sector_heat 的关键数字
+        # 【2026-10-21 C-B5-1】缓存键去掉 market_ctx：它每 3s 变一次（大盘
+        # 涨跌幅），导致缓存 0% 命中、每次都真实调用 LLM。market_ctx 仍会
+        # 进入 prompt（只影响展示/推理），不影响缓存判定。
         heat_sig = {k: round(v.heat_score, 1) for k, v in sector_heat.items()}
         cache_key = json.dumps(
-            {"codes": codes, "heat": heat_sig, "ctx": market_ctx},
+            {"codes": codes, "heat": heat_sig},
             sort_keys=True, ensure_ascii=False,
         )
         with self._lock:
             cached = self._cache.get(cache_key)
             now = time.time()
             if cached and now - cached[1] < self._ttl:
-                rr = cached[0]
-                rr.cached = True
-                return rr
+                # 【2026-10-21 修正】缓存命中必须返回副本：原实现原地改
+                # rr.cached=True 会把第一次调用者手里的对象一起改写，
+                # 调用方无法区分「本次是否命中」，落库的 cached 标志也会失真。
+                self._cached_hits += 1
+                return replace(cached[0], cached=True)
 
         prompt = _build_user_prompt(recommendations, sector_heat, market_ctx)
         messages = [
@@ -151,10 +171,19 @@ class LLMReranker:
             {"role": "user", "content": prompt},
         ]
         client = deepseek if deepseek.enabled else openrouter
-        parsed = client.chat_json(messages, max_tokens=600, temperature=0.2)
+        model = getattr(client, "model", "") or ""
+        self._calls += 1
         self._last_call_ts = time.time()
+        try:
+            parsed = client.chat_json(messages, max_tokens=600, temperature=0.2)
+        except Exception as e:
+            # 【2026-10-21 C-B5-2】客户端异常不能静默：last_error 带模型名
+            self._record_error(model, f"{type(e).__name__}: {e}")
+            return None
         if not parsed or not isinstance(parsed, dict):
-            self._last_error = "chat_json 返回 None / 非 dict"
+            client_err = (getattr(client, "last_error", None) or "").strip()
+            self._record_error(
+                model, client_err or "chat_json 返回 None / 非 dict")
             return None
 
         # 校验 ranked_codes 必须在 codes 里
@@ -165,12 +194,12 @@ class LLMReranker:
             if c not in valid_codes:
                 valid_codes.append(c)
         if not valid_codes:
-            self._last_error = "ranked_codes 为空"
+            self._record_error(model, "ranked_codes 为空")
             return None
 
         result = RerankResult(
             ts=datetime.now(),
-            model=client.model,
+            model=model,
             macro_view=str(parsed.get("macro_view") or "neutral"),
             analysis=str(parsed.get("analysis") or "")[:200],
             ranked_codes=valid_codes,
@@ -180,6 +209,7 @@ class LLMReranker:
         )
         with self._lock:
             self._cache[cache_key] = (result, now)
+            self._last_ok_ts = time.time()
         logger.info("LLM rerank 完成: %s → %s (adj=%d)",
                     codes, valid_codes, len(result.adjustments))
         return result
@@ -196,8 +226,14 @@ class LLMReranker:
         with self._lock:
             return {
                 "enabled": self.enabled,
-                "last_call_ts": self.last_call_ts,
+                "model": (getattr(self._client, "model", "") or "")
+                         if self.enabled else "",
+                "calls": self._calls,
+                "cached_hits": self._cached_hits,
+                "last_call_ts": self._last_call_ts,
+                "last_ok_ts": self._last_ok_ts,
                 "last_error": self._last_error,
+                "last_error_ts": self._last_error_ts,
                 "cache_size": len(self._cache),
             }
 

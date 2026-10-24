@@ -155,6 +155,11 @@ OPENROUTER_TIMEOUT = float(os.environ.get("OPENROUTER_TIMEOUT", "60"))
 AI_CACHE_TTL_SEC = 300          # 同一输入 5 分钟内复用结果，省 token / 提速
 AI_MAX_TOKENS = 600             # 分析输出上限
 
+# 【2026-10-21 C-B5-4】LLM 重排触发间隔（墙钟秒数，替代旧的「每 N tick」）。
+# 旧语义 _llm_rerank_interval=30 tick 在 3s/tick 下 ≈ 90s 一次，且 tick 计数
+# 与行情节拍强耦合；改为墙钟 600s + is_trading_time 守卫，非交易时段零调用。
+LLM_RERANK_INTERVAL_SEC = float(os.environ.get("LLM_RERANK_INTERVAL_SEC", "600"))
+
 # ============================================================
 # 标的池（Universe）
 # ============================================================
@@ -471,7 +476,13 @@ STRATEGY_PARAMS = {
     # 证据（strategy/_research_northbound_wf.py，25 只 AI 宇宙 × 713 根日线）：
     #   IS Sharpe 1.52→1.65、全样本 alpha −111→−90pt；OOS 4 窗口均值 dSh +0.101
     #   （过 +0.10 闸门）；MDD 改善、worst 全 >−15%。边界值(+0.101)，可逆。
-    # 热读：改回 "off" 即完全恢复原策略行为，零代码改动；nb 序列引擎启动时预热。
+    # 【2026-10-21 失效口径】官方自 2024-08-19 起停止披露每日净买入额，此后序列
+    #   恒为成交额口径（全正窄带），滚动净买入<0 的拦截条件自 2025 年起从未触发
+    #   ⇒ 本闸门已是「死闸门」（fail-open，不拦任何建仓）。
+    #   ★ 退役（改 "off" 并重钉 P0/KPI）需一次 re-baseline 轮次：会移除历史 +0.207
+    #     的基线抬升，牵连 opt_harness / _evolve_wf / test_northbound 三处。
+    #     本轮（2026-10-21 优化实施）暂保持 "gate" 以不动研究基线，见
+    #     reports/OPTIMIZATION_REVIEW_2026-10-21_multimodel.md 的 B6。
     "northbound_mode": "gate",
     "nb_lookback": 20,
     # ---- 北向闸门「可信度守卫」（2026-09-28 PM-EVOLVE 第 11 轮落盘）----
@@ -779,6 +790,13 @@ EXECUTION_MODE = "paper"    # "paper" 模拟 / "live" 真实下单
 STRATEGY_MODE = "single"    # "single" 单标的 / "portfolio" 组合（Top-N）
 INITIAL_CASH = 1_000_000.0  # paper 模式初始资金
 DATA_SOURCE = "auto"        # "auto" 优先 xtdata，失败回退 mock；或强制 "mock"
+
+# ---- 交易成本与 AI 否决（2026-10-21 优化）----
+# paper 单边综合成本（佣金+印花税+滑点），买入多扣、卖出少计，成本体现在现金与权益，
+# Fill.amount 仍为 qty*price 不变（避免污染报表）。
+TRADE_COST_PCT = 0.0015
+# AI 看空否决模式："off"=不接线；"log"=仅记录（默认，零交易行为变化）；"veto"=实际阻断买入。
+AI_VETO_MODE = "log"
 
 # ============================================================
 # 合成行情（mock）禁止交易闸门（2026-09-30 AM-EVOLVE 第 14 轮 · P0 缺陷修复）

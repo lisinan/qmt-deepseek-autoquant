@@ -24,14 +24,15 @@ from typing import List, Optional, Sequence, Tuple
 
 logger = logging.getLogger(__name__)
 
-# 连续竞价 + 集合竞价缓冲。09:15 起开始接受集合竞价行情，15:05 留出
-# 收盘后成交回报的落账窗口。
+# 连续竞价时段。09:30 起为开盘集合竞价撮合后连续竞价起点，13:00 起下午
+# 连续竞价，15:05 留出收盘后成交回报的落账窗口。
 DEFAULT_SESSIONS: Tuple[Tuple[str, str], ...] = (
-    ("09:15", "11:30"),
-    ("12:57", "15:05"),
+    ("09:30", "11:30"),
+    ("13:00", "15:05"),
 )
 
-_HOLIDAY_CACHE: dict = {"date": None, "trading_days": None}
+_HOLIDAY_CACHE: dict = {"date": None, "trading_days": None,
+                        "degraded": False, "degraded_date": None}
 
 
 def _parse_hhmm(s: str) -> dtime:
@@ -44,6 +45,15 @@ def _sessions_as_time(sessions: Sequence[Tuple[str, str]]
     return [(_parse_hhmm(a), _parse_hhmm(b)) for a, b in sessions]
 
 
+def _mark_degraded(ref: date) -> None:
+    """标记交易日历降级（按天只告警一次，避免刷屏）。"""
+    if _HOLIDAY_CACHE.get("degraded_date") == ref:
+        return
+    _HOLIDAY_CACHE["degraded"] = True
+    _HOLIDAY_CACHE["degraded_date"] = ref
+    logger.warning("交易日历不可用，按周内判定（可能把休市日当交易日）")
+
+
 def _xtdata_trading_days(ref: date) -> Optional[set]:
     """用 xtdata 交易日历校准（含节假日）。缓存到当天，失败返回 None。"""
     if _HOLIDAY_CACHE["date"] == ref and _HOLIDAY_CACHE["trading_days"]:
@@ -54,6 +64,7 @@ def _xtdata_trading_days(ref: date) -> Optional[set]:
         end = (ref + timedelta(days=30)).strftime("%Y%m%d")
         raw = xtdata.get_trading_dates("SH", start_time=start, end_time=end)
         if not raw:
+            _mark_degraded(ref)
             return None
         days = set()
         for v in raw:
@@ -66,12 +77,31 @@ def _xtdata_trading_days(ref: date) -> Optional[set]:
             except Exception:
                 continue
         if not days:
+            _mark_degraded(ref)
             return None
         _HOLIDAY_CACHE["date"] = ref
         _HOLIDAY_CACHE["trading_days"] = days
+        _HOLIDAY_CACHE["degraded"] = False
+        _HOLIDAY_CACHE["degraded_date"] = None
         return days
     except Exception:
+        _mark_degraded(ref)
         return None
+
+
+def calendar_health() -> dict:
+    """交易日历健康度，供 scripts/health_check.py 读取（不联网）。
+
+    返回 ``{"degraded": bool, "source": "xtdata"|"weekday"}``。
+    主动探测一次 xtdata 日历：可用则 source="xtdata" 且 degraded=False；
+    不可用则 source="weekday"、degraded=True（按周内判定，可能把休市日
+    当交易日）。
+    """
+    ref = date.today()
+    days = _xtdata_trading_days(ref)
+    if days:
+        return {"degraded": False, "source": "xtdata"}
+    return {"degraded": True, "source": "weekday"}
 
 
 def is_trading_day(d: Optional[date] = None, use_calendar: bool = True) -> bool:

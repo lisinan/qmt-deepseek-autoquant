@@ -136,6 +136,13 @@ _SCHEMA = [
         trade_date TEXT,
         risk_state TEXT
     )""",
+    # 【2026-10-21 C-B5-3】LLM 重排序结果落库（可诊断/复盘）。
+    """CREATE TABLE IF NOT EXISTS llm_rerank (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts TEXT, model TEXT, macro_view TEXT,
+        ranked_json TEXT, adjustments_json TEXT, raw TEXT, cached INTEGER
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_llm_rerank_ts ON llm_rerank(ts)",
 ]
 
 
@@ -445,6 +452,26 @@ class Storage:
             except Exception as e:
                 logger.warning("查询 sector_recommendations 失败: %s", e)
                 return []
+
+    def save_llm_rerank(self, ts: str, model: str, macro_view: str,
+                        ranked: list, adjustments: dict, raw: str,
+                        cached: bool) -> int:
+        """保存一次 LLM 重排序结果（C-B5-3，失败 warning + return 0，不打断主循环）。"""
+        with self._lock:
+            try:
+                c = self._conn_get()
+                cur = c.execute(
+                    "INSERT INTO llm_rerank(ts, model, macro_view, ranked_json,"
+                    " adjustments_json, raw, cached) VALUES (?,?,?,?,?,?,?)",
+                    (ts, model, macro_view,
+                     json.dumps(ranked or [], ensure_ascii=False),
+                     json.dumps(adjustments or {}, ensure_ascii=False),
+                     raw or "", 1 if cached else 0),
+                )
+                return int(cur.lastrowid or 0)
+            except Exception as e:
+                logger.warning("save_llm_rerank 失败: %s", e)
+                return 0
 
     # ---------- 维护（保留窗口 / 空间回收）----------
 

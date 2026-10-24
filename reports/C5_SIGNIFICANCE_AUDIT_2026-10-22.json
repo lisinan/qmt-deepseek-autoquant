@@ -1,0 +1,163 @@
+{
+  "data": {
+    "source": "tushare panel (storage/hist_cache/ts_panel_*.pkl)",
+    "codes": 23,
+    "days": 910,
+    "range": [
+      "20230105",
+      "20261013"
+    ]
+  },
+  "settings": {
+    "n_perm": 500,
+    "seed_perm": 20261022,
+    "n_boot": 1000,
+    "block": 5,
+    "seed_boot": 20261023
+  },
+  "table": [
+    {
+      "param": "down_day_exit_pct",
+      "deployed": -3.25,
+      "revert": -5.0,
+      "sr_deployed": 1.8653,
+      "sr_revert": 1.6768,
+      "dSR": 0.1884,
+      "ci95": [
+        -0.1191,
+        0.5431
+      ],
+      "p_perm": 0.002,
+      "DSR@10": 0.9869,
+      "DSR@100": 0.8974,
+      "verdict": "不显著/不可区分"
+    },
+    {
+      "param": "atr_stop_mult",
+      "deployed": 2.9,
+      "revert": 2.5,
+      "sr_deployed": 1.8653,
+      "sr_revert": 1.8437,
+      "dSR": 0.0216,
+      "ci95": [
+        -0.0439,
+        0.0998
+      ],
+      "p_perm": 0.002,
+      "DSR@10": 0.9869,
+      "DSR@100": 0.8974,
+      "verdict": "不显著/不可区分"
+    },
+    {
+      "param": "momentum_min_mom",
+      "deployed": 0.15,
+      "revert": 0.0,
+      "sr_deployed": 1.8653,
+      "sr_revert": 1.8257,
+      "dSR": 0.0396,
+      "ci95": [
+        -0.1064,
+        0.184
+      ],
+      "p_perm": 0.002,
+      "DSR@10": 0.9869,
+      "DSR@100": 0.8974,
+      "verdict": "不显著/不可区分"
+    },
+    {
+      "param": "min_passing_candidates",
+      "deployed": 2,
+      "revert": 0,
+      "sr_deployed": 1.8653,
+      "sr_revert": 1.8033,
+      "dSR": 0.062,
+      "ci95": [
+        -0.0162,
+        0.1716
+      ],
+      "p_perm": 0.002,
+      "DSR@10": 0.9869,
+      "DSR@100": 0.8974,
+      "verdict": "不显著/不可区分"
+    }
+  ],
+  "detail": {
+    "down_day_exit_pct": {
+      "n_daily": 780,
+      "skew": 2.838,
+      "kurt": 23.966,
+      "perm": {
+        "observed": 1.865259419198128,
+        "p_value": 0.001996007984031936,
+        "null_mean": 0.027214560610716945,
+        "null_p95": 0.8723670506504029,
+        "n_perm": 500
+      },
+      "ci_boot_mean": 0.2006,
+      "ret_deployed": 2.9574189864999996,
+      "ret_revert": 3.0233602525000007,
+      "mdd_deployed": -0.13053128988441542,
+      "mdd_revert": -0.1546443879745899,
+      "trades_deployed": 164,
+      "trades_revert": 111
+    },
+    "atr_stop_mult": {
+      "n_daily": 780,
+      "skew": 2.838,
+      "kurt": 23.966,
+      "perm": {
+        "observed": 1.865259419198128,
+        "p_value": 0.001996007984031936,
+        "null_mean": 0.027214560610716945,
+        "null_p95": 0.8723670506504029,
+        "n_perm": 500
+      },
+      "ci_boot_mean": 0.0243,
+      "ret_deployed": 2.9574189864999996,
+      "ret_revert": 3.0717269515000005,
+      "mdd_deployed": -0.13053128988441542,
+      "mdd_revert": -0.1437033166310543,
+      "trades_deployed": 164,
+      "trades_revert": 164
+    },
+    "momentum_min_mom": {
+      "n_daily": 780,
+      "skew": 2.838,
+      "kurt": 23.966,
+      "perm": {
+        "observed": 1.865259419198128,
+        "p_value": 0.001996007984031936,
+        "null_mean": 0.027214560610716945,
+        "null_p95": 0.8723670506504029,
+        "n_perm": 500
+      },
+      "ci_boot_mean": 0.0403,
+      "ret_deployed": 2.9574189864999996,
+      "ret_revert": 2.840551841,
+      "mdd_deployed": -0.13053128988441542,
+      "mdd_revert": -0.12924670993612652,
+      "trades_deployed": 164,
+      "trades_revert": 171
+    },
+    "min_passing_candidates": {
+      "n_daily": 780,
+      "skew": 2.838,
+      "kurt": 23.966,
+      "perm": {
+        "observed": 1.865259419198128,
+        "p_value": 0.001996007984031936,
+        "null_mean": 0.027214560610716945,
+        "null_p95": 0.8723670506504029,
+        "n_perm": 500
+      },
+      "ci_boot_mean": 0.0659,
+      "ret_deployed": 2.9574189864999996,
+      "ret_revert": 2.8698460879999987,
+      "mdd_deployed": -0.13053128988441542,
+      "mdd_revert": -0.1421481401408602,
+      "trades_deployed": 164,
+      "trades_revert": 172
+    }
+  },
+  "elapsed_sec": 6.0
+}

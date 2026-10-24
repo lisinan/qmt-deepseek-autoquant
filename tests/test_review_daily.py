@@ -197,7 +197,7 @@ def test_analyze_risk_same_event_snapshot_and_notice_dedup():
 
 def test_analyze_risk_persisted_halted_not_double_counted():
     # 54 个持续 halted 快照（同一事件）只能算 1 次，reasons_counter 也只能是 1。
-    snaps = [{"ts": f"2026-09-16T09:15:38.{i:06d}",
+    snaps = [{"ts": f"2026-09-16T09:35:38.{i:06d}",
               "payload_json": json.dumps(
                   {"halted": True, "halt_reason": "consec_loss=5", "consecutive_losses": 5})}
              for i in range(54)]

@@ -1,0 +1,153 @@
+{
+  "bitwise_unchanged": true,
+  "full_sample": {
+    "off": {
+      "total_return": 2.9574189864999996,
+      "sharpe": 1.8664562492341377,
+      "max_drawdown": -0.13053128988441542,
+      "n_trades": 164,
+      "win_rate": 0.5182926829268293,
+      "exposure": 0.5448717948717948
+    },
+    "on": {
+      "total_return": 2.9797371099999985,
+      "sharpe": 1.8210211623963497,
+      "max_drawdown": -0.12908264885163612,
+      "n_trades": 179,
+      "win_rate": 0.4972067039106145,
+      "exposure": 0.5897435897435898
+    }
+  },
+  "oos": [
+    {
+      "window": "60x9",
+      "off_mean_sharpe": 1.856628855942451,
+      "on_mean_sharpe": 1.5072617232584833,
+      "dsharpe": -0.3493671326839678,
+      "off_worst_ret": 0.0,
+      "on_worst_ret": -0.08738492550000021,
+      "off_mean_mdd": -0.08654266263762522,
+      "on_mean_mdd": -0.09469512800711773,
+      "off_pos": 8,
+      "on_pos": 8,
+      "n": 9
+    },
+    {
+      "window": "75x7",
+      "off_mean_sharpe": 1.912171943580698,
+      "on_mean_sharpe": 1.6903092640796935,
+      "dsharpe": -0.22186267950100458,
+      "off_worst_ret": -0.03631522050000002,
+      "on_worst_ret": -0.11867531649999996,
+      "off_mean_mdd": -0.09822217659675907,
+      "on_mean_mdd": -0.10446901937303466,
+      "off_pos": 6,
+      "on_pos": 6,
+      "n": 7
+    },
+    {
+      "window": "90x6",
+      "off_mean_sharpe": 1.804343661548842,
+      "on_mean_sharpe": 1.6247170235956556,
+      "dsharpe": -0.17962663795318634,
+      "off_worst_ret": -0.04858036900000018,
+      "on_worst_ret": -0.13059279250000022,
+      "off_mean_mdd": -0.11147429111979013,
+      "on_mean_mdd": -0.12149939406402939,
+      "off_pos": 4,
+      "on_pos": 4,
+      "n": 6
+    },
+    {
+      "window": "120x4",
+      "off_mean_sharpe": 1.723752098885944,
+      "on_mean_sharpe": 1.4626233234066404,
+      "dsharpe": -0.2611287754793037,
+      "off_worst_ret": 0.00904715750000018,
+      "on_worst_ret": -0.07938915949999958,
+      "off_mean_mdd": -0.11428843638097044,
+      "on_mean_mdd": -0.1365959480491071,
+      "off_pos": 4,
+      "on_pos": 3,
+      "n": 4
+    }
+  ],
+  "oos_mean_dsharpe": -0.2529963064043656,
+  "oos_worst_dsharpe": -0.3493671326839678,
+  "segments": [
+    {
+      "trough": "20221011",
+      "dd": -0.4001565268739379,
+      "off_capture": 0.0,
+      "on_capture": 0.0,
+      "off_lag": null,
+      "on_lag": null,
+      "off_trades": 0,
+      "on_trades": 0,
+      "uni_ret": 0.18400417332845387,
+      "improved": false
+    },
+    {
+      "trough": "20230516",
+      "dd": -0.20944075253649364,
+      "off_capture": 0.09946752612307926,
+      "on_capture": 0.24705693944710724,
+      "off_lag": 9,
+      "on_lag": 7,
+      "off_trades": 2,
+      "on_trades": 3,
+      "uni_ret": 0.2440156898037933,
+      "improved": true
+    },
+    {
+      "trough": "20240131",
+      "dd": -0.4225578865212335,
+      "off_capture": 0.3252636937562974,
+      "on_capture": 0.4197486623832606,
+      "off_lag": 3,
+      "on_lag": 3,
+      "off_trades": 12,
+      "on_trades": 12,
+      "uni_ret": 0.39357926493916073,
+      "improved": true
+    },
+    {
+      "trough": "20250408",
+      "dd": -0.28012939170488294,
+      "off_capture": 0.0,
+      "on_capture": -0.05555845884889976,
+      "off_lag": null,
+      "on_lag": 9,
+      "off_trades": 0,
+      "on_trades": 0,
+      "uni_ret": 0.17375841951006876,
+      "improved": false
+    },
+    {
+      "trough": "20251121",
+      "dd": -0.1801290126501498,
+      "off_capture": -0.21631465004493963,
+      "on_capture": -0.1958981142345226,
+      "off_lag": 5,
+      "on_lag": 5,
+      "off_trades": 5,
+      "on_trades": 6,
+      "uni_ret": 0.15266490500361107,
+      "improved": true
+    },
+    {
+      "trough": "20261012",
+      "skip": true,
+      "note": "ongoing"
+    }
+  ],
+  "n_improved": 3,
+  "gate": {
+    "g1_ge4_improved": false,
+    "g2_mdd_worse_le2pt": true,
+    "mdd_worsen_pt": 0.14486410327793076,
+    "g3_sharpe_no_decline": false,
+    "passed": false,
+    "verdict": "应放弃"
+  }
+}

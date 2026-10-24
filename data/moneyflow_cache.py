@@ -48,6 +48,70 @@ def _cache_file(ts_code: str) -> Path:
     return CACHE_DIR / f"moneyflow_{ts_code}.json"
 
 
+# 缓存龄期上限（自然日）。序列末端日期距今天超过该值即视为陈旧：
+# 记 error 日志但**仍照常返回数据**（fail-open，数据可见性优先）。
+MAX_STALE_DAYS = 10
+
+
+def _days_between(a: str, b: str) -> Optional[int]:
+    """两个 YYYYMMDD 之间相差的自然日数（b - a）；解析失败返回 None。"""
+    try:
+        from datetime import date
+        da = date(int(a[:4]), int(a[4:6]), int(a[6:8]))
+        db = date(int(b[:4]), int(b[4:6]), int(b[6:8]))
+        return (db - da).days
+    except Exception:
+        return None
+
+
+def _check_stale(series: Dict[str, dict], label: str) -> None:
+    """校验序列末端日期龄期；超限记 error 但不丢数据（fail-open）。"""
+    if not series:
+        return
+    try:
+        last = max(series.keys())
+    except Exception:
+        return
+    gap = _days_between(last, time.strftime("%Y%m%d"))
+    if gap is not None and gap > MAX_STALE_DAYS:
+        logger.error("%s缓存已陈旧 %d 天（末端 %s），数据可能失效", label, gap, last)
+
+
+def cache_health(ts_code: Optional[str] = None) -> Dict[str, object]:
+    """缓存健康度（只读本地缓存文件，不联网）。
+
+    ``ts_code=None`` 时扫描 ``data/cache/moneyflow_*.json`` 全部文件，
+    取末端日期最新的一份作为整体健康度。
+    返回 ``{"last_date": "YYYYMMDD"|"", "age_days": int, "stale": bool}``。
+    """
+    empty = {"last_date": "", "age_days": -1, "stale": False}
+    if ts_code:
+        files = [_cache_file(ts_code)]
+    else:
+        try:
+            files = sorted(CACHE_DIR.glob("moneyflow_*.json"))
+        except Exception:
+            return empty
+    last = ""
+    try:
+        for f in files:
+            if not f.exists():
+                continue
+            series = json.loads(f.read_text(encoding="utf-8"))
+            if series:
+                d = max(series.keys())
+                if d > last:
+                    last = d
+    except Exception:
+        return empty
+    if not last:
+        return empty
+    gap = _days_between(last, time.strftime("%Y%m%d"))
+    age = gap if gap is not None else -1
+    return {"last_date": last, "age_days": age,
+            "stale": bool(age > MAX_STALE_DAYS)}
+
+
 def get_moneyflow(ts_code: str, start: str = "20230101",
                   end: Optional[str] = None, force: bool = False) -> Dict[str, dict]:
     """返回 {trade_date(str YYYYMMDD): {net_mf_amount, net_mf_vol, ...}}。
@@ -59,7 +123,9 @@ def get_moneyflow(ts_code: str, start: str = "20230101",
     f = _cache_file(ts_code)
     if not force and f.exists():
         try:
-            return {d: v for d, v in json.loads(f.read_text(encoding="utf-8")).items()}
+            full = json.loads(f.read_text(encoding="utf-8"))
+            _check_stale(full, f"主力资金流 {ts_code}")
+            return {d: v for d, v in full.items()}
         except Exception:
             pass
     if not tushare_client.enabled:

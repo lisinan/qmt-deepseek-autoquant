@@ -90,6 +90,7 @@ class Position:
     code: str
     name: str = ""
     quantity: int = 0
+    available: int = 0             # 券商可用/可卖数量（paper 由引擎按 T+1 维护；live 由券商同步写入）
     avg_cost: float = 0.0
     last_price: float = 0.0
     open_date: Optional[datetime] = None

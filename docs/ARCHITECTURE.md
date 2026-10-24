@@ -12,7 +12,7 @@
 | **三层降级** | 行情通道、交易通道、AI 通道全部 graceful degradation |
 | **策略与 AI 解耦** | 规则策略 + LLM 解释器叠加，主决策仍是确定性的 |
 | **数据驱动** | 所有参数可调、可回测、可在 paper 模式跑长周期验证 |
-| **小而精** | 总代码 < 1500 行，9 个核心文件，单进程无外部服务依赖 |
+| **小而精** | 【2026-10-21 实测修正】不再是「总代码 < 1500 行」：生产 Python 约 **33,000 行**（另测试约 10,800 行），单进程无外部服务依赖仍是真约束，规模早已不是优势而是「上帝类」风险来源（见 reports/OPTIMIZATION_REVIEW_2026-10-21_multimodel.md §3.3） |
 
 ## 1. 分层架构
 
@@ -56,20 +56,35 @@
 
 ## 2. 模块清单与职责
 
-| 文件 | 行数级 | 职责 |
+> 行数为 **2026-10-21 实测**（原表为设计期估值，已全部明显失真）。
+
+| 文件 | 实测行数 | 职责 |
 |------|--------|------|
-| `config/settings.py` | ~180 | 配置中心（路径、UNIVERSE、策略/风控参数） |
-| `core/data_models.py` | ~100 | dataclass：Tick / Bar / Signal / Order / Fill / Position / AIAnalysis |
-| `core/indicators.py` | ~250 | SMA / EMA / RSI / MACD / KDJ / BOLL / ATR / VWAP（纯 Python） |
-| `core/qmt_client.py` | ~280 | 三层降级行情客户端（push + snapshot + K线 + mock） |
-| `core/broker.py` | ~240 | XtQuantTrader 封装（cash / credit 双账户） |
-| `ai/openrouter_client.py` | ~180 | OpenRouter HTTP（主模型 + 免费 fallback + 3 次重试） |
-| `ai/analyst.py` | ~150 | 指标 → prompt → LLM → AIAnalysis（5 分钟缓存） |
-| `strategy/base.py` | ~30 | 抽象策略基类 |
-| `strategy/trend_strategy.py` | ~250 | 6 因子评分（趋势/动量/超买卖/量价/位置/VWAP） |
-| `risk/manager.py` | ~180 | 三层风控（单笔/集中度/日内/熔断/连续亏损/回撤） |
-| `storage/db.py` | ~200 | SQLite WAL（signals / orders / fills / ai_analyses / risk_snapshots） |
-| `engine/event_engine.py` | ~350 | 主事件循环（拉 tick → 聚 bar → 算指标 → 跑策略 → AI → 风控 → 下单） |
+| `config/settings.py` | ~985 | 配置中心（路径、UNIVERSE、策略/风控参数、TRADE_COST_PCT、AI_VETO_MODE） |
+| `core/data_models.py` | ~110 | dataclass：Tick / Bar / Signal / Order / Fill / Position（含 `available`）/ AIAnalysis |
+| `core/indicators.py` | ~263 | SMA / EMA / RSI / MACD / KDJ / BOLL / ATR / VWAP（纯 Python） |
+| `core/qmt_client.py` | ~390 | 三层降级行情客户端（push + snapshot + K线 + mock） |
+| `core/broker.py` | ~348 | XtQuantTrader 封装（cash / credit 双账户；`get_*` 用 `None`=查询失败 / `[]`=确认空仓；`cancel_order_stock`） |
+| `core/market_calendar.py` | ~147 | 交易日历与交易时段（`DEFAULT_SESSIONS` 09:30–11:30 / 13:00–15:05；`calendar_health()`） |
+| `data/northbound_cache.py` | ~183 | 北向资金（沪深港通 north_money）缓存 + `cache_health()` 龄期守卫（`MAX_STALE_DAYS=10`） |
+| `data/moneyflow_cache.py` | ~131 | 个股级主力净流缓存 + 同款龄期守卫 |
+| `data/dynamic_universe.py` | ~222 | 动态候选池（实盘） |
+| `data/hist_cache.py` | ~295 | 历史面板缓存（`front_ratio` 复权口径） |
+| `ai/openrouter_client.py` | ~148 | OpenRouter HTTP（主模型 + 免费 fallback + 3 次重试） |
+| `ai/deepseek_client.py` | ~129 | DeepSeek HTTP 客户端 |
+| `ai/analyst.py` | ~142 | 指标 → prompt → LLM → AIAnalysis（5 分钟缓存） |
+| `ai/llm_reranker.py` | ~175 | LLM 排序（观测篮候选排序） |
+| `strategy/base.py` | ~20 | 抽象策略基类 |
+| `strategy/trend_strategy.py` | ~380 | 6 因子评分（趋势/动量/超买卖/量价/位置/VWAP） |
+| `strategy/backtest_daily.py` | ~2379 | 日线回测与进化验证器（`cost_pct` 默认 = `TRADE_COST_PCT`） |
+| `risk/manager.py` | ~440 | 三层风控（单笔/集中度/日内/熔断/连续亏损/回撤） |
+| `storage/db.py` | ~548 | SQLite WAL（signals / orders / fills / ai_analyses / risk_snapshots / equity_snapshots / engine_state） |
+| `engine/event_engine.py` | ~3539 | 主事件循环（拉 tick → 聚 bar → 算指标 → 跑策略 → AI → 风控 → 下单）；**上帝类，98 个 def、8 类职责** |
+| `web/routes.py` | ~304 | Flask API + SSE |
+| `scripts/health_check.py` | ~279 | 健康巡检（`engine_progressing` / `--json` 的 `degraded` 列表） |
+| `scripts/guardian.py` | ~144 | 单实例守卫（`O_CREAT\|O_EXCL` 原子占位 + `[GUARDIAN-ALERT]` 按日去重） |
+
+> 注：`engine/event_engine.py` 一处即占生产代码约 11%。规模数字应视为**债务指标**，不宜再作为卖点引用。
 
 ## 3. 关键数据流
 
@@ -119,7 +134,9 @@ worker:
   解析 JSON → AIAnalysis
     ↓
   Storage.save_ai(ai)
-  if stance=='bearish' and confidence>=0.7: 标记抑制
+  if stance=='bearish' and |confidence|>=0.7: 写入 _ai_veto[code]（仅当日有效）
+     ↓
+  _handle_buy 仅当 AI_VETO_MODE=='veto' 时按标记否决；默认 'log' 只记录不阻断
 ```
 
 ## 4. 关键设计决策
@@ -246,7 +263,7 @@ CREATE TABLE risk_snapshots (
 | `storage/db.py` | `test_storage.py` | save/query/字段过滤/WAL |
 | `ai/*` | `test_ai_client.py` | 无 key 跳过/JSON 解析/缓存命中 |
 
-总计 ~35 测试用例，纯 Python 断言，无需 pytest / 网络 / miniQMT。
+总计 **558** 测试用例（2026-10-21 实测，`tests/run_all.py` 全绿），纯 Python 断言，无需 pytest / 网络 / miniQMT。
 
 ## 9. 与 qmtIDE-kimik3 的关系
 
@@ -255,8 +272,8 @@ qmtIDE-deepseek 是精简版：
 
 | 维度 | qmtIDE-kimik3 | qmtIDE-deepseek |
 |------|---------------|-----------------|
-| 总代码 | ~30000 行 | ~2000 行 |
-| 文件数 | ~60 | 9 核心 + 6 测试 + 2 自检 + 文档 |
+| 总代码 | ~30000 行 | 【2026-10-21 实测】~33,000 行生产 + ~10,800 行测试（原写 ~2000 行，已严重失真） |
+| 文件数 | ~60 | 20 核心 + 60 测试 + 自检 + 文档 |
 | Web UI | ✅ Flask + SSE | ❌ 命令行 |
 | AI 层 | ❌ 无 | ✅ OpenRouter + 缓存 + fallback |
 | 推荐引擎 | ✅ sector scorer | ❌ 无 |

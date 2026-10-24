@@ -30,6 +30,49 @@ CACHE_DIR = BASE_DIR / "data" / "cache"
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
 F = CACHE_DIR / "northbound_hsgt.json"
 
+# 缓存龄期上限（自然日）。序列末端日期距今天超过该值即视为陈旧：
+# 记 error 日志但**仍照常返回数据**（fail-open，数据可见性优先）。
+MAX_STALE_DAYS = 10
+
+
+def _today_str() -> str:
+    return time.strftime("%Y%m%d")
+
+
+def _check_stale(series: Dict[str, float], label: str) -> None:
+    """校验序列末端日期龄期；超限记 error 但不丢数据（fail-open）。"""
+    if not series:
+        return
+    try:
+        last = max(series.keys())
+    except Exception:
+        return
+    gap = _days_between(last, _today_str())
+    if gap is not None and gap > MAX_STALE_DAYS:
+        logger.error("%s缓存已陈旧 %d 天（末端 %s），数据可能失效", label, gap, last)
+
+
+def cache_health() -> Dict[str, object]:
+    """缓存健康度（只读本地缓存文件，不联网）。
+
+    返回 ``{"last_date": "YYYYMMDD"|"", "age_days": int, "stale": bool}``。
+    """
+    empty = {"last_date": "", "age_days": -1, "stale": False}
+    try:
+        if not F.exists():
+            return empty
+        series = {d: float(v)
+                  for d, v in json.loads(F.read_text(encoding="utf-8")).items()}
+    except Exception:
+        return empty
+    if not series:
+        return empty
+    last = max(series.keys())
+    gap = _days_between(last, _today_str())
+    age = gap if gap is not None else -1
+    return {"last_date": last, "age_days": age,
+            "stale": bool(age > MAX_STALE_DAYS)}
+
 
 def _seg_load(start: str, end: str) -> Dict[str, float]:
     """用 Tushare moneyflow_hsgt 拉 [start,end]；失败回退逐月。"""
@@ -72,6 +115,7 @@ def get_northbound(start: str = "20221201",
         try:
             full = {d: float(v)
                     for d, v in json.loads(F.read_text(encoding="utf-8")).items()}
+            _check_stale(full, "北向资金")
             return {d: v for d, v in full.items() if start <= d <= end}
         except Exception:
             pass

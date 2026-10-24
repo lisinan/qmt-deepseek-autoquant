@@ -824,13 +824,38 @@ def scale_gate(rows, budget_pct=None):
     )
 
 
+def strict_verdict(base_verdict, dsr, p=None, dsr_min=0.95):
+    """【P0-2，2026-10-22】闸门②显著性护栏的严格模式裁决（纯函数）。
+
+    在基础裁决 ``base_verdict``（bool，原 KPI gate 的总体 PASS/FAIL）之上，
+    额外要求 Deflated Sharpe 显著度 ``dsr >= dsr_min``（默认取
+    ``config.kpi_targets.SIGNIFICANCE['dsr_min']`` = 0.95）。
+    ``p``（置换检验 p 值）仅作诊断记录，不参与裁决。
+
+    返回 dict：{"pass": bool, "reason": str}；dsr 为 None（算不出）时
+    保守地判 FAIL 并写明原因。证据：reports/C5_SIGNIFICANCE_AUDIT_2026-10-22.md。
+    """
+    if not base_verdict:
+        return {"pass": False,
+                "reason": "基础 KPI gate 未通过（显著性护栏不再追加判定）"}
+    if dsr is None:
+        return {"pass": False,
+                "reason": "DSR 无法计算（基线无日收益），严格模式保守判 FAIL"}
+    if dsr < dsr_min:
+        return {"pass": False,
+                "reason": f"DSR={dsr:.4f} < {dsr_min:.2f}"
+                          f"（多重检验校正后不显著，见 C5 显著性审计）"}
+    return {"pass": True,
+            "reason": f"DSR={dsr:.4f} >= {dsr_min:.2f}（显著性护栏通过）"}
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--count", type=int, default=900)
     ap.add_argument("--fold", type=int, default=90)
     ap.add_argument("--folds", type=int, default=6)
     ap.add_argument("--mode", default="grid",
-                    choices=["grid", "compare", "consensus", "span"])
+                    choices=["grid", "compare", "consensus", "span", "gate"])
     ap.add_argument("--param", default="reentry_cooldown")
     ap.add_argument("--values", default="3,5,8,10,15,20")
     ap.add_argument("--json", default="")
@@ -850,6 +875,20 @@ def main():
     ap.add_argument("--baseline", default="P0_当前生产基线",
                     help="对照配置名（默认 P0_当前生产基线）。缺陷修复通道应设为"
                          "实盘现状代理（如 G1_轮动绕闸门_1.5 / H1_实盘现状_绕闸门+超仓6）")
+    # B10：--mode gate 可注入实盘基准超额（B4 管道的 snapshot.benchmark.excess_pct），
+    # 用于 kpi4_live；不传则该项显示 n/a 且不参与总体裁决。
+    ap.add_argument("--live", default="",
+                    help="可选：含 {'excess_pct': float} 的 JSON 文件路径，供 kpi4_live 判定")
+    # 【2026-10-21 WP-O / 评审 §3.1 P0】显著性护栏：仅在显式传入时，grid 输出
+    # 末尾对基线补打印置换 p 值 / DSR / 试验次数修正门槛；不改任何闸门裁决。
+    ap.add_argument("--significance", action="store_true",
+                    help="grid 模式：对基线 IS 日收益补打印置换检验 p 值 + "
+                         "Deflated Sharpe + 试验修正门槛（诊断用，不影响裁决）")
+    # 【2026-10-22 P0-2】gate 模式显著性护栏：默认关，行为与现状完全一致；
+    # 开启后总体裁决额外要求 DSR >= kpi_targets.SIGNIFICANCE['dsr_min']。
+    ap.add_argument("--strict-significance", action="store_true",
+                    help="gate 模式：总体裁决额外要求 DSR>=0.95（C5 显著性审计），"
+                         "不满足则总体 FAIL 并写明原因；默认关（不改变退出码语义）")
     args = ap.parse_args()
 
     codes = wide_universe()
@@ -959,6 +998,107 @@ def main():
             print(f"\n[保存] {args.json}")
         return
 
+    # ---------------- gate（KPI 代码化，B10） ----------------
+    if args.mode == "gate":
+        from config import kpi_targets as KT
+        from strategy.kpi_stats import (span_sharpe, month_win_rate,
+                                        daily_returns_from_curve)
+
+        curve = base_is.get("equity_curve") or []
+        daily = daily_returns_from_curve(curve)
+        # 日收益长度 = len(curve)-1；用面板末尾的日期对齐（d0 为对齐后日期轴）。
+        dates = d0[-len(daily):] if 0 < len(daily) <= len(d0) else d0
+        span_sh = span_sharpe(daily)
+        mw = (month_win_rate(daily, dates)["pos_month_pct"] / 100.0
+              if daily else 0.0)
+
+        metrics = {
+            "fold_mean_sharpe": b_stats["mean_sharpe"],
+            "span_sharpe": span_sh,
+            "fold_positive_ratio": (b_stats["pos"] / b_stats["n"]
+                                    if b_stats["n"] else 0.0),
+            "month_win_rate": mw,
+            "worst_fold_return": b_stats["worst"],
+            "full_sample_alpha": base_is.get("alpha"),
+        }
+        if args.live:
+            try:
+                live = json.loads(Path(args.live).read_text(encoding="utf-8"))
+                metrics["live_excess_pct"] = live.get("excess_pct")
+            except Exception as e:  # live 注入失败不阻塞 gate
+                print(f"[live] 读取失败（忽略 kpi4_live）: {e}")
+
+        # ---- P0-2 显著性护栏（2026-10-22）：始终尝试计算 DSR@100 与置换 p，
+        # 仅当 --strict-significance 时才影响总体裁决（默认行为完全不变）。
+        sig_dsr = sig_p = None
+        if daily:
+            from strategy.significance import (permutation_test_returns,
+                                               deflated_sharpe)
+            _sig = KT.SIGNIFICANCE
+            _pt = permutation_test_returns(daily, n_perm=500, seed=0)
+            sig_p = _pt["p_value"]
+            sig_dsr = deflated_sharpe(_pt["observed"],
+                                      _sig["n_trials_conservative"],
+                                      len(daily))["dsr"]
+        # kpi_sig 为 proposed：登记值供展示，不参与默认总体裁决。
+        metrics["gate_significance"] = sig_dsr
+
+        rows = KT.evaluate(metrics)
+        verdict = KT.gate_verdict(rows)
+
+        print(f"\n{'=' * 110}")
+        print("KPI gate —— 目标值来源：config/kpi_targets.py（单一代码来源）")
+        print("=" * 110)
+        print(f"{'ID':<12}{'状态':<11}{'值':>12}{'目标':>12}{'判定':>6}"
+              f"{'DSR@100':>10}{'置换p':>9}  说明")
+        print("-" * 110)
+        for r in rows:
+            v = r["value"]
+            vs = ("n/a" if v is None else f"{v:+.4f}")
+            tgt = f"{r['op']}{r['target']:+.4f}"
+            if r["status"] == "deprecated":
+                mark = "—(撤销)"
+            elif r["pass"] is None:
+                mark = "n/a"
+            else:
+                mark = "PASS" if r["pass"] else "FAIL"
+            # 显著性两列只挂在 kpi_sig 行（其余行留空，避免误读为逐项属性）。
+            if r["id"] == "kpi_sig":
+                dsr_s = "n/a" if sig_dsr is None else f"{sig_dsr:.4f}"
+                p_s = "n/a" if sig_p is None else f"{sig_p:.4f}"
+            else:
+                dsr_s = p_s = ""
+            print(f"{r['id']:<12}{r['status']:<11}{vs:>12}{tgt:>12}{mark:>6}"
+                  f"{dsr_s:>10}{p_s:>9}  {r['label']}")
+        print("-" * 110)
+        print(f"总体（仅 active 且可判定）："
+              f"{'PASS' if verdict['all_active_pass'] else 'FAIL'}  "
+              f"参与={verdict['gated']}  未达={verdict['failed'] or '无'}")
+        final_pass = verdict["all_active_pass"]
+        if args.strict_significance:
+            sv = strict_verdict(final_pass, sig_dsr, sig_p,
+                                dsr_min=KT.SIGNIFICANCE["dsr_min"])
+            final_pass = sv["pass"]
+            print(f"严格显著性（--strict-significance）："
+                  f"{'PASS' if sv['pass'] else 'FAIL'}  原因：{sv['reason']}")
+            print(f"总体（含显著性护栏）：{'PASS' if final_pass else 'FAIL'}")
+        # 附注：划分依赖口径的对照值，供 OWNER 裁决 D4/D9 时参考。
+        print(f"[对照] 折均值 Sharpe={b_stats['mean_sharpe']:+.3f} "
+              f"拼接 Sharpe={span_sh:+.3f} "
+              f"正收折={b_stats['pos']}/{b_stats['n']} "
+              f"月正收={mw*100:.1f}% "
+              f"全样本 alpha={base_is.get('alpha', 0)*100:+.1f}pt")
+
+        if args.json:
+            Path(args.json).write_text(json.dumps(
+                dict(metrics=metrics, rows=rows, verdict=verdict,
+                     significance=dict(dsr=sig_dsr, p=sig_p,
+                                       strict=bool(args.strict_significance))),
+                ensure_ascii=False, indent=2), encoding="utf-8")
+            print(f"\n[保存] {args.json}")
+
+        sys.exit(0 if final_pass else 3)
+
     # ---------------- grid ----------------
     if args.mode == "grid":
         raw = args.values.split(",")
@@ -1026,6 +1166,31 @@ def main():
                 verdict = ("通过（可落盘；已知代价：弱市亏损同步放大，须显式书写）"
                            if sg['pass_all'] else "否决")
                 print(f"    => {'>>> ' if sg['pass_all'] else ''}{verdict}")
+        # ---- WP-O 显著性护栏（仅诊断打印，不改裁决/默认输出）----
+        if args.significance:
+            from strategy.kpi_stats import daily_returns_from_curve
+            from strategy.significance import (permutation_test_returns,
+                                               deflated_sharpe,
+                                               trial_adjusted_threshold)
+            curve = base_is.get("equity_curve") or []
+            daily = daily_returns_from_curve(curve)
+            n_trials = len(rows)
+            if daily:
+                pt = permutation_test_returns(daily, n_perm=500, seed=0)
+                dsr = deflated_sharpe(pt["observed"], n_trials, len(daily))
+                thr = trial_adjusted_threshold(n_trials, len(daily))
+                print(f"\n  [显著性] 基线 IS 日收益 n={len(daily)}  "
+                      f"spanSharpe={pt['observed']:+.3f}")
+                print(f"    置换检验（sign-flip, {pt['n_perm']} 次）: "
+                      f"p={pt['p_value']:.4f}  零分布均值={pt['null_mean']:+.3f}  "
+                      f"p95={pt['null_p95']:+.3f}")
+                print(f"    Deflated Sharpe（trials={dsr['n_trials']}）: "
+                      f"E[maxSR0]={dsr['sr0']:+.3f}  DSR={dsr['dsr']:.4f}  "
+                      f"{'显著(>0.95)' if dsr['dsr'] > 0.95 else '不显著'}")
+                print(f"    试验修正门槛（z=1.645, trials={n_trials}）: "
+                      f"Sharpe ≥ {thr:+.3f}（诊断参考，不影响闸门裁决）")
+            else:
+                print("\n  [显著性] 基线无 equity_curve，跳过")
         if args.json:
             Path(args.json).write_text(json.dumps(
                 dict(param=args.param, base=dict(

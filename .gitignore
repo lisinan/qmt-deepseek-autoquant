@@ -38,3 +38,10 @@ _backup/
 logs/*.bak
 # 运行时 PID 锁（守护/引擎），非源码
 .guardian.pid
+# 【2026-10-24】运行时数据（每日追加 / 可重建），不纳入版本管理：
+#   benchmark_daily.jsonl —— 每日基准超额（B4 管道产出）
+#   gate_timeline.jsonl   —— 每日闸门通过数（可由 scripts/_res_gate_timeline_backfill.py 重建）
+logs/benchmark_daily.jsonl
+logs/gate_timeline.jsonl
+# DB 维护备份（体积大，本地留存即可）
+storage/qmt.db.bak-*

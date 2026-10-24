@@ -209,10 +209,17 @@ def test_paper_buy_cannot_produce_negative_cash():
         eng._handle_buy(sig, _T(), {code: 100.0})
         assert eng._cash >= 0.0, \
             f"第 {i} 笔买入后现金为负 ({eng._cash:.2f})，现金夹紧失效"
-    # 额外确认：持仓市值 + 现金 ≈ 初始资金（账本守恒，无凭空仓位）
+    # 额外确认：持仓市值 + 现金 ≈ 初始资金 − 成交额×单边成本（账本守恒，无凭空仓位）
+    # 【2026-10-21 C5】paper 撮合按 TRADE_COST_PCT 扣单边成本（与回测口径对齐），
+    # 故守恒式右侧不再是初始资金，而是初始资金减掉累计成本。
+    from config.settings import TRADE_COST_PCT
     mv = sum(p.quantity * 100.0 for p in eng._positions.values())
-    assert abs((eng._cash + mv) - 1_000_000.0) < 1.0, \
-        f"账本不守恒: cash={eng._cash:.2f} mv={mv:.2f}"
+    turnover = sum(p.quantity * 100.0 for p in eng._positions.values())
+    expected = 1_000_000.0 - turnover * TRADE_COST_PCT
+    assert abs((eng._cash + mv) - expected) < 1.0, \
+        f"账本不守恒: cash={eng._cash:.2f} mv={mv:.2f} expected={expected:.2f}"
+    # 且成本方向正确：净值确实低于初始资金（不是免费成交）
+    assert eng._cash + mv < 1_000_000.0, "paper 买入不应零成本成交"
 
 
 # -------------------------------------------- P0-2 sizer 显式止损口径

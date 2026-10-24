@@ -37,7 +37,7 @@
 | 宇宙规模与闸门 | 引擎日志：`宇宙 38 只, trend_up 0, bias>=2.00 0, score>=4.0且正因子>=3 0 只`（2026-10-21 全天每 10 分钟一条） |
 | 零 BUY 天数 | 连续 12 个交易日（`.workbuddy/memory/MEMORY.md:18`）；signals 表最后一条 2026-09-30，orders/fills 最后 2026-10-09 |
 | 账户状态 | 100% 现金，`equity_snapshots` 自 2026-10-09 09:15:50 起 **2160 条快照恒为 972,533.60**（回撤 −3.31%） |
-| 行情失效 | 「行情源失效：快照已陈旧」共 208 行（WARN+ERROR 各一份，计 104 次）；其中 **53% 集中在 2026-10-07 一天**（当天引擎持有 5 仓、行情整天陈旧），其余多为每日 09:27 / 12:57 / 15:02 的时段边界假阳性 |
+| 行情失效 | 「行情源失效：快照已陈旧」共 208 行（WARN+ERROR 各一份，计 104 次）；其中 **53% 集中在 2026-10-07**——该日是国庆休市日（项目自己的测试注释：`tests/test_stale_valuation_guard.py:5` 写「2026-10-07（国庆休市，A 股 10-01~10-07 无行情）」），而引擎当天仍以「交易中」状态运行、持有 5 仓并整天按旧价盯市 |
 | 外部缓存 | 北向、主力资金流、盈利修正三条外部序列均冻结在 **2026-08-25**（约 57 个自然日）；`earnrev_*.json` 23 个文件中 21 个为 `{}` |
 | 单测 | 533 例：532 pass / 1 fail（`web.routes` 缺 flask，属环境问题），耗时 71.7s（`logs/_run_all_20261021.txt`） |
 | 代码体量 | `engine/event_engine.py` 3660 行、`strategy/backtest_daily.py` 2469 行、`config/settings.py` 1018 行；而 `docs/ARCHITECTURE.md` 仍写「< 1500 行」 |
@@ -127,7 +127,7 @@
 | P1 | 回测不可复现：P0 守卫自动挑「最新」`ts_panel_*.pkl`；`load_daily` 直读本地可变数据且可现场补拉；全库没有「末端 bar 须属已收盘交易日」断言 | `tests/_baseline_tushare_panel.py:52-71`、`backtest_daily.py:56-69`、`MEMORY.md:94-95` |
 | P1 | 陈旧告警被假阳性淹没：208 行告警里 **53% 集中在 2026-10-07 一天**（长假后首个交易日，行情源整天未恢复），其余大量是每日 09:27 / 12:57 / 15:02 三个时段边界的时序错配（会话 09:15 开始，行情 09:25 才推） | `core/market_calendar.py:29-32`、`event_engine.py:1363`、`logs/quant_system.log` |
 | P2 | 复权口径分裂：`qmt_client` 的 `get_market_data_ex` 未传 `dividend_type`（不复权）、`hist_cache` 用 `front_ratio`、tushare `pro.daily` 亦不复权 ⇒ 除权日的「假暴跌」会命中 `down_day_exit_pct=-3.25` 与硬止损 | `core/qmt_client.py:301-304`、`data/hist_cache.py:44-46`、`strategy/daily_context.py:151-162` |
-| P2 | 交易日历 fail-open：`_xtdata_trading_days` 失败时静默退化为「周内即交易日」，休市日引擎仍以「交易中」状态跑、按旧价盯市并刷陈旧告警 | `core/market_calendar.py:47-74,77+` |
+| P2 | 交易日历 fail-open：`_xtdata_trading_days` 失败时静默退化为「周内即交易日」，休市日引擎仍以「交易中」状态跑、按旧价盯市并刷陈旧告警——2026-10-07（国庆休市，见 `tests/test_stale_valuation_guard.py:5`）引擎持仓 5 只、全天「交易中」、刷出 53 条陈旧告警，即此路径的直接后果 | `core/market_calendar.py:47-74,77+`、`logs/quant_system.log` 2026-10-07 |
 
 **本角度建议立刻停止**：停止在参数里找「零 BUY / 负折」的解，也停止把 104 条陈旧 ERROR 全当行情故障排查——先分清「时段边界假阳性」与「真断线（10-07）」，再谈原因。
 
@@ -242,9 +242,93 @@
 - **不要写第 42 份 7000 行账本**。`EVOLUTION_DECISIONS.md` 已 7660 行，每轮固定开销是「读账本→复述不可达 KPI→再写一份报告」。
 - **不要在 live 对账跑通前切实盘**。当前 live 路径没有跨重启风控记忆、没有委托状态机、没有 drift 告警。
 
----
+## 8. 实施记录（2026-10-21 晚，590/590 测试全绿）
 
-## 8. 验收清单（可勾选）
+本轮已按 §4 落地以下项（工作包文件所有权见 `docs/OPTIMIZATION_SPEC_2026-10-21.md`，每个包由不同模型完成）：
+
+| 编号 | 内容 | 落点 |
+|---|---|---|
+| A1 | paper 撮合计单边 15bp 成本；交易时段起点改 09:30 / 13:00 | `config/settings.py::TRADE_COST_PCT`、`engine/event_engine.py`（买/卖分支）、`core/market_calendar.py` |
+| A2 | live 风控状态跨重启持久化（只恢复风控字段，账本以券商为准） | `engine/event_engine.py::_restore_engine_state(restore_ledger=False)`、三处 `_save_engine_state()` 去 paper 条件 |
+| A3 | 券商持仓查询失败返回 `None`，与「空仓 `[]`」区分；连续 3 次失败告警 | `core/broker.py`、`event_engine.py::_sync_broker_positions` |
+| A4 | AI 否决接线：符号修正（`abs(confidence)`）+ 三档 `AI_VETO_MODE`（off/log/veto，默认 log） | `config/settings.py`、`event_engine.py::_handle_buy/_fire_ai/_ai_veto_blocks` |
+| A5 | 首屏「今日决策条」（未开仓原因 / 漏斗五数 / 降级灯 / AI 否决数）+ 底部告警条 + 移动端 viewport | `web/templates/index.html`、`web/static/js/dashboard.js`、`web/static/css/main.css` |
+| B1 | live 委托生命周期：登记 `order_id`、逐笔累计成交（同一 oid 多笔不再漏记）、超时撤单并回滚未成交部分 | `engine/event_engine.py::_pending_orders/_apply_trade/_reconcile_pending_orders` |
+| B2 | 卖出侧保护：行情陈旧守卫、待成交卖单去重、卖出量夹紧 `available`、日内强平改「可重试 ≤3 次/日」、paper 跨日恢复 `available` | `engine/event_engine.py::_handle_sell/_run_once`（强平块）/`_reset_daily_if_needed` |
+| B3 | guardian 判活增加「权益快照新鲜度」与降级告警 | `scripts/health_check.py`、`scripts/guardian.py` |
+| B4 | 基准管道：`snapshot()["benchmark"]`（账户 vs 等权宇宙 vs 宽基 vs 现金 + 超额），后台线程 30 分钟缓存，`logs/benchmark_daily.jsonl` 按日 upsert | `strategy/benchmark.py`（新建）、`engine/event_engine.py::_benchmark_snapshot/_compute_benchmark` |
+| B5 | rerank：缓存键去掉每 3s 变的大盘 ctx（命中率从 0% 恢复）、触发改墙钟 600s + 交易时段守卫、结果落 `llm_rerank` 表、失败 WARN 带模型名/HTTP 状态 | `ai/llm_reranker.py`、`ai/deepseek_client.py`、`storage/db.py`、`config/settings.py`、`engine/event_engine.py` |
+| B7 | 北向/资金流缓存龄期断言（超 10 天记 error，仍 fail-open）+ `cache_health()` | `data/northbound_cache.py`、`data/moneyflow_cache.py` |
+| B10 | KPI 代码化：`config/kpi_targets.py`（目标/口径/状态的单一代码来源）+ `--mode gate` 输出 PASS/FAIL 表（退出码 0/3）；KPI#2 标 deprecated、KPI#4 主 KPI 绑定 `run_backtest().alpha` | `config/kpi_targets.py`（新建）、`strategy/_evolve_wf.py`（`--mode gate`）、`tests/test_kpi_gate.py` |
+| B11 | 开机自启脚本修复：未配对括号导致的 if/else 双执行、pid 判定移出括号块 | `scripts/startup_all.bat` |
+| C3 | 测试注册与计数对齐 | `tests/run_all.py`（590 例） |
+| 新增 | 25 条覆盖 C1–C10；14 条覆盖 B1/B2；14 条覆盖 B4/B5；4 条覆盖 B10 | `test_optimization_20261021.py`、`test_order_lifecycle_b1b2.py`、`test_benchmark_and_rerank_b4b5.py`、`test_kpi_gate.py` |
+| 文档 | README / ARCHITECTURE 的事实性宣称对齐代码 | `README.md`、`docs/ARCHITECTURE.md` |
+
+**实施中由子任务发现并修掉的缺陷（值得记录）**：
+- **BUY 超时回滚重复扣减**（WP-H 发现、本轮修复）：原回滚写 `pos.quantity -= (qty - filled)`，而上一轮 `_sync_broker_positions` 已把 quantity 校正为 `filled`，再减未成交量会得负数 ⇒ 持仓被清空、`_pos_meta` 里的 `open_date`/止损价一并丢失（T+1 与止损同时失效）。已改为 `pos.quantity = min(pos.quantity, filled)`，并补回归测试 `test_reconcile_buy_timeout_after_sync_keeps_filled_quantity`。
+- **对账与同步的顺序**：改为「先 `_reconcile_pending_orders()` 再 `_sync_broker_positions()`」——若先同步再对账，同一笔成交会被「同步扣减」与「对账扣减」各计一次。
+- **rerank 缓存返回可变别名**（WP-L 发现、本轮修复）：命中时原地 `rr.cached=True` 会改写第一次调用者手里的对象，调用方无法区分是否命中、落库的 `cached` 标志失真；改为返回 `dataclasses.replace(..., cached=True)` 副本。
+- **基准日度的两个口径缺陷**（WP-L 发现、本轮修复）：① 原「进程内首次算成才 append」在引擎重启后会重复写同日行（跨进程去重失效）；② 只记当日首次算成的值，早盘启动的引擎会把当日行永久钉在 09:xx 的资产口径。改为「每次成功刷新都按日期 upsert」（读全量 → 丢同日旧行 → 临时文件原子替换），同一天恒一行、最后写入即当日最新值。
+- **测试污染生产日志**（WP-L 发现、已在测试侧修复）：`snapshot()` 会起后台线程写 `logs/benchmark_daily.jsonl`，任何调用 snapshot 的单测都会往生产 logs 写脏数据；`tests/run_all.py` 现已把 `engine.event_engine.LOG_DIR` 重定向到临时目录。
+
+**与 §4 建议的一处主动偏离**：
+- B2 原建议「`open_date=None` 改 fail-closed」。实施时改为：**保持 `is_t1_locked(None)=False`，以券商 `available` 作为 live 侧真实 T+1 权威**。原因：broker 同步进来的历史仓 `open_date` 恒为 None，若 fail-closed 会让这些仓位**永远不可卖**（止损彻底失效）；而有了「卖出量夹紧 available + 待成交委托不提前清仓」，T+1 拒单已经不会污染账本。paper 侧仍用 `open_date` 严格判定（跨日自动恢复 available）。
+
+**明确推迟（附原因）**：
+- **B6 北向闸门退役**：改 `"off"` 会移除历史 +0.207 的基线抬升，牵连 `opt_harness` / `_evolve_wf` / `test_northbound`，需要一次专门的 re-baseline 轮次；本轮保留 `"gate"`（其行为已是 fail-open，不拦建仓），仅在 settings 注释里写明。
+- **B8 复权口径统一**：实测把 `qmt_client` 改成 `front_ratio` 会改变 xtdata 历史价、进而改变所有回测数字（当场打破 3 条基线守卫测试），因此**已回退**；正确做法是先冻结一份 front_ratio 面板、重钉 P0，再切换。
+- B9 回测涨跌停与时点宇宙、C1 上帝类拆分、C5 显著性护栏——均未开始。
+
+**★ B10 落地时浮出的一个口径矛盾（需 OWNER 注意）**：`--mode gate` 用代码实测当前基线的 `kpi4`（相对等权买入持有 alpha）= **+172.9pt**，而文档里长期引用的「全样本 alpha −111pt / −90pt」是**旧基线口径**（更早的配置/样本）。二者不是同一把尺子：本 gate 的 `alpha = run_backtest().alpha`（策略 `total_return` − 等权买入持有 `total_return`，当前 23 只 × 902 根，IS +301.05% vs 基准 +128%）；文档的 −90pt 来自旧的一次性脚本/旧参数。代码化之后这层「口径漂移」第一次被自动暴露出来——这正是 B10 的目的，但**结论数字以 `config/kpi_targets.py` + `--mode gate` 为准，文档里的 −90/−111 需按新口径重核或标注废弃**。
+
+**生效说明**：
+- 生产引擎仍在跑旧进程（`127.0.0.1:5000` 当前存活），**重启后**才会加载引擎侧改动；仪表板 HTML/JS/CSS 刷新即生效，但首屏决策条在引擎重启前会显示「—」。
+- `AI_VETO_MODE` / `TRADE_COST_PCT` 是 import-time 常量，改值需重启引擎（与既有「需重启参数」同规）。
+- 非交易时段 `health_check` 的 `engine_progressing` 返回 `null`（不判定），交易时段内才会给出 stalled 结论。
+
+## 9. 2026-10-22 追加实施记录（按 §8 建议推进 P0→P2，609/609 测试全绿）
+
+### P0-1 regime 恢复快通道 —— ❌ **未过闸，已判定放弃**
+
+`reports/REBOUND_CAPTURE_2026-10-22.md` 测出深跌后反弹捕获率中位 **0.0%**（5 段中 2 段完全零成交），
+据此实现默认关闭的回测开关（`BacktestConfig.recovery_fastpath` 等 6 个参数）并按**事先声明**的闸门验证：
+
+| 判据 | 结果 | 通过 |
+|---|---|---|
+| 5 个深跌段中 ≥4 段捕获率提升 | **3/5**（20250408 反而引入 −5.6% 负捕获） | ✗ |
+| 全样本 MDD 恶化 ≤2pt | −13.05% → −12.91%（改善） | ✓ |
+| 全样本 Sharpe 不降 | 1.8665 → **1.8210（−0.045）**；四窗 OOS dSh 全负（最差 −0.349） | ✗ |
+
+**结论：不启用、不 re-baseline。** 开关保留在代码里（默认 False、关闭态与基线**逐位相同**），
+证据留在 `reports/RECOVERY_FASTPATH_2026-10-22.md`，避免下一轮重复研究同一条路。
+
+> 这一条本身就是显著性护栏的价值：**「凭直觉该做」的改动，被事先声明的判据否决了**。
+
+### P0-2 显著性接进 KPI gate —— ✅ 完成
+
+- `config/kpi_targets.py` 新增 `SIGNIFICANCE` 常量组（`dsr_min=0.95 / p_max=0.05 / n_trials=100,10`）与 `kpi_sig`（proposed，不参与默认 gate）。
+- `strategy/_evolve_wf.py --mode gate` 表格新增 `DSR@100` 与 `置换 p` 两列；新增 `--strict-significance`，
+  开启时总体裁决额外要求 `DSR ≥ 0.95`，否则 FAIL（退出码 3）。
+- **实测当前基线 DSR@100 = 0.7948 < 0.95**、置换 p = 0.0020 ⇒ 严格模式下判 FAIL。默认模式输出与退出码不变。
+
+### P1 两项
+
+| 项 | 状态 |
+|---|---|
+| B9「真实摩擦口径」并列基线登记 | ✅ 写入 `docs/Spec_B9_backtest_realism.md`（True 态 Sharpe 1.750 / alpha +81.8pt / 被拦买单 3.0%） |
+| rerank 降频验证（174/日 → ~24/日） | ⏳ 需交易时段：`llm_rerank` 表当前 0 行（B5 只在交易时段触发），**明日开盘后可核对** `select count(*) from llm_rerank` 与日志 `LLM 重排完成` 行数 |
+
+### P2 两项
+
+| 项 | 状态 |
+|---|---|
+| C1 上帝类拆分（`EventEngine` 4178 行） | 🔄 **已启动（2 步，−258 行，609/609 全绿）**：C1-1 基准管道 → `engine/benchmark_feed.py`（4178→4105）；C1-2 只读观测层 → `engine/observability.py`（4105→3920）。纪律与后续切片见 `docs/C1_GOD_CLASS_SPLIT.md`（下一步 C1-3 持久化 helper） |
+| DB 增长治理 | ✅ 执行：`--prune-db 30` 删除 78,808 行观测数据（signals 16,872→409、risk_snapshots 7,468→976、sector_recommendations 123,239→67,386），`--vacuum-db` 回收 **43.4 MB → 20.0 MB**；`pragma integrity_check = ok`、引擎无中断。备份 `storage/qmt.db.bak-20261022`。巡检脚本 `scripts/report_db_growth.py`，报告 `reports/DB_MAINTENANCE_2026-10-22.md` |
+
+> 账务证据（orders / fills / equity_snapshots / engine_state）全程未删。
+
+## 10. 验收清单（可勾选）
 
 - [ ] paper 成交额里能看到成本：`_cash` 变动 = `qty*price*(1±0.0015)`，且新增成交零笔落在 09:15–09:29。
 - [ ] 重启引擎后 `risk.peak_asset / consec_loss / halted / daily_trade_count` 逐位恢复（新增 `tests/test_state_persistence.py` 通过）。

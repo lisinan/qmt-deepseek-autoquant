@@ -113,7 +113,8 @@ def test_replay_fills_backward_compatible_without_target():
 def test_in_trading_window_includes_close_auction():
     assert R._in_trading_window("2026-09-01T15:02:00"), \
         "15:00–15:05 收盘竞价窗口内的真熔断不应被排除（引擎守卫跑到 15:05）"
-    assert R._in_trading_window("2026-09-01T09:20:00")
+    # 【2026-10-21 C9】交易时段起点由 09:15 改为 09:30（集合竞价撮合后连续竞价起点）
+    assert R._in_trading_window("2026-09-01T09:35:00")
     assert not R._in_trading_window("2026-09-01T18:19:00"), "盘后不计入"
     assert not R._in_trading_window("2026-09-01T00:01:00"), "凌晨不计入"
 

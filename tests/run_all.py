@@ -4,6 +4,12 @@
 
 用法（在 conda env qmt 中）：
   python tests/run_all.py
+
+【纪律（WP-M 2026-10-22）】测试绝不允许写生产 DB / 生产日志。
+任何新测试必须先设 QMT_DB / QMT_NOTICES_LOG 指向临时目录，再 import 项目模块；
+守卫见 tests/test_no_production_db_pollution.py。
+（教训：2026-10-21 夜间夹具把 price=100.0 的伪造成交写进了生产 storage/qmt.db
+的 fills / orders 表，已由 scripts/repair_test_pollution.py 清理。）
 """
 from __future__ import annotations
 
@@ -236,7 +242,34 @@ def _collect_tests():
             #   85.7% 目标线；而拼接 Sharpe 恒为 2.1596（划分不变量）。
             #   ⇒ 后续轮次不得再把「正收差 2 折」当策略缺陷去调参。
             #   断言全部使用合成输入（第 19 条教训：钉契约不钉副产品）。
-            "tests.test_kpi2_granularity_is_fold_dependent"]
+            "tests.test_kpi2_granularity_is_fold_dependent",
+            # 【2026-10-21 优化实施】C1–C12 契约守卫：Position.available /
+            # get_positions None 语义 / 对账不清仓 / paper 成本 / live 风控恢复 /
+            # AI_VETO_MODE / 交易时段 09:30 / 外部缓存龄期。
+            "tests.test_optimization_20261021",
+            # 【2026-10-21 B1/B2】live 委托生命周期 + 卖出侧保护验收守卫
+            # （对应 docs/OPTIMIZATION_SPEC_B1B2_2026-10-21.md §3 的 8 条）。
+            # 注意：漏注册会让整文件用例隐形未执行（见本文件顶部「import 失败
+            # 必须报错」纪律），故此处显式登记。
+            "tests.test_order_lifecycle_b1b2",
+            # 【2026-10-21 B4/B5】基准管道 + LLM 重排缓存/落库/触发条件验收守卫
+            # （对应 docs/OPTIMIZATION_SPEC_B4B5_2026-10-21.md §3 的 6 条）。
+            # 注意：漏注册会让整文件用例隐形未执行，故此处显式登记。
+            "tests.test_benchmark_and_rerank_b4b5",
+            # 【2026-10-21 B10】KPI 代码化守卫：config/kpi_targets.py 判定逻辑。
+            "tests.test_kpi_gate",
+            # 【2026-10-22】测试污染根治守卫（生产库/日志绝不被测试写入）。
+            "tests.test_no_production_db_pollution",
+            # 【2026-10-22 B9】回测真实性开关（涨跌停不可成交），默认关闭零行为变化。
+            "tests.test_limit_up_block_flag",
+            # 【2026-10-22 C5】显著性护栏（置换检验 / Deflated Sharpe）。
+            "tests.test_significance",
+            # 【2026-10-22 P0-1】regime 恢复快通道（默认关闭；关闭态逐位不变）。
+            "tests.test_recovery_fastpath",
+            # 【2026-10-22 P0-2】KPI gate 显著性严格模式（DSR 门槛）。
+            "tests.test_kpi_gate_significance",
+            # 【2026-10-23】入场闸门逐只明细（学习/排障面板后端）。
+            "tests.test_gate_detail"]
     tests = []
     import_errors = []
     for m in mods:
@@ -252,6 +285,19 @@ def _collect_tests():
         for name, fn in inspect.getmembers(mod, inspect.isfunction):
             if name.startswith("test_") and fn.__module__ == m:
                 tests.append((m, name, fn))
+    # 【2026-10-21 B4】把 EventEngine 的基准日度落盘目录重定向到临时目录。
+    # 原因：``snapshot()`` 会起后台线程做基准计算，成功后向
+    # ``LOG_DIR/benchmark_daily.jsonl`` 追加一行；LOG_DIR 是
+    # ``BASE_DIR/logs``（硬编码、无环境变量开关），于是**任何调用 snapshot()
+    # 的单测都会往生产 logs/ 写脏数据**（实测 test_stock_names 的
+    # test_snapshot_exposes_intraday_pnl 即是元凶）。此处统一隔离。
+    try:
+        import engine.event_engine as _EE
+        _tmp_logs = _TMP / "logs"
+        _tmp_logs.mkdir(parents=True, exist_ok=True)
+        _EE.LOG_DIR = str(_tmp_logs)
+    except Exception as e:
+        print(f"[隔离] EventEngine.LOG_DIR 重定向失败: {type(e).__name__}: {e}")
     return tests, import_errors
 
 

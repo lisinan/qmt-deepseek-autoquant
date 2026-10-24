@@ -97,6 +97,56 @@ def api_bars():
     return jsonify(_engine().latest_bars())
 
 
+@bp.route("/api/gate_detail")
+def api_gate_detail():
+    """入场闸门逐只明细（学习/排障用）：每只票四个子条件的真假 + 第一处卡点。"""
+    try:
+        return jsonify(_engine().gate_detail())
+    except Exception as exc:  # 观测接口失败不得影响主页面
+        return jsonify({"summary": {"ready": False, "error": str(exc)},
+                        "rows": []})
+
+
+GATE_TIMELINE_CONDITIONS = [
+    {"key": "above_ma20", "label": "收盘>MA20"},
+    {"key": "above_ma60", "label": "收盘>MA60"},
+    {"key": "ma20_over_ma60", "label": "MA20>MA60"},
+    {"key": "slope_up", "label": "MA20斜率>0"},
+    {"key": "macd_ok", "label": "MACD≥0"},
+    {"key": "mom_ok", "label": "60日动量>15%"},
+    {"key": "score_ok", "label": "评分达标"},
+]
+
+
+@bp.route("/api/gate_timeline")
+def api_gate_timeline():
+    """闸门卡点时间线：最近 N 天每日 7 条件通过数（gate_timeline.jsonl 尾部）。
+
+    文件不存在 / 解析失败一律降级为空 rows + 完整 conditions，绝不 500。
+    """
+    from flask import request
+    from pathlib import Path
+    from config.settings import LOG_DIR
+    try:
+        days = max(1, min(365, int(request.args.get("days", 120))))
+    except (TypeError, ValueError):
+        days = 120
+    rows: list = []
+    try:
+        p = Path(LOG_DIR) / "gate_timeline.jsonl"
+        if p.exists():
+            with p.open("r", encoding="utf-8") as f:
+                lines = [ln for ln in f if ln.strip()]
+            for ln in lines[-days:]:
+                row = json.loads(ln)
+                if isinstance(row, dict) and row.get("date"):
+                    rows.append(row)
+    except Exception as exc:  # 观测接口失败不得影响主页面
+        logger.debug("gate_timeline 读取失败: %s", exc)
+        rows = []
+    return jsonify({"rows": rows, "conditions": GATE_TIMELINE_CONDITIONS})
+
+
 @bp.route("/api/signals")
 def api_signals():
     from flask import request

@@ -279,12 +279,13 @@ class QMTBroker:
 
     # ---------- 查询 ----------
 
-    def get_positions(self, account: str = "cash") -> List[dict]:
+    def get_positions(self, account: str = "cash") -> Optional[List[dict]]:
+        """查询持仓。None 表示查询失败（未连接/账户缺失/异常）；[] 表示确认无持仓。"""
         if not self.connect():
-            return []
+            return None
         acc = self._account_obj(account)
         if acc is None:
-            return []
+            return None
         try:
             raw = self._trader.query_stock_positions(acc)
             out = []
@@ -299,14 +300,15 @@ class QMTBroker:
             return out
         except Exception as e:
             logger.warning("query_stock_positions 失败: %s", e)
-            return []
+            return None
 
-    def get_orders(self, account: str = "cash") -> List[dict]:
+    def get_orders(self, account: str = "cash") -> Optional[List[dict]]:
+        """查询当日委托。None 表示查询失败（未连接/账户缺失/异常）；[] 表示确认无委托。"""
         if not self.connect():
-            return []
+            return None
         acc = self._account_obj(account)
         if acc is None:
-            return []
+            return None
         try:
             raw = self._trader.query_stock_orders(acc)
             out = []
@@ -323,14 +325,15 @@ class QMTBroker:
             return out
         except Exception as e:
             logger.warning("query_stock_orders 失败: %s", e)
-            return []
+            return None
 
-    def get_trades(self, account: str = "cash") -> List[dict]:
+    def get_trades(self, account: str = "cash") -> Optional[List[dict]]:
+        """查询当日成交。None 表示查询失败（未连接/账户缺失/异常）；[] 表示确认无成交。"""
         if not self.connect():
-            return []
+            return None
         acc = self._account_obj(account)
         if acc is None:
-            return []
+            return None
         try:
             raw = self._trader.query_stock_trades(acc)
             out = []
@@ -345,7 +348,27 @@ class QMTBroker:
             return out
         except Exception as e:
             logger.warning("query_stock_trades 失败: %s", e)
-            return []
+            return None
+
+    def cancel_order_stock(self, account: str, order_id: str) -> Dict:
+        """撤单封装。返回 {"ok": bool, "reason": str}；order_id 非法或异常时 ok=False，不抛异常。"""
+        try:
+            if not str(order_id).lstrip("-").isdigit():
+                return {"ok": False, "reason": f"invalid order_id: {order_id!r}"}
+            if not self.connect():
+                return {"ok": False, "reason": "broker not connected"}
+            acc = self._account_obj(account)
+            if acc is None:
+                return {"ok": False, "reason": f"no {account} account"}
+            rc = self._trader.cancel_order_stock(acc, int(order_id))
+            if rc == 0:
+                logger.info("[BROKER] 撤单 %s %s → rc=0", account, order_id)
+                return {"ok": True, "reason": ""}
+            logger.warning("[BROKER] 撤单失败 %s %s rc=%s", account, order_id, rc)
+            return {"ok": False, "reason": f"cancel_order_stock rc={rc}"}
+        except Exception as e:
+            logger.warning("cancel_order_stock 异常: %s", e)
+            return {"ok": False, "reason": str(e)}
 
     def get_asset(self, account: str = "cash") -> Optional[dict]:
         if not self.connect():

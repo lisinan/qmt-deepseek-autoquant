@@ -32,14 +32,15 @@ from datetime import date, datetime, timedelta, time as dtime
 from typing import Deque, Dict, List, Optional, Tuple
 
 from config.settings import (
-    ALLOW_MOCK_TRADING, BAR_WARMUP, BAR_WARMUP_BUDGET_SEC,
+    AI_VETO_MODE, ALLOW_MOCK_TRADING, BAR_WARMUP, BAR_WARMUP_BUDGET_SEC,
     BAR_WARMUP_DOWNLOAD,
     BAR_WARMUP_MAX_STALE_DAYS, EXECUTION_MODE, IDLE_REFRESH_INTERVAL,
-    INDEX_CODES, INITIAL_CASH, LOG_DIR, MARKET_INDEX_CODE,
+    INDEX_CODES, INITIAL_CASH, LLM_RERANK_INTERVAL_SEC, LOG_DIR,
+    MARKET_INDEX_CODE,
     PERSIST_HOLD_SIGNALS, PORTFOLIO_CONFIG, REFRESH_INTERVAL, RISK_PARAMS,
     RISK_SNAPSHOT_MIN_INTERVAL, SESSION_GUARD, SINGLETON_LOCK, STOCK_CODES,
     STRATEGY_MODE, STRATEGY_PARAMS, T1_RESTRICTION, ENTRY_PROTECT_MINUTES,
-    UNIVERSE,
+    TRADE_COST_PCT, UNIVERSE,
 )
 from core.notices import system_notice, latest_notices
 from core.auto_reconnect import AutoReconnector
@@ -61,6 +62,8 @@ from strategy.base import BaseStrategy
 from strategy.portfolio_strategy import PortfolioStrategy
 from strategy.sector_scorer import SectorScorer, sector_scorer
 from strategy.trend_strategy import TrendStrategy
+from engine.benchmark_feed import BenchmarkFeed
+from engine.observability import Observability
 
 logger = logging.getLogger(__name__)
 
@@ -397,11 +400,23 @@ class EventEngine:
         # 直接登记，不依赖任何跨重启的内存集合。
         self._sold_today_codes: set = set()
         self._sold_today_date: str = ""
+        # 【2026-10-21 C7】AI 看空否决标记：code -> (date, confidence)。默认 log 模式
+        # 只记录、不阻断交易；veto 模式由 _handle_buy 读 _ai_veto_blocks 实际拦截。
+        self._ai_veto: Dict[str, tuple] = {}
+        self._ai_veto_n: int = 0          # 当日 AI 否决数（快照 ai_veto_n）
+        # 【2026-10-21 C4】券商持仓查询连续失败计数（区分「未知」与「空仓」）。
+        self._sync_fail_count: int = 0
+        self._sync_fail_notice_day: str = ""
+        # 【2026-10-21 C8】最近一次「无入场信号」原因文案（供 snapshot 暴露）。
+        self._no_entry_reason: str = ""
         self.analyst = analyst or AIAnalyst()
         self.sector_scorer = SectorScorer() if enable_sector_scorer else None
         self.dynamic_universe = DynamicUniverse() if enable_dynamic_universe else None
         self.llm_reranker = LLMReranker() if enable_llm_reranker else None
-        self._llm_rerank_interval = llm_rerank_interval
+        # 【2026-10-21 C1】删除死属性 _llm_rerank_interval（B5 改墙钟后已无读取点）；
+        # 构造参数 llm_rerank_interval 仍保留（签名不变，向后兼容），但不再落属性。
+        # 【2026-10-21 C-B5-4】墙钟触发：上次 LLM 重排的 time.time()
+        self._last_llm_rerank_ts: float = 0.0
         self._llm_last_result = None
         # ---- 主循环健康度（2026-09-22）----
         self.SLOW_ROUND_SEC = 10.0     # 单轮超过它就告警并打印分段耗时
@@ -446,8 +461,24 @@ class EventEngine:
             self._day_open_asset = self.storage.first_equity_today()
         except Exception:
             self._day_open_asset = None
-        # 日内硬止损强平当日执行标记（每交易日最多触发一次，防每轮重复提交）
-        self._daily_flatten_done: bool = False
+        # 日内硬止损强平当日执行标记——【2026-10-21 C1】已删除：
+        # B2-4 改 `_flatten_attempts` 可重试语义后，本字段只剩写入、无任何读取点（死代码）。
+        # 【2026-10-21 B1】委托生命周期状态（仅 live）。
+        #   _pending_orders: oid -> {code, side, qty, price, ts, filled, avg_cost, account, cancelled}
+        #   _pending_sells: code -> oid（待成交卖单去重/槽位未释放标记）
+        #   _seen_fills: (oid, traded_time, traded_volume) 成交回报去重。
+        self._pending_orders: Dict[str, dict] = {}
+        self._pending_sells: Dict[str, str] = {}
+        self._seen_fills: set = set()
+        # 委托超时撤单阈值（秒）：BUY 90s / SELL 30s。
+        self.ORDER_TIMEOUT_SEC = {"BUY": 90, "SELL": 30}
+        # 【2026-10-21 B2-4】日内强平可重试状态（替代 _daily_flatten_done 一次性语义）。
+        self.FLATTEN_MAX_ATTEMPTS = 3
+        self._flatten_attempts: Dict[str, int] = {}
+        self._flatten_day: str = ""
+        self._flatten_notified: bool = False
+        # B2-3 可用量=0 告警去重（每个 code 每日一次）。
+        self._avail0_warned: set = set()
         # 拒单日志去重：code -> 上次记录过的拒绝原因 / 时间戳
         self._last_reject: Dict[str, str] = {}
         self._last_reject_ts: Dict[str, float] = {}
@@ -485,6 +516,12 @@ class EventEngine:
         #   语义是「告警样本」而非「逐标的判定」⇒ 单独维护一份权威集合。
         self._market_stale_code_set: set = set()
 
+        # 【2026-10-21 B4】基准管道缓存（WP-I）。snapshot() 只读这些字段；
+        # 计算在后台 daemon 线程里跑，最多每 1800 秒刷新一次，刷新中不重复起线程。
+        # 【2026-10-21 C1】状态与方法整体切到 engine/benchmark_feed.py::BenchmarkFeed，
+        # 本侧保留薄委托与代理属性（原名不变，monkeypatch 兼容）。
+        self._benchmark_feed = BenchmarkFeed(self)
+
         # 自动重连
         self._auto_reconnect_enabled = auto_reconnect
         self._broker_reconnector: Optional[AutoReconnector] = None
@@ -494,10 +531,13 @@ class EventEngine:
             self._init_positions_from_broker()
 
         # 重启延续：paper 模式下从 SQLite 恢复本地账本（持仓/现金/日内计数/峰值），
-        # 保证连续多日 Paper 测试在每次项目重启后记录依然延续。live 以 broker 为权威源。
+        # 保证连续多日 Paper 测试在每次项目重启后记录依然延续。live 以 broker 为权威源，
+        # 只恢复风控字段（peak_asset / 连亏 / 熔断 / 日内计数），不恢复本地持仓/现金。
         if self.exec_mode == "paper":
             self._restore_engine_state()
             self._apply_pending_reset()
+        elif self.exec_mode == "live":
+            self._restore_engine_state(restore_ledger=False)
 
     # ============================================================ 合成行情闸门
     # 【2026-09-30 AM-EVOLVE R14 · P0 缺陷】见 config/settings.py::ALLOW_MOCK_TRADING
@@ -984,7 +1024,22 @@ class EventEngine:
             self._trade_date = today
             self._daily_trade_count = 0
             self._day_open_asset = None  # 新交易日重新基线
-            self._daily_flatten_done = False  # 新交易日允许再次日内强平
+            # 【2026-10-21 B2-4】新交易日重新计数强平尝试。
+            self._flatten_attempts = {}
+            self._flatten_day = ""
+            self._flatten_notified = False
+            # 【2026-10-21 B1】隔夜未成交委托不应跨日残留，清空待成交账本。
+            self._pending_orders = {}
+            self._pending_sells = {}
+            self._seen_fills = set()
+            # 【2026-10-21 B2-5】paper 跨日：前一交易日持仓已过 T+1，恢复可卖量。
+            # getattr 兜底：既有测试用 ``EventEngine.__new__`` 桩，未设 exec_mode。
+            if getattr(self, "exec_mode", "paper") == "paper":
+                for _p in getattr(self, "_positions", {}).values():
+                    _p.available = int(_p.quantity or 0)
+            # 【2026-10-21 C7】AI 否决标记跨日清空（标记只约束当日）。
+            self._ai_veto = {}
+            self._ai_veto_n = 0
             # 【2026-10-14 AM-EVOLVE 第 30 轮 P0 修复】日内**已实现盈亏**必须一起归零。
             # ★ 实盘铁证（storage/qmt.db engine_state，2026-10-14 11:29:42）：
             #     trade_date=2026-10-14、daily_pnl=**-7964.0**，而当日 fills **0 笔**
@@ -1426,113 +1481,103 @@ class EventEngine:
     def stop(self) -> None:
         self._stop_flag.set()
 
+    # ---- 只读观测层薄委托（C1 第二步：逻辑已切到 Observability，原名不变）----
+    # `_obs` 做成懒加载 property：既满足 `__init__` 无需改动（源码守卫），又兼容
+    # 既有测试用 `EventEngine.__new__(EventEngine)` 裸实例后直接调 `latest_sector_heat` /
+    # `_market_data_ts` 等（此时 `__init__` 未跑、`_obs` 尚未实例化）。Observability
+    # 全部经 owner 动态读属性，故懒建后行为与真实引擎一致。
+
+    @property
+    def _obs(self) -> Observability:
+        obs = self.__dict__.get("_obs_inst")
+        if obs is None:
+            obs = Observability(self)
+            self.__dict__["_obs_inst"] = obs
+        return obs
+
     def snapshot(self) -> dict:
-        total_asset = round(self._total_asset(), 2)
-        snap = {
-            "tick": self._tick_count,
-            # 【2026-09-22】行情与主循环新鲜度：页面据此显示「行情滞后 N 秒」，
-            # 用户一眼能区分「行情停更」与「策略本来就没信号」。
-            "market_data_ts": self._market_data_ts(),
-            "round_ms": round(self._last_round_ms, 1),
-            "slow_rounds": self._slow_rounds,
-            "strategy_mode": self.strategy_mode,
-            "data_mode": self.data_mode,
-            "broker_mode": self.broker_mode,
-            "broker_connected": qmt_broker.is_connected,
-            "broker_reconnects": (self._broker_reconnector.reconnect_count
-                                  if self._broker_reconnector else 0),
-            "exec_mode": self.exec_mode,
-            "session": {
-                "guard": self.session_guard,
-                "state": session_label(),
-                "trading_now": is_trading_time(),
-            },
-            "regime": {
-                "mode": self.regime_mode,
-                "index": self.regime_index,
-                "ma": self.regime_ma,
-                "ok": self._regime_ok(),
-                "force_exit": self.regime_force_exit,
-            },
-            "northbound": self._nb_state(),
-            "cash": round(self._cash, 2),
-            "positions": {
-                code: {
-                    "name": p.name,
-                    "quantity": p.quantity,
-                    "avg_cost": round(p.avg_cost, 3),
-                    "last_price": round(p.last_price, 3),
-                    "pnl": round(p.pnl, 2),
-                    "pnl_pct": round(p.pnl_pct * 100, 3),
-                    "open_date": p.open_date.isoformat() if p.open_date else None,
-                }
-                for code, p in self._positions.items() if p.quantity > 0
-            },
-            "total_asset": total_asset,
-            "risk": self._build_risk_snapshot(total_asset),
-            "analyst_enabled": self.analyst.enabled,
-            "analyst_client": type(self.analyst.client).__name__,
-            "sector_scorer": (self.sector_scorer.snapshot()
-                              if self.sector_scorer else None),
-            "dynamic_universe": (self.dynamic_universe.snapshot()
-                                  if self.dynamic_universe else None),
-            "llm_rerank": (self.latest_llm_rerank()),
-            "llm_reranker": (self.llm_reranker.snapshot()
-                              if self.llm_reranker else None),
-            "data_health": self.data_health(),
-            "notices": self.latest_notices(20),
-        }
-        if self._portfolio:
-            snap["portfolio"] = {
-                "max_positions": self._portfolio.max_positions,
-                "score_threshold": self._portfolio.score_threshold,
-                "max_single_pct": self._portfolio.max_single_pct,
-            }
-        return snap
+        return self._obs.snapshot()
+
+    # ---- 基准管道薄委托（C1：逻辑已切到 BenchmarkFeed，原名不变）----
+
+    def _benchmark_snapshot(self) -> dict:
+        return self._benchmark_feed.snapshot()
+
+    def _benchmark_since(self) -> str:
+        return self._benchmark_feed.since()
+
+    def _compute_benchmark(self) -> None:
+        return self._benchmark_feed.compute()
+
+    def _benchmark_daily_append(self, snap: dict) -> None:
+        # LOG_DIR 在此处调用时解析（从 engine 模块命名空间取值），
+        # 使 tests 的 _TempLogDir monkeypatch 生效，避免写生产日志。
+        return self._benchmark_feed.append_daily(snap, log_dir=LOG_DIR)
+
+    # ---- 基准状态代理属性（C1：状态已迁至 BenchmarkFeed，这里保留原名只读/读写透传，
+    #      兼容既有测试对 eng._benchmark_ts / eng._benchmark_thread 的 monkeypatch）----
+
+    @property
+    def _benchmark_ts(self) -> float:
+        return self._benchmark_feed._ts
+
+    @_benchmark_ts.setter
+    def _benchmark_ts(self, value: float) -> None:
+        self._benchmark_feed._ts = value
+
+    @property
+    def _benchmark_thread(self) -> Optional[threading.Thread]:
+        return self._benchmark_feed._thread
+
+    @_benchmark_thread.setter
+    def _benchmark_thread(self, value: Optional[threading.Thread]) -> None:
+        self._benchmark_feed._thread = value
+
+    @property
+    def _benchmark_lock(self) -> threading.Lock:
+        return self._benchmark_feed._lock
+
+    @property
+    def _benchmark_snap(self) -> dict:
+        return self._benchmark_feed._snap
+
+    @_benchmark_snap.setter
+    def _benchmark_snap(self, value: dict) -> None:
+        self._benchmark_feed._snap = value
+
+    @property
+    def _benchmark_daily_written(self) -> Optional[str]:
+        return self._benchmark_feed._daily_written
+
+    @_benchmark_daily_written.setter
+    def _benchmark_daily_written(self, value: Optional[str]) -> None:
+        self._benchmark_feed._daily_written = value
+
+    def _gate_funnel_snapshot(self) -> dict:
+        return self._obs._gate_funnel_snapshot()
+
+    def _degraded_list(self) -> list:
+        return self._obs._degraded_list()
+
+    def gate_detail(self) -> dict:
+        """入场闸门逐只明细（学习/排障用只读接口，见 Observability.gate_detail）。"""
+        return self._obs.gate_detail()
+
+    def gate_timeline_row(self) -> dict:
+        """当日闸门时间线一行（见 Observability.gate_timeline_row）。"""
+        return self._obs.gate_timeline_row()
 
     def _build_risk_snapshot(self, total_asset: float) -> dict:
-        """在 RiskManager.snapshot() 基础上补充「日内盈亏」（真实日内总盈亏）。
-
-        daily_pnl 仅统计已成交流水（realized），无 round-trip 时恒为 0，仪表板
-        看起来像「没数据」。intraday_pnl = 当前总资产 − 今日开盘资产，融合了当日
-        浮动盈亏，交易时段始终有真实数值。基线 _day_open_asset 优先取今日首个
-        权益快照（跨重启仍有效），否则取本会话首 tick 总资产。
-        """
-        snap = self.risk.snapshot()
-        open_asset = self._day_open_asset
-        if open_asset and open_asset > 0:
-            intraday = total_asset - open_asset
-            snap["intraday_pnl"] = round(intraday, 2)
-            snap["intraday_pnl_pct"] = round(intraday / open_asset * 100, 3)
-            snap["day_open_asset"] = round(open_asset, 2)
-        else:
-            snap["intraday_pnl"] = 0.0
-            snap["intraday_pnl_pct"] = 0.0
-            snap["day_open_asset"] = None
-        return snap
+        return self._obs._build_risk_snapshot(total_asset)
 
     def latest_bars(self) -> Dict[str, List[dict]]:
-        """返回所有股票的最近 bar（用于 SSE 推送）"""
-        out = {}
-        for code, dq in self._bars.items():
-            if not dq:
-                continue
-            last = dq[-1]
-            out[code] = {
-                "ts": last.ts.isoformat(),
-                "open": last.open, "high": last.high,
-                "low": last.low, "close": last.close,
-                "volume": last.volume,
-            }
-        return out
+        return self._obs.latest_bars()
 
     def latest_notices(self, limit: int = 50) -> list:
-        """最近的系统提示（用于 Web 仪表板展示 / SSE 推送）。"""
-        return latest_notices(limit)
+        return self._obs.latest_notices(limit)
 
     def latest_ticks(self) -> Dict[str, dict]:
-        """最近一次拉到的 tick（用于 SSE 推送）"""
-        return self._last_ticks
+        return self._obs.latest_ticks()
 
     def _probe_network_async(self) -> None:
         """启动后异步探测外网（DeepSeek / Tushare）连通性。
@@ -1575,90 +1620,25 @@ class EventEngine:
         threading.Thread(target=_worker, name="net-probe", daemon=True).start()
 
     def _market_data_ts(self) -> Optional[str]:
-        """最新行情时间（ISO）。取所有标的中最新的一只，代表本轮数据新鲜度。"""
-        latest = None
-        for t in (self._last_ticks or {}).values():
-            v = t.get("ts") if isinstance(t, dict) else None
-            if v and (latest is None or v > latest):
-                latest = v
-        return latest
+        return self._obs._market_data_ts()
 
     def latest_sector_heat(self) -> dict:
-        """产业链热度（每个环节的 heat_score）。"""
-        if self.sector_scorer is None:
-            return {}
-        # 【2026-09-22】补齐 avg_volume_ratio 与领跌字段：前者本来就在 SectorScore
-        # 里却从未下发（量能是热度三大构成之一，页面看不到）；后者用于算分化度，
-        # 避免「单只暴涨 + 平均涨幅高」被误读成板块普涨。
-        return {k: {"heat_score": v.heat_score,
-                    "avg_change_pct": v.avg_change_pct,
-                    "avg_volume_ratio": getattr(v, "avg_volume_ratio", 1.0),
-                    "strength": v.strength,
-                    "n_up": v.n_up, "n_stocks": v.n_stocks,
-                    "best_code": v.best_code,
-                    "best_name": v.best_name,
-                    "best_change_pct": getattr(v, "best_change_pct", 0.0),
-                    "worst_code": getattr(v, "worst_code", ""),
-                    "worst_name": getattr(v, "worst_name", ""),
-                    "worst_change_pct": getattr(v, "worst_change_pct", 0.0),
-                    "label": v.label}
-                for k, v in self.sector_scorer.sector_scores.items()}
+        return self._obs.latest_sector_heat()
 
     def latest_recommendations(self) -> list:
-        """当前推荐池（asdict 列表）。"""
-        if self.sector_scorer is None:
-            return []
-        from dataclasses import asdict
-        return [asdict(r) for r in self.sector_scorer.recommendations]
+        return self._obs.latest_recommendations()
 
     def latest_llm_rerank(self) -> Optional[dict]:
-        """最新 LLM 重排序结果。
-
-        【2026-09-22】附带 health：之前 LLM 调用失败（典型是代理没开导致
-        ProxyError）时前端**完全没有反馈**——按钮点下去返回 200，页面继续显示
-        上一次结果，用户只能得出「LLM 重排没工作」的结论。现在把 enabled /
-        last_error / 上次成功时间一起回传，页面可显示明确失败原因。
-        """
-        if self._llm_last_result is None:
-            return None
-        from dataclasses import asdict
-        out = asdict(self._llm_last_result)
-        out["health"] = self.llm_health()
-        return out
+        return self._obs.latest_llm_rerank()
 
     def llm_health(self) -> dict:
-        """LLM 重排健康状态（供前端展示失败原因，见 latest_llm_rerank 注释）。"""
-        health: dict = {
-            "enabled": bool(self.llm_reranker and self.llm_reranker.enabled),
-            "has_result": self._llm_last_result is not None,
-        }
-        try:
-            client = getattr(self.llm_reranker, "client", None)
-            if client is not None and hasattr(client, "health"):
-                health.update(client.health())
-        except Exception:
-            pass
-        return health
+        return self._obs.llm_health()
 
     def data_health(self) -> dict:
-        """数据源健康（tushare 基本面）。熔断时页面应能看出「基本面降级」。"""
-        try:
-            from data.tushare_client import tushare_client
-            return tushare_client.health()
-        except Exception as e:
-            return {"enabled": False, "error": str(e)}
+        return self._obs.data_health()
 
     def latest_dynamic_universe_summary(self) -> dict:
-        """动态候选池摘要（不传全 373 只代码，只传统计）。"""
-        if self.dynamic_universe is None:
-            return {}
-        return {
-            "enabled": self.dynamic_universe.enabled,
-            "n_total": len(self.dynamic_universe.codes),
-            "active_pool_size": len(self.dynamic_universe.active_codes),
-            "by_industry": self.dynamic_universe.industries_breakdown(),
-            "last_refresh": self.dynamic_universe.last_refresh_str,
-        }
+        return self._obs.latest_dynamic_universe_summary()
 
     # ============================================================ 行情陈旧守卫
 
@@ -1933,14 +1913,7 @@ class EventEngine:
             pass
 
     def market_staleness(self) -> dict:
-        """行情新鲜度（供前端/复盘诊断，不影响任何交易决策）。"""
-        return {
-            "stale": self._market_stale,
-            "stale_codes_n": len(self._market_stale_codes),
-            "stale_codes": self._market_stale_codes[:10],
-            "max_age_sec": round(self._market_stale_max_age, 1),
-            "threshold_sec": self.MARKET_STALE_SEC,
-        }
+        return self._obs.market_staleness()
 
     def _day_open_baseline(self, total_asset: float) -> float:
         """今日日内盈亏基线（供 ``risk.on_asset_update`` 使用）。
@@ -2048,6 +2021,10 @@ class EventEngine:
         # INITIAL_CASH（风控回撤保护瘫痪）。每轮拉取真实持仓/资产并合并本地
         # 止损/峰值元数据（broker 不返回），使 live 与 paper 行为一致。
         if self.exec_mode == "live":
+            # 【2026-10-21 B1】先对账待成交委托（落实成交 / 撤单超时未成交部分），
+            # 再以 broker 为权威源同步账本。顺序不可颠倒：若先同步再对账，成交数量
+            # 会被「同步已扣减」与「对账再扣减」重复计一次。
+            self._reconcile_pending_orders()
             self._sync_broker_positions()
 
         # 3) 更新持仓最新价 + 峰值价（移动止损用）+ 总资产
@@ -2075,24 +2052,44 @@ class EventEngine:
         # 4.4) 日内硬止损强平（2026-09-16 新增）：risk 判定当日亏损达
         #   daily_stop_flatten_pct 后置 flatten_requested，这里平掉全部可卖持仓。
         #   每只经 _handle_sell 单点拦截（T+1 仍生效；force=True 绕过建仓保护期）。
-        #   当日仅执行一次（_daily_flatten_done），避免每轮重复提交。
-        if self.risk.flatten_requested and not self._daily_flatten_done:
-            self._daily_flatten_done = True
+        #   【2026-10-21 B2-4】改为每轮执行、按 code 最多重试 FLATTEN_MAX_ATTEMPTS(=3) 次，
+        #   替代原 _daily_flatten_done 一次性语义（原实现每轮重复提交或只提交一次均不可靠）。
+        #   行情陈旧时不推进强平：既避免按旧价盲卖，也避免把 3 次重试额度烧在不可信价格上。
+        if self.risk.flatten_requested and not self._market_stale:
+            today_s = date.today().isoformat()
+            if self._flatten_day != today_s:
+                self._flatten_day = today_s
+                self._flatten_attempts.clear()
+                self._flatten_notified = False
+            if not self._flatten_notified:
+                self._flatten_notified = True
+                system_notice(
+                    "ERROR", "交易",
+                    "日内硬止损强平触发：当日账户亏损达阈值，开始逐仓平仓（可卖持仓）")
             _flat_n = 0
             for _code, _pos in list(self._positions.items()):
                 if _pos.quantity <= 0:
                     continue
+                if _code in self._pending_sells:
+                    continue
+                if self._flatten_attempts.get(_code, 0) >= self.FLATTEN_MAX_ATTEMPTS:
+                    continue
+                self._flatten_attempts[_code] = self._flatten_attempts.get(_code, 0) + 1
                 self._handle_sell(Signal(
                     ts=datetime.now(), code=_code, name=_pos.name,
                     side="SELL", price=_pos.last_price or _pos.avg_cost,
                     reason="daily_hard_stop_flatten"), _pos, force=True)
                 _flat_n += 1
+            # 全部清空或尝试耗尽后写一条 INFO 日志。
+            remaining = [
+                c for c, p in self._positions.items()
+                if p.quantity > 0 and c not in self._pending_sells
+                and self._flatten_attempts.get(c, 0) < self.FLATTEN_MAX_ATTEMPTS
+            ]
             if _flat_n:
-                logger.warning("日内硬止损强平：已提交 %d 只可卖持仓平仓", _flat_n)
-                system_notice(
-                    "ERROR", "交易",
-                    f"日内硬止损强平：当日账户亏损达阈值，已提交 {_flat_n} 只可卖持仓平仓"
-                    f"（T+1 锁定的当日新仓于次交易日自动处理）")
+                logger.warning("日内硬止损强平：本轮提交 %d 只可卖持仓平仓", _flat_n)
+            if not remaining:
+                logger.info("日内硬止损强平：全部持仓已清空或重试次数耗尽")
 
         # 6.5) 持久化权益快照（节流 ~60s）——供盘后复盘重建权益曲线 / 当日收益 /
         # 日内最大回撤，避免复盘只能依赖解析自由文本心跳（格式易变、易丢）。
@@ -2559,13 +2556,19 @@ class EventEngine:
             "min_daily_bias": float(STRATEGY_PARAMS.get("min_daily_bias", 0.2) or 0.0),
             "score_th": float(STRATEGY_PARAMS.get("buy_score_threshold", 4.0)),
             "min_sig": int(STRATEGY_PARAMS.get("min_signals", 3) or 3),
-            "universe_n": 0, "trend_up_n": 0, "bias_ok_n": 0,
-            "score_ok_n": 0, "best_score": None, "best_code": None,
+            "universe_n": 0, "momentum_pass_n": 0, "trend_up_n": 0,
+            "bias_ok_n": 0, "score_ok_n": 0, "best_score": None,
+            "best_code": None,
         }
         if self.daily is None:
             return out
         codes = sorted(self.daily.covered_codes())
         out["universe_n"] = len(codes)
+        # 【2026-10-21 C8】动量闸门通过数：复用 _apply_momentum_gate 的语义。
+        try:
+            out["momentum_pass_n"] = len(self._apply_momentum_gate(set(codes)))
+        except Exception:
+            out["momentum_pass_n"] = 0
         best = None
         for c in codes:
             f = self.daily.features(c)
@@ -2592,6 +2595,9 @@ class EventEngine:
         self._last_no_signal_log_ts = time.time()
         if n_cand == 0:
             st = self._entry_funnel_stats(n_cand)
+            self._no_entry_reason = (
+                f"动量闸门后候选池为空（min_mom={st['min_mom']:.2f} "
+                f"lookback={st['lookback']} top_n={st['top_n']}）")
             logger.warning(
                 "无入场信号：动量闸门后候选池为空（min_mom=%.2f lookback=%d "
                 "top_n=%d ⇒ 要求 60 日涨幅 > %.0f%%）| 漏斗分层: 宇宙 %d 只, "
@@ -2602,8 +2608,10 @@ class EventEngine:
                 st["min_daily_bias"], st["bias_ok_n"], st["score_th"],
                 st["min_sig"], st["score_ok_n"], st["best_code"])
         elif best is None:
+            self._no_entry_reason = f"候选 {n_cand} 只但全部无法评分"
             logger.warning("无入场信号：候选 %d 只但全部无法评分", n_cand)
         else:
+            self._no_entry_reason = f"候选 {n_cand} 只、最高分仅 {best[1]:.2f}"
             logger.warning("无入场信号：候选 %d 只、最高分 %s 仅 %.2f"
                            "（阈值 %.1f）原因=%s",
                            n_cand, best[0], best[1],
@@ -2771,6 +2779,144 @@ class EventEngine:
         self._last_reject_ts[code] = now
         logger.info("BUY 拒绝 %s: %s", code, reason)
 
+    def _ai_veto_blocks(self, code: str) -> bool:
+        """AI 看空否决是否阻断该标的**当日**买入（仅 veto 模式调用）。
+
+        _ai_veto[code] = (记录日期, confidence)；跨日即视为过期（README 语义：
+        标记下一轮不买入，默认 log 模式不改变任何交易行为）。
+        """
+        rec = self._ai_veto.get(code)
+        if not rec:
+            return False
+        return rec[0] == date.today()
+
+    # ============================================================ 委托生命周期
+    # 【2026-10-21 B1】live 下单后不再依赖线程轮询，改为主循环对账：登记待成交
+    # 委托 → 每轮 reconcile 读 broker 成交回报落实数量 / 撤单超时未成交部分。
+
+    def _register_pending_order(self, oid: str, code: str, side: str,
+                                qty: int, price: float, avg_cost: float,
+                                account: str) -> None:
+        """登记一笔已提交的 live 委托；SELL 同时写入 _pending_sells 去重标记。"""
+        self._pending_orders[str(oid)] = {
+            "code": code, "side": side, "qty": qty, "price": price,
+            "ts": time.time(), "filled": 0, "avg_cost": avg_cost,
+            "account": account, "cancelled": False,
+        }
+        if side == "SELL":
+            self._pending_sells[code] = str(oid)
+
+    def _apply_trade(self, trade: dict) -> int:
+        """按 (oid, traded_time, traded_volume) 去重后落实一笔成交回报。
+
+        返回本次增量成交量（0 表示重复回报，跳过落库）。
+        """
+        oid = str(trade.get("order_id") or "")
+        if oid not in self._pending_orders:
+            return 0
+        t_time = str(trade.get("traded_time") or "")
+        t_vol = int(trade.get("traded_volume") or 0)
+        if t_vol <= 0:
+            return 0
+        key = (oid, t_time, t_vol)
+        if key in self._seen_fills:
+            return 0
+        self._seen_fills.add(key)
+        po = self._pending_orders[oid]
+        price = float(trade.get("traded_price") or po.get("price") or 0.0)
+        po["filled"] = int(po.get("filled") or 0) + t_vol
+        side = po["side"]
+        self.storage.save_fill(Fill(
+            ts=datetime.now(), code=po["code"], side=side,
+            quantity=t_vol, price=price, amount=price * t_vol,
+            account=po.get("account", "cash"),
+        ), order_id=oid, mode="live")
+        if side == "SELL" and (po.get("avg_cost") or 0.0) > 0:
+            self.risk.on_fill(Fill(
+                ts=datetime.now(), code=po["code"], side=side,
+                quantity=t_vol, price=price, amount=price * t_vol,
+                account=po.get("account", "cash"),
+            ), avg_cost=po.get("avg_cost") or 0.0,
+               total_asset=self._total_asset())
+        return t_vol
+
+    def _reconcile_pending_orders(self) -> None:
+        """主循环对账：落实已成交委托、撤单超时未成交部分。
+
+        任何异常只 ``logger.warning``，绝不打断主循环；get_trades/get_orders
+        可能返回 None（查询失败），视为本轮无回报。
+        """
+        try:
+            trades = qmt_broker.get_trades("cash")
+        except Exception as e:
+            logger.warning("get_trades 查询异常(忽略): %s", e)
+            trades = None
+        if trades is None:
+            return
+        for t in trades or []:
+            try:
+                self._apply_trade(t)
+            except Exception as e:
+                logger.warning("落实成交回报失败(忽略): %s", e)
+
+        now = time.time()
+        for oid, po in list(self._pending_orders.items()):
+            try:
+                code = po["code"]
+                side = po["side"]
+                qty = int(po["qty"] or 0)
+                filled = int(po.get("filled") or 0)
+                if filled >= qty:
+                    # 完成：SELL 扣减本地数量并释放槽位；BUY 校正乐观建仓数量。
+                    if side == "SELL":
+                        pos = self._positions.get(code)
+                        if pos is not None:
+                            pos.quantity = max(0, int(pos.quantity or 0) - filled)
+                        self._pending_sells.pop(code, None)
+                        self._mark_sold_today(code)
+                    else:
+                        pos = self._positions.get(code)
+                        if pos is not None and int(pos.quantity or 0) != filled:
+                            pos.quantity = filled
+                    self._pending_orders.pop(oid, None)
+                    continue
+                timeout = self.ORDER_TIMEOUT_SEC.get(side, 90)
+                if now - float(po.get("ts") or now) <= timeout:
+                    continue
+                # 超时：撤单 + 回滚未成交部分。
+                try:
+                    res = qmt_broker.cancel_order_stock(
+                        po.get("account") or "cash", oid)
+                except Exception as e:
+                    logger.warning("cancel_order_stock 异常(忽略): %s", e)
+                    res = {"ok": False, "reason": str(e)}
+                unfilled = max(0, qty - filled)
+                if side == "BUY":
+                    pos = self._positions.get(code)
+                    if pos is not None:
+                        # 【2026-10-21 修正】回滚必须以「已成交量」为基准重算，
+                        # 不能减「未成交量」：上一轮 _sync_broker_positions 可能
+                        # 已把 quantity 校正为 filled，再减 unfilled 会重复扣减
+                        # （fleet 探针实测 200 − 800 = −600 ⇒ 持仓被清空、_pos_meta
+                        # 里的 open_date/止损价一并丢失，T+1 与止损同时失效）。
+                        pos.quantity = max(0, min(int(pos.quantity or 0), filled))
+                        if pos.quantity <= 0:
+                            self._positions.pop(code, None)
+                            self._pos_meta.pop(code, None)
+                else:
+                    # SELL 未成交即未卖出，数量不动，仅释放待成交去重槽位。
+                    self._pending_sells.pop(code, None)
+                system_notice(
+                    "WARNING", "交易",
+                    f"委托超时未成交，已撤单 {code} {side} oid={oid} "
+                    f"(已成交 {filled}/{qty}，撤单 {'成功' if res.get('ok') else '失败'})")
+                logger.warning(
+                    "委托超时未成交，已撤单 %s %s oid=%s filled=%d/%d reason=%s",
+                    code, side, oid, filled, qty, res.get("reason", ""))
+                self._pending_orders.pop(oid, None)
+            except Exception as e:
+                logger.warning("对账委托 %s 异常(忽略): %s", oid, e)
+
     def _handle_buy(self, sig: Signal, tick, current_prices: Dict) -> None:
         # 持仓名称解析为规范中文名（兜底回退代码），避免仪表板持仓只显示代码
         # 【2026-09-30 AM-EVOLVE R14】合成行情闸门（P0）：mock 价与真实市价可差
@@ -2782,6 +2928,15 @@ class EventEngine:
             self._warn_mock_blocked(sig.code)
             self._log_reject_once(sig.code, _mock)
             return
+
+        # 【2026-10-21 C7】AI 看空否决：仅 veto 模式实际阻断；log/off 模式放行。
+        if AI_VETO_MODE == "veto" and self._ai_veto_blocks(sig.code):
+            self._log_reject_once(sig.code, "ai_veto")
+            system_notice(
+                "WARNING", "交易",
+                f"[AI 否决] {sig.code} 被 AI 看空否决（conf="
+                f"{self._ai_veto[sig.code][1]:.2f}），当日不再买入")
+            return False
 
         disp_name = get_stock_name(sig.code)
         scale = self.risk.position_scale
@@ -2900,16 +3055,18 @@ class EventEngine:
                     avg_cost=price, last_price=price, open_date=datetime.now(),
                     peak_price=price, stop_price=stop_price,
                     target_price=target_price)
-                if res.get("order_id"):
-                    # 异步轮询成交回报，避免阻塞主行情循环（原来同步 sleep 1s）
-                    threading.Thread(
-                        target=self._poll_and_record_fill,
-                        args=(res["order_id"], sig.code, "BUY", qty, price,
-                              order.account),
-                        name=f"fill-{sig.code}-buy", daemon=True,
-                    ).start()
+                # 【2026-10-21 B1】登记待成交委托，成交由 _reconcile_pending_orders
+                # 落实（替代原 _poll_and_record_fill 异步轮询线程）。
+                _oid = str(res.get("order_id") or "")
+                if _oid:
+                    self._register_pending_order(
+                        _oid, sig.code, "BUY", qty, price, price, order.account)
+                else:
+                    # ok=True 但无 order_id：无法跟踪，只能告警（下一轮 broker 同步校正）。
+                    logger.warning("买入委托返回 ok 但无 order_id（%s），无法跟踪成交", sig.code)
         else:
-            self._cash -= qty * price
+            # 【2026-10-21 C5】paper 买入计入单边成本（TRADE_COST_PCT）。
+            self._cash -= qty * price * (1 + TRADE_COST_PCT)
             self._positions[sig.code] = Position(
                 code=sig.code, name=disp_name, quantity=qty,
                 avg_cost=price, last_price=price, open_date=datetime.now(),
@@ -3009,6 +3166,17 @@ class EventEngine:
             self._warn_mock_blocked(pos.code)
             return False
 
+        # ---- B2-1 行情陈旧守卫（对称买入）：陈旧价盲卖与盲买同险 ----
+        # getattr 兜底：既有测试用 SimpleNamespace 桩冒充引擎，未设 _market_stale。
+        if getattr(self, "_market_stale", False):
+            self._log_reject_once(pos.code, "stale")
+            return False
+
+        # ---- B2-2 待成交卖单防重复：同 code 已有未完成卖单则拒绝再次卖出 ----
+        if pos.code in getattr(self, "_pending_sells", {}):
+            self._log_reject_once(pos.code, "pending_sell")
+            return False
+
         # ---- A 股 T+1 约束（2026-09-14 修复）----
         # 当日买入的仓位当日不可卖出，否则会生成实盘不可能成交的「同日 round-trip」
         # （如 2026-09-08 300394 于 10:21:14 买入、10:21:17 即被「趋势破位」卖出）。
@@ -3039,7 +3207,17 @@ class EventEngine:
                     f"首个可卖日开盘后 {self.entry_protect_minutes} 分钟内不退出"
                     f"（防分钟级误伤）；跳过理由={getattr(sig, 'reason', '')}")
             return False
-        qty = pos.quantity
+        # ---- B2-3 卖出量夹紧到券商可用量（仅 live）----
+        qty = int(pos.quantity)
+        avail = int(getattr(pos, "available", 0) or 0)
+        if self.exec_mode == "live" and avail > 0:
+            qty = min(qty, avail)
+        elif self.exec_mode == "live" and avail <= 0:
+            # 可用量字段为 0：按整仓提交（券商侧可能拒单）。每个 code 每日一次告警。
+            _wkey = f"avail0|{pos.code}|{date.today().isoformat()}"
+            if _wkey not in self._avail0_warned:
+                self._avail0_warned.add(_wkey)
+                logger.warning("可用量字段为 0，按整仓提交（券商侧可能拒单）")
         if qty <= 0:
             return False
         price = sig.price or pos.last_price
@@ -3060,22 +3238,23 @@ class EventEngine:
             # 日内交易计数：live 与 paper 一致地计入。
             self._daily_trade_count += 1
             if res.get("ok"):
-                # 乐观清仓本地账本（成交后由 _sync_broker_positions 校正）
-                if sig.code in self._positions:
-                    self._positions[sig.code].quantity = 0
-                if res.get("order_id"):
-                    # 异步轮询成交回报，避免阻塞主行情循环
-                    threading.Thread(
-                        target=self._poll_and_record_fill,
-                        args=(res["order_id"], sig.code, "SELL", qty, price,
-                              order.account, pos.avg_cost),
-                        name=f"fill-{sig.code}-sell", daemon=True,
-                    ).start()
-                return True
+                # 【2026-10-21 B1】卖出委托已提交但**尚未成交**：本地数量不归零、
+                # 槽位不释放（返回 False 调用方据此不补位）。成交由
+                # _reconcile_pending_orders 落实后再扣减数量并 _mark_sold_today。
+                _oid = str(res.get("order_id") or "")
+                if _oid:
+                    self._register_pending_order(
+                        _oid, sig.code, "SELL", qty, price, pos.avg_cost,
+                        order.account)
+                else:
+                    logger.warning("卖出委托返回 ok 但无 order_id（%s），无法跟踪成交",
+                                   sig.code)
+                return False
             return False
         else:
             proceeds = qty * price
-            self._cash += proceeds
+            # 【2026-10-21 C5】paper 卖出计入单边成本（TRADE_COST_PCT）。
+            self._cash += proceeds * (1 - TRADE_COST_PCT)
             self.risk.on_fill(Fill(
                 ts=datetime.now(), code=pos.code, side="SELL",
                 quantity=qty, price=price, amount=proceeds, account="cash",
@@ -3146,6 +3325,10 @@ class EventEngine:
                               avg_cost: float = 0.0):
         """异步轮询成交回报（不阻塞主行情循环）。
 
+        **【2026-10-21 B1 已弃用 (deprecated)**：live 下单改为主循环对账
+        （``_reconcile_pending_orders``），本方法不再被引擎调用；保留仅为兼容
+        既有测试直接调用（tests/test_mode_tagging.py），请勿新增引用。
+
         实盘委托可能数秒后才完全成交（大单 / 非活跃时段），原实现只 sleep 1s
         轮询一次，会漏记延迟成交 → 数据库 / 复盘缺失该笔。改为最多轮询 6 次
         （间隔 1s，共 ~6s）覆盖常见延迟；命中即落库（卖出同步更新风控已实现
@@ -3157,6 +3340,9 @@ class EventEngine:
                 trades = qmt_broker.get_trades(account)
             except Exception:
                 trades = []
+            # 【2026-10-21】WP-B 将失败语义改为 None：None 视为「本轮无回报」，不抛异常。
+            if trades is None:
+                continue
             for t in trades:
                 if str(t.get("order_id")) == str(order_id):
                     fill_price = float(t.get("traded_price") or price)
@@ -3201,19 +3387,71 @@ class EventEngine:
                 mode=self.exec_mode)
         except Exception as e:
             logger.debug("权益快照持久化失败(继续): %s", e)
-        # 重启延续：同步持久化 paper 账本（持仓/现金/日内计数/峰值）
-        if self.exec_mode == "paper":
-            self._save_engine_state()
+        # 重启延续：所有模式持久化引擎状态（持仓/现金/日内计数/峰值/风控）。
+        # 【2026-10-21 C6】不再区分 paper：live 启动时仅恢复风控字段，故保存须全模式落库。
+        self._save_engine_state()
         self._last_equity_ts = now
+        # 【闸门时间线】交易日每日一行追加到 LOG_DIR/gate_timeline.jsonl
+        #（与回填脚本同格式）；引擎运行中的实时追加入口，失败只 debug 不抛。
+        try:
+            if is_trading_day(date.today()):
+                row = self.gate_timeline_row()
+                if row.get("universe_n") and row["date"] != getattr(
+                        self, "_gate_timeline_date", ""):
+                    # LOG_DIR 调用时解析（测试会 patch engine.event_engine.LOG_DIR）
+                    import engine.event_engine as _ee_mod
+                    p = Path(_ee_mod.LOG_DIR) / "gate_timeline.jsonl"
+                    with p.open("a", encoding="utf-8") as f:
+                        f.write(json.dumps(row, ensure_ascii=False) + "\n")
+                    self._gate_timeline_date = row["date"]
+                    logger.debug("gate_timeline 追加 %s", row["date"])
+        except Exception as e:
+            logger.debug("gate_timeline 追加失败(继续): %s", e)
 
     # ============================================================ 重启延续
     # paper 模式本地账本（持仓/现金/日内计数/峰值）持久化，跨重启不丢。
 
-    def _restore_engine_state(self) -> None:
-        """从 SQLite 恢复 paper 账本，使连续多日测试在重启后延续。"""
+    def _restore_engine_state(self, restore_ledger: bool = True) -> None:
+        """从 SQLite 恢复引擎状态，使连续多日测试在重启后延续。
+
+        ``restore_ledger=True``（paper）：恢复持仓/现金/日内计数/峰值等本地账本。
+        ``restore_ledger=False``（live）：只恢复风控字段
+        （peak_asset / daily_pnl / consec_loss / halted / daily_trade_count / risk_state），
+        不恢复 positions/cash——live 以 broker 为权威源，本地账本不可信。
+        """
         try:
             row = self.storage.load_engine_state()
             if not row:
+                return
+            self._daily_trade_count = int(row.get("daily_trade_count") or 0)
+            self.risk._daily_pnl = float(row.get("daily_pnl") or 0.0)
+            self.risk._consec_loss = int(row.get("consec_loss") or 0)
+            self.risk._peak_asset = float(row.get("peak_asset") or 0.0)
+            self._trade_date = (date.fromisoformat(row["trade_date"])
+                                if row.get("trade_date") else date.today())
+            # 【2026-10-21 C6】live 下 DB 无 peak_asset 时，用权益快照历史最大总资产兜底
+            # （沿用 _credible_peak_equity / sanitize_peak_equity 已有逻辑）。
+            if not restore_ledger and self.risk._peak_asset <= 0.0:
+                cred = self._credible_peak_equity()
+                if cred > 0.0:
+                    self.risk._peak_asset = cred
+            # 【2026-10-21 C6】live：只恢复风控字段，账本以 broker 为权威源。
+            if not restore_ledger:
+                # 【2026-09-21】恢复熔断/连亏时间戳必须早于 _reset_daily_if_needed：
+                # 僵尸冻结自愈要用 persist 下来的「连亏起算日」算冷却天数。
+                self.risk.load_state(row.get("risk_state"))
+                self._reset_daily_if_needed()  # 跨日归一（新交易日重置日内计数）
+                logger.info(
+                    "恢复风控状态: peak=%.2f consec_loss=%d halted=%s "
+                    "daily_trade_count=%d",
+                    self.risk._peak_asset, self.risk._consec_loss,
+                    self.risk._halted, self._daily_trade_count)
+                system_notice(
+                    "SUCCESS", "风控",
+                    f"恢复风控状态: peak={self.risk._peak_asset:,.2f} "
+                    f"consec_loss={self.risk._consec_loss} "
+                    f"halted={self.risk._halted} "
+                    f"daily_trade_count={self._daily_trade_count}")
                 return
             self._cash = float(row.get("cash") or 0.0)
             positions: Dict[str, "Position"] = {}
@@ -3233,16 +3471,10 @@ class EventEngine:
                 except Exception as ex:
                     logger.warning("恢复持仓失败 %s: %s", p, ex)
             self._positions = positions
-            self._daily_trade_count = int(row.get("daily_trade_count") or 0)
-            self.risk._daily_pnl = float(row.get("daily_pnl") or 0.0)
-            self.risk._consec_loss = int(row.get("consec_loss") or 0)
-            self.risk._peak_asset = float(row.get("peak_asset") or 0.0)
             self._day_open_asset = (float(row["day_open_asset"])
                                     if row.get("day_open_asset") is not None else None)
             self._tick_count = int(row.get("tick_count") or 0)
             self._peak_equity = float(row.get("peak_equity") or 0.0)
-            self._trade_date = (date.fromisoformat(row["trade_date"])
-                                if row.get("trade_date") else date.today())
             # 【2026-10-08 第 22 轮】峰值自愈：脏峰值（休市伪快照虚增）会随
             # 持久化状态跨重启永久继承，故在**恢复路径**上做一次可信性夹紧。
             # 只向下夹紧；取不到可信历史（查询失败/表空）则原样保留（保守）。
@@ -3374,7 +3606,17 @@ class EventEngine:
             asset = qmt_broker.get_asset("cash")
             if asset:
                 self._cash = float(asset.get("cash") or 0.0)
-            raw = qmt_broker.get_positions("cash") or []
+            # 【2026-10-21 C4】区分「未知」(None) 与「空仓」([])：None=查询失败，
+            # 本轮不改动本地账本；[]=确认无持仓，照常清空。连续 3 次失败按日告警。
+            raw = qmt_broker.get_positions("cash")
+            if raw is None:
+                self._sync_fail_count += 1
+                logger.warning("券商持仓查询失败（第 %d 次），本地账本未更新",
+                               self._sync_fail_count)
+                if self._sync_fail_count >= 3:
+                    self._sync_fail_notice()
+                return
+            self._sync_fail_count = 0
             held: set = {p.get("code") for p in raw
                          if (p.get("quantity") or 0) > 0}
             wide = abs(STRATEGY_PARAMS.get("hard_stop_pct", -0.18))
@@ -3387,11 +3629,14 @@ class EventEngine:
                 mv = float(p.get("market_value") or 0.0)
                 meta = self._pos_meta.get(code, {})
                 last = (mv / qty) if qty > 0 and mv > 0 else (avg or 0.0)
+                # 【2026-10-21 C1】合并券商可用/可卖数量（WP-B 已加 Position.available）。
+                avail = int(p.get("available") or 0)
                 if code in self._positions:
                     pos = self._positions[code]
                     pos.quantity = qty
                     pos.avg_cost = avg
                     pos.last_price = last
+                    pos.available = avail
                     # 合并/兜底止损价（本策略开的仓用 ATR 止损；broker 同步来的
                     # 历史仓无元数据则给一个宽幅硬止损作灾难保护）
                     if pos.stop_price <= 0:
@@ -3402,7 +3647,8 @@ class EventEngine:
                 else:
                     self._positions[code] = Position(
                         code=code, name=UNIVERSE.get(code, code),
-                        quantity=qty, avg_cost=avg, last_price=last,
+                        quantity=qty, available=avail, avg_cost=avg,
+                        last_price=last,
                         open_date=meta.get("open_date"),
                         peak_price=meta.get("peak_price", 0.0) or last,
                         stop_price=meta.get("stop_price", 0.0)
@@ -3416,6 +3662,16 @@ class EventEngine:
                     self._positions[code].quantity = 0
         except Exception as e:
             logger.debug("broker 持仓同步失败(继续): %s", e)
+
+    def _sync_fail_notice(self) -> None:
+        """券商持仓查询连续失败告警（按天去重）。"""
+        _today = date.today().isoformat()
+        if self._sync_fail_notice_day == _today:
+            return
+        self._sync_fail_notice_day = _today
+        system_notice(
+            "ERROR", "风控",
+            f"券商持仓查询连续失败 {self._sync_fail_count} 次，本地账本未更新")
 
     def _init_positions_from_broker(self) -> None:
         """从 broker 拉真实持仓初始化 ledger（live 模式启动时）。"""
@@ -3460,8 +3716,15 @@ class EventEngine:
                     self.storage.save_ai(ai)
                     logger.info("AI %s → %s conf=%.2f",
                                 code, ai.stance, ai.confidence)
-                    if ai.stance == "bearish" and ai.confidence >= 0.7:
-                        logger.warning("AI 抑制买入 %s", code)
+                    # 【2026-10-21 修正符号】analyst 的 prompt 约定「看空为负」，
+                    # 原判定 confidence >= 0.7 对 bearish 恒假（DB 40 条样本命中 0）。
+                    if ai.stance == "bearish" and abs(ai.confidence) >= 0.7:
+                        self._ai_veto[code] = (date.today(),
+                                               round(ai.confidence, 3))
+                        self._ai_veto_n += 1
+                        logger.warning(
+                            "AI 看空 %s conf=%.2f（%s 模式）",
+                            code, ai.confidence, AI_VETO_MODE)
             except Exception as e:
                 logger.debug("AI worker err: %s", e)
             finally:
@@ -3509,11 +3772,15 @@ class EventEngine:
                     logger.info("产业链推荐池更新: top=%s 数量=%d", fp[0], fp[1])
                 else:
                     logger.debug("产业链推荐池未变: top=%s 数量=%d", fp[0], fp[1])
-            # 触发 LLM 重排序（每 N tick 一次，异步）
+            # 触发 LLM 重排序【2026-10-21 C-B5-4】：从「每 N tick」改为
+            # 墙钟间隔（LLM_RERANK_INTERVAL_SEC）+ 交易时段守卫，异步执行。
+            now_ts = time.time()
             if (self.llm_reranker is not None
                     and self.llm_reranker.enabled
-                    and self._tick_count % self._llm_rerank_interval == 0
+                    and now_ts - self._last_llm_rerank_ts >= LLM_RERANK_INTERVAL_SEC
+                    and is_trading_time(datetime.now())
                     and self.sector_scorer.recommendations):
+                self._last_llm_rerank_ts = now_ts
                 self._fire_llm_rerank(market_data)
         except Exception as e:
             import traceback
@@ -3620,6 +3887,24 @@ class EventEngine:
                     logger.info("LLM 重排序完成: macro=%s top3=%s",
                                 result.macro_view,
                                 result.ranked_codes[:3])
+                    # 【2026-10-21 C-B5-3】结果落库；异常必须吞掉（warning）
+                    # 以免打断主循环/工作线程。
+                    try:
+                        self.storage.save_llm_rerank(
+                            ts=result.ts.isoformat() if result.ts else "",
+                            model=result.model or "",
+                            macro_view=result.macro_view or "",
+                            ranked=result.ranked_codes,
+                            adjustments=result.adjustments,
+                            raw=result.raw or "",
+                            cached=bool(result.cached),
+                        )
+                    except Exception as e:
+                        logger.warning("save_llm_rerank 落库失败: %s", e)
+                else:
+                    logger.warning(
+                        "LLM rerank 无结果: last_error=%s",
+                        getattr(self.llm_reranker, "last_error", ""))
             except Exception as e:
                 logger.warning("LLM rerank 失败: %s", e)
 
@@ -3637,10 +3922,9 @@ class EventEngine:
         return v
 
     def _shutdown(self) -> None:
-        # 重启延续：优雅退出前先落盘 paper 账本，确保下次启动时交易记录延续
+        # 重启延续：优雅退出前落盘引擎状态（全模式），确保下次启动时记录延续
         try:
-            if self.exec_mode == "paper":
-                self._save_engine_state()
+            self._save_engine_state()
         except Exception as e:
             logger.debug("退出前保存引擎状态失败: %s", e)
         if self._broker_reconnector:

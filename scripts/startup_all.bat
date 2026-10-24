@@ -22,14 +22,15 @@ echo [%TIME%] qmtIDE 自启编排开始 >> "%LOG%"
 
 REM ===== 幂等守卫：探测守护是否已在运行（用于决定是否重复启动守护）=====
 set "SKIP_GUARDIAN=0"
-if exist "%GUARD_PID%" (
-  set /p PID=<"%GUARD_PID%"
-  if defined PID (
-    tasklist /FI "PID eq %PID%" 2>nul | findstr /C:"%PID%" >nul
-    if not errorlevel 1 (
-      echo [%TIME%] 守护 PID %PID% 已在运行，本次跳过氧化 >> "%LOG%"
-      set "SKIP_GUARDIAN=1"
-    )
+REM 先把 pid 读进变量（for /f 在括号块内可用，set /p 在块内需延迟展开），
+REM 判定放到块外单个 if defined 里，避免多层括号嵌套导致的解析歧义。
+set "GUARD_PID_VAL="
+if exist "%GUARD_PID%" for /f "usebackq delims=" %%p in ("%GUARD_PID%") do set "GUARD_PID_VAL=%%p"
+if defined GUARD_PID_VAL (
+  tasklist /FI "PID eq %GUARD_PID_VAL%" 2>nul | findstr /C:"%GUARD_PID_VAL%" >nul
+  if not errorlevel 1 (
+    echo [%TIME%] 守护 PID %GUARD_PID_VAL% 已在运行，本次跳过重复启动 >> "%LOG%"
+    set "SKIP_GUARDIAN=1"
   )
 )
 
@@ -51,31 +52,40 @@ REM 等 miniQMT 先起来一点，再起守护（守护会再确认并拉起交�
 timeout /t 5 /nobreak >nul
 
 REM 2) 守护进程（5 分钟轮询，自动拉起交易引擎 127.0.0.1:5000；miniQMT 不自动拉起）
-REM    守护自身有单实例守卫(.guardian.pid)，即使竞态也不会堆叠。
-if "%SKIP_GUARDIAN%"=="1" (
-  echo [%TIME%] 守护已在运行，跳过启动（幂等） >> "%LOG%"
-) else if exist "%GUARDIAN%" (
-  if exist "%PYW%" (
-    echo [%TIME%] 启动守护进程(pythonw,无控制台) >> "%LOG%"
-    start "" "%PYW%" "%GUARDIAN%"
-  ) else (
-    echo [%TIME%] 启动守护进程(python) >> "%LOG%"
-    start "" "%PY%" "%GUARDIAN%"
-  )
-) else (
-  echo [%TIME%] 未找到 guardian.py: %GUARDIAN% >> "%LOG%"
-)
+REM    【2026-10-24】原实现用「if ... ) else if exist ... ( 嵌套 if/else )」，
+REM    在 cmd 里实测会**两个分支都执行**（2026-10-24 09:09 开机日志：「启动守护进程」紧跟
+REM    「未找到 guardian.py」）。改用标签 + goto 的线性结构，彻底消除嵌套括号解析歧义。
+REM    守护自身仍有 .guardian.pid 原子单实例守卫，即使竞态也不会堆叠。
+if "%SKIP_GUARDIAN%"=="1" goto :GUARD_RUNNING
+if not exist "%GUARDIAN%" goto :GUARD_MISSING
+if not exist "%PYW%" goto :GUARD_PY
+echo [%TIME%] 启动守护进程 [pythonw] >> "%LOG%"
+start "" "%PYW%" "%GUARDIAN%"
+goto :AFTER_GUARD
+:GUARD_PY
+echo [%TIME%] 启动守护进程 [python] >> "%LOG%"
+start "" "%PY%" "%GUARDIAN%"
+goto :AFTER_GUARD
+:GUARD_RUNNING
+echo [%TIME%] 守护已在运行，跳过启动（幂等） >> "%LOG%"
+goto :AFTER_GUARD
+:GUARD_MISSING
+echo [%TIME%] 未找到 guardian.py: %GUARDIAN% >> "%LOG%"
+:AFTER_GUARD
 
-REM 3) WorkBuddy 桌面应用（已在运行则跳过）
+REM 3) WorkBuddy 桌面应用（已在运行则跳过）—— 同样改成 goto 结构
 tasklist /FI "IMAGENAME eq WorkBuddy.exe" 2>nul | findstr /I "WorkBuddy.exe" >nul
-if not errorlevel 1 (
-  echo [%TIME%] WorkBuddy 已在运行，跳过 >> "%LOG%"
-) else if exist "%WORKBUDDY%" (
-  echo [%TIME%] 启动 WorkBuddy >> "%LOG%"
-  start "" "%WORKBUDDY%"
-) else (
-  echo [%TIME%] 未找到 WorkBuddy: %WORKBUDDY% >> "%LOG%"
-)
+if not errorlevel 1 goto :WB_RUNNING
+if not exist "%WORKBUDDY%" goto :WB_MISSING
+echo [%TIME%] 启动 WorkBuddy >> "%LOG%"
+start "" "%WORKBUDDY%"
+goto :AFTER_WB
+:WB_RUNNING
+echo [%TIME%] WorkBuddy 已在运行，跳过 >> "%LOG%"
+goto :AFTER_WB
+:WB_MISSING
+echo [%TIME%] 未找到 WorkBuddy: %WORKBUDDY% >> "%LOG%"
+:AFTER_WB
 
 echo [%TIME%] qmtIDE 自启编排结束 >> "%LOG%"
 endlocal

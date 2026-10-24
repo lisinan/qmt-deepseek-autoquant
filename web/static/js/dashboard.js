@@ -200,6 +200,35 @@
       ? fmt(nb.latest / 10000, 2) : '--';
     $('nb-meta').textContent = (nb.lookback || '-') + '日 / 覆盖 '
       + (nb.days || 0) + '日' + (nb.end_date ? (' 至 ' + nb.end_date) : '');
+
+    // C-B5-5：相对基准超额（snapshot.benchmark.excess_pct，正绿负红，缺失显示 —）
+    renderBenchmark(snap.benchmark);
+  }
+
+  function renderBenchmark(bm) {
+    var el = $('dec-excess');
+    var box = $('dec-excess-box');
+    if (!el || !box) return;
+    bm = bm || {};
+    var lines = [
+      'account: ' + fmtPctOrDash(bm.account_pct),
+      'universe_bh: ' + fmtPctOrDash(bm.universe_bh_pct),
+      'index: ' + fmtPctOrDash(bm.index_pct)
+    ];
+    box.title = lines.join('\n');
+    var e = bm.excess_pct;
+    if (e === undefined || e === null || isNaN(Number(e))) {
+      el.textContent = '—';
+      box.className = 'dec-item';
+      return;
+    }
+    e = Number(e);
+    el.textContent = (e > 0 ? '+' : '') + fmt(e * 100, 2) + '%';
+    box.className = 'dec-item ' + (e > 0 ? 'dec-good' : (e < 0 ? 'dec-neg' : ''));
+  }
+  function fmtPctOrDash(v) {
+    if (v === undefined || v === null || isNaN(Number(v))) return '—';
+    return (Number(v) > 0 ? '+' : '') + fmt(Number(v) * 100, 2) + '%';
   }
 
   function renderTicks(ticks) {
@@ -210,12 +239,19 @@
     });
   }
 
+  // 已渲染的信号/成交 id 集合，用于初始 fetch 与 SSE 增量推送之间的去重
+  var _seenSignalIds = {};
+  var _seenFillIds = {};
+
   function appendSignals(sigs) {
     if (!sigs || !sigs.length) return;
     var body = $('signal-table').querySelector('tbody');
     // 注：徽标刷新由 onmessage 统一调用 updateSignalFreshness(data) 完成
     // （data.last_signal_ts 已含本次新增信号），此处不再单独调用，避免签名不一致。
     sigs.slice().reverse().forEach(function (s) {
+      var sid = (s.id !== undefined && s.id !== null) ? String(s.id) : null;
+      if (sid && _seenSignalIds[sid]) return;
+      if (sid) _seenSignalIds[sid] = 1;
       body.insertAdjacentHTML('afterbegin', signalRow(s));
     });
     while (body.children.length > 30) body.removeChild(body.lastChild);
@@ -307,6 +343,9 @@
     if (!fills || !fills.length) return;
     var body = $('fill-table').querySelector('tbody');
     fills.slice().reverse().forEach(function (f) {
+      var fid = (f.id !== undefined && f.id !== null) ? String(f.id) : null;
+      if (fid && _seenFillIds[fid]) return;
+      if (fid) _seenFillIds[fid] = 1;
       body.insertAdjacentHTML('afterbegin', fillRow(f));
     });
     while (body.children.length > 30) body.removeChild(body.lastChild);
@@ -519,6 +558,14 @@
       herr.textContent = '调用正常' + (h.mode === 'direct' ? '（直连）' : '');
       herr.className = 'signal-fresh fresh-ok';
     }
+    // C-B5-5：状态行展示 calls / cached_hits / last_error（字段可能暂不存在，容错 —）
+    var stats = $('llm-stats');
+    if (stats) {
+      stats.textContent = 'calls ' +
+        (h.calls != null ? h.calls : '—') +
+        ' / 缓存命中 ' + (h.cached_hits != null ? h.cached_hits : '—') +
+        ' / 最近错误 ' + (h.last_error ? String(h.last_error) : '—');
+    }
   }
 
   function renderRecommendations(recs) {
@@ -563,6 +610,94 @@
     });
   }
 
+  // ----- 今日决策条（C8：gate_funnel / no_entry_reason / ai_veto_n / degraded） -----
+  function renderDecision(snap) {
+    if (!snap) return;
+    var deg = snap.degraded;
+    var degEl = $('dec-degraded');
+    var degBox = $('dec-degraded-box');
+    if (deg && deg.length) {
+      degEl.textContent = '⚠ ' + deg.join('；');
+      degBox.className = 'dec-item dec-bad';
+    } else if (deg) {
+      degEl.textContent = '正常';
+      degBox.className = 'dec-item dec-ok';
+    } else {
+      degEl.textContent = '—';
+      degBox.className = 'dec-item';
+    }
+    var ne = snap.no_entry_reason;
+    $('dec-no-entry').textContent = (ne === undefined || ne === null || ne === '') ? '—' : String(ne);
+    var gf = snap.gate_funnel;
+    if (gf && typeof gf === 'object') {
+      $('dec-funnel').textContent =
+        (gf.universe_n || 0) + ' / ' + (gf.momentum_pass_n || 0) + ' / ' +
+        (gf.trend_up_n || 0) + ' / ' + (gf.bias_ok_n || 0) + ' / ' + (gf.score_ok_n || 0);
+    } else {
+      $('dec-funnel').textContent = '—';
+    }
+    var av = snap.ai_veto_n;
+    $('dec-ai-veto').textContent = (av === undefined || av === null) ? '—' : String(av);
+  }
+
+  // ----- 告警条：最近 5 条 notices（ERROR 红 / WARNING 黄），未读计数 + 展开收起 -----
+  var _noticeSeen = 0;      // 已读条数（展开时清零到最新）
+  var _noticeLatest = [];   // 最近一次收到的 notices
+  var _noticeExpanded = false;
+
+  function renderNotices(notices) {
+    if (!notices) return;
+    _noticeLatest = notices;
+    var list = notices.slice(0, 5);
+    var latestEl = $('notice-latest');
+    var dot = $('notice-dot');
+    if (!list.length) {
+      latestEl.textContent = '暂无告警';
+      dot.className = 'notice-dot';
+    } else {
+      var n0 = list[0];
+      latestEl.textContent = '[' + (n0.level || 'INFO') + '] ' +
+        (n0.source || '') + '：' + (n0.msg || n0.message || '');
+      dot.className = 'notice-dot ' + (n0.level === 'ERROR' ? 'dot-err' :
+        (n0.level === 'WARNING' ? 'dot-warn' : ''));
+    }
+    // 未读计数：折叠时显示 新到达条数
+    var unread = Math.max(0, notices.length - _noticeSeen);
+    var badge = $('notice-badge');
+    badge.textContent = unread;
+    badge.style.display = unread > 0 ? 'inline-block' : 'none';
+    // 展开列表
+    var html = '';
+    list.forEach(function (n) {
+      var lv = n.level || 'INFO';
+      var cls = lv === 'ERROR' ? 'n-err' : (lv === 'WARNING' ? 'n-warn' : 'n-info');
+      html += '<div class="notice-item ' + cls + '">' +
+        '<span class="n-ts">' + esc(shortTs(n.ts)) + '</span>' +
+        '<span class="n-lv">' + esc(lv) + '</span>' +
+        '<span class="n-src">' + esc(n.source || '') + '</span>' +
+        '<span class="n-msg">' + esc(n.msg || n.message || '') + '</span>' +
+        '</div>';
+    });
+    $('notice-list').innerHTML = html || '<div class="muted">暂无告警</div>';
+  }
+
+  function bindNoticeBar() {
+    var head = $('notice-head');
+    if (!head) return;
+    head.onclick = function () {
+      _noticeExpanded = !_noticeExpanded;
+      var bar = $('notice-bar');
+      bar.className = 'notice-bar' + (_noticeExpanded ? '' : ' collapsed');
+      $('notice-toggle').textContent = _noticeExpanded ? '收起 ▼' : '展开 ▲';
+      if (_noticeExpanded) {
+        _noticeSeen = _noticeLatest.length;
+        var badge = $('notice-badge');
+        badge.textContent = '0';
+        badge.style.display = 'none';
+      }
+    };
+  }
+
   // ============================================================ SSE
 
   var sse = null;
@@ -598,7 +733,9 @@
         _lastSseAt = Date.now();
         _lastSignalData = data;
         if (data.snapshot) renderSnapshot(data.snapshot);
+        if (data.snapshot) renderDecision(data.snapshot);
         if (data.snapshot) updateMarketFreshness(data.snapshot);
+        if (data.notices) renderNotices(data.notices);
         if (data.ticks) renderTicks(data.ticks);
         if (data.new_signals) appendSignals(data.new_signals);
         updateSignalFreshness(data);
@@ -677,9 +814,259 @@
       }).catch(function () {});
   }
 
+  // ============================================================ 入场闸门逐只明细（学习面板）
+  // 为什么有这块：决策条只告诉你「trend_up 0 只」，但学量化最需要的是
+  // 「这只票具体差在哪一条」。表格按通过条件数从多到少排序，最接近买入的在最上面。
+  function gateMark(ok) {
+    return '<td class="g-' + (ok ? 'yes' : 'no') + '">' + (ok ? '✔' : '✘') + '</td>';
+  }
+
+  function renderGate(d) {
+    var sum = (d && d.summary) || {};
+    var rows = (d && d.rows) || [];
+    var sumEl = $('gate-summary');
+    if (sumEl) {
+      if (!sum.ready) {
+        sumEl.textContent = '（日线上下文未就绪，引擎预热中）';
+      } else {
+        var p = sum.patterns || sum.params || {};
+        sumEl.textContent =
+          '宇宙 ' + sum.universe_n + ' 只 ｜ 收盘>MA20 ' + sum.above_ma20_n +
+          ' ｜ MA20>MA60 ' + sum.ma20_over_ma60_n + ' ｜ 斜率>0 ' + sum.slope_up_n +
+          ' ｜ MACD≥0 ' + sum.macd_ok_n + ' ｜ 趋势成立 ' + sum.trend_up_n +
+          ' ｜ 动量>' + (p.min_mom != null ? (p.min_mom * 100).toFixed(0) + '%' : '?') +
+          ' ' + sum.mom_pass_n + ' ｜ 评分达标 ' + sum.score_ok_n +
+          (sum.breadth60 != null ? ' ｜ 宽度(>MA60) ' + (sum.breadth60 * 100).toFixed(0) + '%' : '');
+      }
+    }
+    var body = $('gate-table') && $('gate-table').querySelector('tbody');
+    if (!body) return;
+    if (!rows.length) {
+      body.innerHTML = '<tr><td colspan="11" class="muted">暂无数据</td></tr>';
+      return;
+    }
+    var html = '';
+    for (var i = 0; i < rows.length; i++) {
+      var r = rows[i];
+      var cls = r.trend_up ? 'g-row-all' : (r.passed_n >= 5 ? 'g-row-near' : '');
+      var mom = r.mom60 == null ? '—' :
+        ((r.mom60 > 0 ? '+' : '') + (r.mom60 * 100).toFixed(1) + '%');
+      var chg = (r.day_change_pct || 0) * 100;
+      html += '<tr class="' + cls + '">' +
+        '<td class="code">' + esc(r.code) + '</td>' +
+        '<td>' + esc(r.name || NAME(r.code)) + '</td>' +
+        '<td class="ta-r">' + fmt(r.close, 2) +
+          '<span class="' + (chg > 0 ? 'up' : (chg < 0 ? 'down' : 'flat')) +
+          '" style="font-size:10px"> ' + (chg > 0 ? '+' : '') + chg.toFixed(2) + '%</span></td>' +
+        '<td class="ta-r">' + fmt(r.ma20, 2) + '</td>' +
+        '<td class="ta-r">' + fmt(r.ma60, 2) + '</td>' +
+        '<td class="ta-r">' + fmt(r.ma20_slope, 3) + '</td>' +
+        '<td class="ta-r">' + fmt(r.macd_hist, 3) + '</td>' +
+        '<td class="ta-r ' + (r.mom_ok ? 'up' : '') + '">' + mom + '</td>' +
+        '<td class="ta-r">' + fmt(r.score, 2) + '</td>' +
+        '<td class="ta-c g-flags">' +
+          (r.above_ma20 ? '✔' : '✘') + (r.above_ma60 ? '✔' : '✘') +
+          (r.ma20_over_ma60 ? '✔' : '✘') + (r.slope_up ? '✔' : '✘') +
+          (r.macd_ok ? '✔' : '✘') + (r.mom_ok ? '✔' : '✘') +
+          (r.score_ok ? '✔' : '✘') + '</td>' +
+        '<td class="g-block">' + esc(r.blocked_by || (r.trend_up ? '—（已通过）' : '')) + '</td>' +
+        '</tr>';
+    }
+    body.innerHTML = html;
+  }
+
+  function loadGate() {
+    return fetch('/api/gate_detail').then(function (r) { return r.json(); })
+      .then(renderGate).catch(function () {});
+  }
+
+  // ============================================================ 闸门卡点时间线
+  // 条件 × 日期 热力矩阵（纯 div 网格）。颜色按当日通过率 pass/universe_n
+  // 在 HSL(0,70%,32%) → HSL(48,80%,42%) → HSL(140,55%,38%) 之间线性插值。
+  var TL_KEYS = ['above_ma20', 'above_ma60', 'ma20_over_ma60', 'slope_up',
+    'macd_ok', 'mom_ok', 'score_ok'];
+  var TL_LABELS = {
+    above_ma20: '收盘>MA20', above_ma60: '收盘>MA60',
+    ma20_over_ma60: 'MA20>MA60', slope_up: 'MA20斜率>0',
+    macd_ok: 'MACD≥0', mom_ok: '60日动量>15%', score_ok: '评分达标'
+  };
+  var tlCurDays = 90;
+
+  function tlColor(rate) {
+    // 分两段线性插值：0→50% 红到黄，50→100% 黄到绿
+    var h, s, l;
+    if (rate <= 0.5) {
+      var t = rate / 0.5;
+      h = 0 + (48 - 0) * t; s = 70 + (80 - 70) * t; l = 32 + (42 - 32) * t;
+    } else {
+      var t2 = (rate - 0.5) / 0.5;
+      h = 48 + (140 - 48) * t2; s = 80 + (55 - 80) * t2; l = 42 + (38 - 42) * t2;
+    }
+    return 'hsl(' + Math.round(h) + ',' + Math.round(s) + '%,' + Math.round(l) + '%)';
+  }
+
+  // 「最强候选卡点」标记行：blocked_key → 颜色 + 中文说明
+  var TL_BEST_COLORS = {
+    '': '#2e9e63',             // 可买入
+    mom_ok: '#e8853a',         // 动量不足
+    above_ma60: '#4a90d9',     // 收盘<MA60
+    ma20_over_ma60: '#9b6bd6', // 均线未多头
+    slope_up: '#d95f9e',       // 斜率≤0
+    macd_ok: '#3fb6b0',        // MACD<0
+    score_ok: '#d9b53a'        // 评分不足
+  };
+  var TL_BEST_LABELS = {
+    '': '可买入',
+    mom_ok: '动量不足',
+    above_ma60: '收盘<MA60',
+    ma20_over_ma60: '均线未多头',
+    slope_up: '斜率≤0',
+    macd_ok: 'MACD<0',
+    score_ok: '评分不足'
+  };
+  var TL_BEST_ORDER = ['', 'mom_ok', 'above_ma60', 'ma20_over_ma60',
+    'slope_up', 'macd_ok', 'score_ok'];
+
+  function renderGateTimeline(data) {
+    var box = $('tl-matrix');
+    var scale = $('tl-scale');
+    if (!box) return;
+    var rows = (data && data.rows) || [];
+    if (!rows.length) {
+      box.innerHTML = '<div class="muted tl-empty">暂无时间线数据（等待每日回填/实时追加）</div>';
+      if (scale) scale.innerHTML = '';
+      return;
+    }
+    var html = '';
+    // 行标签列 + 7 个条件行
+    for (var c = 0; c < TL_KEYS.length; c++) {
+      var key = TL_KEYS[c];
+      html += '<div class="tl-row"><div class="tl-rowlabel">' + esc(TL_LABELS[key]) + '</div>';
+      for (var i = 0; i < rows.length; i++) {
+        var r = rows[i];
+        var n = r.universe_n || 0;
+        var p = (r.pass && r.pass[key]) || 0;
+        var rate = n > 0 ? p / n : 0;
+        var pct = n > 0 ? Math.round(rate * 100) : 0;
+        html += '<div class="tl-cell" style="background:' + tlColor(rate) + '"' +
+          ' title="' + esc(r.date) + ' ' + esc(TL_LABELS[key]) +
+          ' 通过 ' + p + '/' + n + ' (' + pct + '%)"></div>';
+      }
+      html += '</div>';
+    }
+    // 「最强候选卡点」标记行：每天一个色块，颜色 = 当日最强候选被哪条闸门挡住
+    html += '<div class="tl-row tl-best-row" id="tl-best-row">' +
+      '<div class="tl-rowlabel">最强候选卡点</div>';
+    for (var j = 0; j < rows.length; j++) {
+      var rb = rows[j];
+      var best = rb.best;
+      var bkey = (best && best.blocked_key != null) ? String(best.blocked_key) : null;
+      var allN = (rb.all_pass_n != null) ? rb.all_pass_n : null;
+      // 「全通过」还要区分：组合闸门要求 ≥2 只同时够格（min_passing_candidates）。
+      // 只有 1 只够格时照样不买 —— 用浅色 + 描边表示，避免把「绿」误读成「买了」。
+      var single = (bkey === '' && allN !== null && allN < 2);
+      var col;
+      if (bkey === null) {
+        col = '#3a4451';
+      } else if (single) {
+        col = '#2e7d5b';
+      } else {
+        col = (TL_BEST_COLORS[bkey] !== undefined) ? TL_BEST_COLORS[bkey] : '#3a4451';
+      }
+      var blabel = (bkey !== null && TL_BEST_LABELS[bkey] !== undefined)
+        ? TL_BEST_LABELS[bkey] : '数据缺失';
+      var title = esc(rb.date);
+      if (best && best.code) {
+        title += ' 最强候选 ' + esc(best.code) + ' 通过 ' + (best.passed_n || 0) +
+          '/7，卡在：' + blabel;
+        if (allN !== null) {
+          title += '；当日够格（7 项全过）' + allN + ' 只' +
+            (allN < 2 ? '，不足 2 只 ⇒ 组合闸门不放行' : '');
+        }
+      } else {
+        title += ' 无最强候选数据';
+      }
+      html += '<div class="tl-cell tl-best-cell' + (single ? ' tl-best-single' : '') +
+        '" style="background:' + col + '" title="' + title + '"></div>';
+    }
+    html += '</div>';
+    box.innerHTML = html;
+    // 底部日期刻度：每 10 列标一个 MM-DD
+    if (scale) {
+      var sHtml = '<span class="tl-rowlabel"></span>';
+      for (var k = 0; k < rows.length; k++) {
+        if (k % 10 === 0 && rows[k].date && rows[k].date.length >= 10) {
+          sHtml += '<span class="tl-tick">' + esc(rows[k].date.slice(5, 10)) + '</span>';
+        } else {
+          sHtml += '<span class="tl-tick tl-tick-empty"></span>';
+        }
+      }
+      scale.innerHTML = sHtml;
+    }
+    renderBestLegend();
+  }
+
+  function renderBestLegend() {
+    var el = $('tl-best-legend');
+    if (!el) return;
+    var html = '';
+    for (var i = 0; i < TL_BEST_ORDER.length; i++) {
+      var k = TL_BEST_ORDER[i];
+      html += '<span class="lg-item tl-legend-item">' +
+        '<i class="tl-swatch" style="background:' + TL_BEST_COLORS[k] + '"></i>' +
+        esc(TL_BEST_LABELS[k]) + '</span>';
+    }
+    // 灰色 = 旧行 / 数据缺失
+    html += '<span class="lg-item tl-legend-item">' +
+      '<i class="tl-swatch" style="background:#3a4451"></i>无数据</span>';
+    el.innerHTML = html;
+  }
+
+  function loadGateTimeline(days) {
+    tlCurDays = days || tlCurDays;
+    return fetch('/api/gate_timeline?days=' + encodeURIComponent(tlCurDays))
+      .then(function (r) { return r.json(); })
+      .then(renderGateTimeline).catch(function () {
+        renderGateTimeline({ rows: [] });
+      });
+  }
+
+  function bindGateTimelineButtons() {
+    var btns = document.querySelectorAll('#timeline-panel .tl-btn');
+    for (var i = 0; i < btns.length; i++) {
+      (function (btn) {
+        btn.addEventListener('click', function () {
+          for (var j = 0; j < btns.length; j++) {
+            btns[j].classList.remove('tl-btn-active');
+          }
+          btn.classList.add('tl-btn-active');
+          loadGateTimeline(parseInt(btn.getAttribute('data-days'), 10) || 90);
+        });
+      })(btns[i]);
+    }
+  }
+
   // ============================================================ 初始加载
+  bindNoticeBar();
+  bindGateTimelineButtons();
+  loadGate();
+  loadGateTimeline(90);
+  if (document.getElementById('btn-gate-refresh')) {
+    document.getElementById('btn-gate-refresh').addEventListener('click', loadGate);
+  }
   fetch('/api/snapshot').then(function (r) { return r.json(); })
-    .then(renderSnapshot).catch(function () {});
+    .then(function (snap) { renderSnapshot(snap); renderDecision(snap); })
+    .catch(function () {});
+  // 刷新后信号/成交表格不空：先拉历史（appendSignals/appendFills 按 id 去重，
+  // SSE 随后推送的增量不会重复渲染）
+  fetch('/api/signals?limit=30').then(function (r) { return r.json(); })
+    .then(function (sigs) { appendSignals(sigs); }).catch(function () {});
+  fetch('/api/fills?limit=30').then(function (r) { return r.json(); })
+    .then(function (fills) { appendFills(fills); }).catch(function () {});
+  fetch('/api/notices?limit=5').then(function (r) { return r.json(); })
+    .then(function (ns) {
+      if (ns && ns.length) { _noticeSeen = ns.length; renderNotices(ns); }
+    }).catch(function () {});
   fetch('/api/ticks').then(function (r) { return r.json(); })
     .then(renderTicks).catch(function () {});
   fetch('/api/sector/score').then(function (r) { return r.json(); })

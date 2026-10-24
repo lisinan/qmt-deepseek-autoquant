@@ -103,7 +103,10 @@ class DeepSeekClient:
                 if r.status_code != 200:
                     logger.warning("DeepSeek HTTP %s: %s",
                                    r.status_code, r.text[:200])
-                    _fail(f"HTTP {r.status_code}: {r.text[:200]}")
+                    # 【2026-10-21 C-B5-2】last_error 带 base_url + 状态码，
+                    # 供 llm_reranker 拼接成 "deepseek-chat https://... HTTP 503"
+                    _fail(f"{self.base_url} HTTP {r.status_code}: "
+                          f"{r.text[:200]}")
                     return None
                 data = r.json()
                 content = data["choices"][0]["message"]["content"]

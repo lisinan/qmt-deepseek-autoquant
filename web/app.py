@@ -21,6 +21,11 @@ def create_app(engine: EventEngine = None) -> Flask:
                 template_folder="templates",
                 static_folder="static")
     app.config["JSON_AS_ASCII"] = False
+    # 模板自动重载：Flask 默认 auto_reload = app.debug，生产（debug=False）时
+    # Jinja 首次渲染后**永久缓存**模板 —— 改了 templates/index.html 刷新页面看不到变化，
+    # 必须重启引擎才生效（2026-10-22 踩到：改完布局页面仍是旧结构）。
+    # 模板只有几十 KB、每秒最多渲染几次，重载开销可忽略。
+    app.config["TEMPLATES_AUTO_RELOAD"] = True
     app.config["engine"] = engine or EventEngine()
 
     from web.routes import bp

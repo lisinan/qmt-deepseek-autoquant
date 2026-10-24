@@ -56,6 +56,74 @@ def _pid_alive(pid: str) -> bool:
         return False
 
 
+def _atomic_claim_pid_file() -> bool:
+    """原子占位单实例锁：O_CREAT|O_EXCL 打开即写入自身 pid。
+
+    True=本进程抢到锁；False=文件已存在且旧 pid 仍存活（另一实例在跑）。
+    旧 pid 已死（崩溃残留）时删除后重试一次，避免僵尸锁让守护永不再启动。
+    """
+    for _attempt in (1, 2):
+        try:
+            fd = os.open(str(PID_FILE), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            old = ""
+            try:
+                old = PID_FILE.read_text().strip()
+            except Exception:
+                pass
+            if old and _pid_alive(old):
+                log(f"[WARN] 已有 guardian 实例 pid={old}，退出")
+                return False
+            # 残留锁（进程已不在）：清掉后重试一次
+            try:
+                PID_FILE.unlink()
+            except Exception:
+                pass
+            continue
+        except Exception as exc:
+            log(f"[WARN] 创建 guardian pid 文件失败(继续运行): {exc}")
+            return True
+        try:
+            os.write(fd, str(os.getpid()).encode("ascii"))
+        except Exception:
+            pass
+        finally:
+            os.close(fd)
+        return True
+    return False
+
+
+def _alert_degraded(r: dict) -> None:
+    """degraded 非空时写一条 [GUARDIAN-ALERT]（按天去重：每天每类只报一次）。"""
+    degraded = r.get("degraded") or []
+    if not degraded:
+        return
+    stamp = LOG_DIR / ".guardian_alert_last"
+    today = datetime.date.today().isoformat()
+    seen = ""
+    try:
+        seen = stamp.read_text(encoding="utf-8").strip()
+    except Exception:
+        pass
+    seen_parts = seen.split("|", 1)
+    pending = [d for d in degraded
+               if not (len(seen_parts) == 2 and seen_parts[0] == today
+                       and d in seen_parts[1].split(","))]
+    if not pending:
+        return
+    log(f"[GUARDIAN-ALERT] degraded={','.join(degraded)}"
+        f" engine_progressing={r.get('engine_progressing')}"
+        f" engine={r.get('engine')} miniQMT={r.get('miniqmt')}")
+    try:
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
+        done = seen_parts[1].split(",") if (len(seen_parts) == 2
+                                            and seen_parts[0] == today) else []
+        merged = ",".join(sorted(set([d for d in done if d] + pending)))
+        stamp.write_text(f"{today}|{merged}", encoding="utf-8")
+    except Exception:
+        pass
+
+
 def guard_once() -> None:
     r = health_check.status(do_start=True)
     msg = f"miniQMT={r.get('miniqmt')} engine={r.get('engine')}"
@@ -64,6 +132,7 @@ def guard_once() -> None:
     if "engine_started" in r:
         msg += f" (engine_started={r['engine_started']})"
     log(msg)
+    _alert_degraded(r)
 
 
 def main() -> None:
@@ -76,19 +145,9 @@ def main() -> None:
         guard_once()
         return
 
-    # 单实例守卫：避免重复 guardian 堆积
-    try:
-        if PID_FILE.exists():
-            old = PID_FILE.read_text().strip()
-            if old and _pid_alive(old):
-                log(f"[WARN] 已有 guardian 实例 pid={old}，退出")
-                return
-    except Exception:
-        pass
-    try:
-        PID_FILE.write_text(str(os.getpid()))
-    except Exception:
-        pass
+    # 单实例守卫：原子占位（O_CREAT|O_EXCL），避免双触发竞态下 guardian 堆积
+    if not _atomic_claim_pid_file():
+        return
 
     log(f"Guardian 启动 pid={os.getpid()} interval={args.interval}s")
     try:

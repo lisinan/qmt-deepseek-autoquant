@@ -33,7 +33,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from config.settings import (  # noqa: E402
-    STOCK_CODES, UNIVERSE, MARKET_INDEX_CODE, SECTOR_OF,
+    STOCK_CODES, UNIVERSE, MARKET_INDEX_CODE, SECTOR_OF, TRADE_COST_PCT,
 )
 from core import indicators as I  # noqa: E402
 from core.qmt_client import qmt_client  # noqa: E402
@@ -394,7 +394,7 @@ class BacktestConfig:
     vol_sizing: bool = True         # ATR 波动率目标仓位
     risk_per_trade: float = 0.01
     fixed_amount: float = 50000.0
-    cost_pct: float = 0.0015         # 单边交易成本（佣金+印花税+滑点），计入
+    cost_pct: float = TRADE_COST_PCT     # 单边交易成本（佣金+印花税+滑点），计入
     chandelier: bool = False         # True=用峰值时 ATR 吊灯止损（趋势跟随）
     entry_mode: str = "factor"       # "factor"=6因子评分; "trend"=日线突破追涨
     # ---- 离场执行时点口径（2026-10-08 第 23 轮 PM-EVOLVE，研究开关）----
@@ -422,6 +422,20 @@ class BacktestConfig:
     # False（默认）= 原行为（<2 只即全关），零行为变化；
     # True          = 恰好 1 只通过 → 半仓开这 1 只（多只通过仍全开，0 只仍全关）。
     entry_half_when_one: bool = False
+    # ---- 涨跌停不可成交（回测真实性，2026-10-21 B9 研究开关）----
+    # 【为什么默认 False】P0 基线被 3 条数值守卫钉死
+    #   （tests/_baseline_tushare_panel.py / test_entry_half_when_one /
+    #    test_trend_break_slower_exit 等），其常量在「按次日 open 无条件成交」的
+    #   旧语义下校准。一旦默认改为 True，极端场景（一字涨停/跌停）的成交结果
+    #   全部改变 ⇒ 全部历史结论与 KPI 作废。故与其它「回测有、实盘无」的代理
+    #   开关同守则：**默认 False = 零行为变化**，显式 True 才启用，启用后须
+    #   重新 re-baseline（见 docs/Spec_B9_backtest_realism.md）。
+    # 【为什么需要它】评审 §3.1-P1 认定：策略买「60 日动量最强、创 20 日新高」的
+    #   票，信号次日开盘常一字/大幅涨停，实盘买不到；跌停封死时同样卖不出。
+    #   旧回测仅凭 panel[code]["valid"]（停牌）拦截，在最关键的极端场景双向美化。
+    limit_up_block: bool = False
+    limit_pct_main: float = 0.10       # 主板（含中小板）涨跌停幅度
+    limit_pct_growth: float = 0.20     # 创业板 300/301、科创板 688 涨跌停幅度
     max_positions: int = 8
     # ---- A 股 T+1 约束【P0 修正 2026-09-02】----
     # 原事件时序：A) 执行昨日挂单（今日开盘成交，写入 positions）
@@ -819,6 +833,22 @@ class BacktestConfig:
     # 动量每日重排名会在回调里把刚卖出的股票又买回，产生双向成本且易 whipaw；
     # 设冷静期可压缩换手、提升净 alpha。默认 0 = 关闭（需验证后启用）。
     reentry_cooldown: int = 0
+    # ---- regime 恢复快通道【P0-1 2026-10-22，研究开关】----
+    # 背景（REBOUND_CAPTURE_2026-10-22 实测）：深跌后的 V 型反弹第一波，
+    #   入场闸门（close>MA20>MA60 且 MA20 斜率>0 且 MACD>=0，且 60 日动量>15%）
+    #   需数周才满足 ⇒ 5 段已完结深跌段反弹捕获率中位 0.0%、首次建仓滞后中位
+    #   5 日、2/5 段完全零成交。本开关在「等权宇宙净值自近 20 日低点反弹
+    #   >=rf_rebound_pct 且 5 日均线斜率>0」确认后，临时放宽入场门槛
+    #   rf_relax_days 个交易日：动量门槛 momentum_min_mom → rf_mom_threshold，
+    #   并豁免 trend_up 的 MA20 斜率条件；其它（MA60 条件、止损、仓位、退出）
+    #   一律不动。regime 由面板内各票前向填充后等权收盘价自算，不依赖指数序列。
+    # 默认 **False = 关闭**（逐位保持既有回测行为，零行为变化）。
+    recovery_fastpath: bool = False
+    rf_drawdown_threshold: float = -0.15  # 深跌判定：等权宇宙净值自近 20 日高点回撤 <= 此值
+    rf_lookback: int = 20                 # 深跌/反弹判定的近 20 日窗口
+    rf_rebound_pct: float = 0.05          # 反弹确认：净值自近 20 日低点反弹 >= 5%
+    rf_relax_days: int = 10               # 确认后放宽入场的交易日数
+    rf_mom_threshold: float = 0.05        # 放宽后动量门槛（原 0.15）
     # ---- 「不追高」入场过滤【2026-10-06 PM-EVOLVE 第 18 轮】----
     # 动机（本轮诊断铁证）：26 折里 4 个负折的**共同特征**是「短持仓(3.1d) +
     #   多笔数 + 胜率暴跌(0~36%) + 均笔微负(-0.06~-0.15%)」，而强折是
@@ -1025,6 +1055,32 @@ def _vec_slope(series: List[float], lookback: int = 5) -> List[Optional[float]]:
     return out
 
 
+def _limit_pct_for(code: str, cfg: BacktestConfig) -> float:
+    """该标的适用的涨跌停幅度（主板 10% / 创业板 300/301、科创板 688 为 20%）。
+
+    仅按代码段判定，不新增任何数据依赖；供 limit_up_block=True 时使用。
+    """
+    if code.startswith(("300", "301", "688")):
+        return cfg.limit_pct_growth
+    return cfg.limit_pct_main
+
+
+def _round_to_cent(price: float) -> float:
+    """把价格四舍五入到 0.01（A 股最小报价单位）。"""
+    return round(price, 2)
+
+
+def _limit_price_from_prev_close(prev_close: float, limit_pct: float,
+                                 side: str) -> float:
+    """由前一收盘价算涨/跌停价：round(prev_close × (1 ± limit_pct), 2)。
+
+    用 panel 里已有的 close 序列自算前收（= 前一交易日收盘），不新增数据源。
+    """
+    if side == "up":
+        return _round_to_cent(prev_close * (1.0 + limit_pct))
+    return _round_to_cent(prev_close * (1.0 - limit_pct))
+
+
 def run_backtest(codes: List[str], cfg: BacktestConfig,
                  count: int = 260, preloaded: dict = None,
                  mf_data: dict = None, er_data: dict = None,
@@ -1169,6 +1225,9 @@ def run_backtest(codes: List[str], cfg: BacktestConfig,
     # atr_pct_at / score_daily，使 run_backtest 为 O(n^2)。预计算为全序列数组
     # 后按 [i] 索引（数值与 I.last(series[:i+1]) 完全一致，已验证 base 指标不变）。
     trend_up_arr: Dict[str, list] = {}
+    # regime 恢复快通道用的「豁免 MA20 斜率」变体（a & b & d，即 no_slope）。
+    # 仅在 recovery_fastpath=True 时填充；关闭时为空 dict，零开销、零行为变化。
+    trend_up_noslope_arr: Dict[str, list] = {}
     bias_arr: Dict[str, list] = {}
     atr_pct_arr: Dict[str, list] = {}
     score_arr: Dict[str, list] = {}
@@ -1185,6 +1244,7 @@ def run_backtest(codes: List[str], cfg: BacktestConfig,
         _s20s = _vec_slope(_s20, 5)
         _, _, _mh = I.macd(cl, 12, 26, 9)
         _tu = [False] * n_c
+        _tu_noslope = [False] * n_c
         _relax = getattr(cfg, "trend_up_relax", "none")
         _s60s = _vec_slope(_s60, 5) if _relax == "ma60s" else None
         for i in range(n_c):
@@ -1201,7 +1261,12 @@ def run_backtest(codes: List[str], cfg: BacktestConfig,
                     _tu[i] = True
             elif trend_up_relaxed(_a, _b, _c, _d, _relax):
                 _tu[i] = True
+            # 快通道变体：豁免 MA20 斜率（a & b & d），仅在开关开启时用到
+            if cfg.recovery_fastpath:
+                _tu_noslope[i] = trend_up_relaxed(_a, _b, _c, _d, "no_slope")
         trend_up_arr[code] = _tu
+        if cfg.recovery_fastpath:
+            trend_up_noslope_arr[code] = _tu_noslope
         # 综合偏置序列 bias ∈ [-1,1]（与 daily_context.py:180-187 严格同式）
         # 实盘闸门 ``trend_up or bias >= min_daily_bias`` 的第二路，
         # 回测原本缺失，此处补齐（默认阈值 2.0 = 该路关闭，行为不变）。
@@ -1345,6 +1410,50 @@ def run_backtest(codes: List[str], cfg: BacktestConfig,
     else:
         regime_ok = [True] * n
 
+    # ---- regime 恢复快通道（P0-1）预计算 ----
+    # 用**等权宇宙收盘价序列**自算 regime，不依赖指数（面板里可能无指数序列）。
+    # 等权宇宙净值：面板内各票前向填充后的 close（停牌日已由 align_panel 前向填充），
+    # 每票自首个 >0 价归一，逐日取均值。rf_relax_until[i] = 放宽生效的最后一日（含）
+    # 的索引；-1 表示当日不生效。深跌段 = 净值 <= near20max*(1+rf_drawdown_threshold)；
+    # 反弹确认日 t = 净值 >= near20min*(1+rf_rebound_pct) 且 5 日均线斜率>0；
+    # 自 t 起 rf_relax_days 个交易日内放宽。关闭时本段零开销、恒不生效。
+    rf_relax_until: List[int] = [-1] * n
+    if cfg.recovery_fastpath:
+        rf_lb = max(2, int(cfg.rf_lookback))
+        rf_relax = max(1, int(cfg.rf_relax_days))
+        rf_dd = float(cfg.rf_drawdown_threshold)
+        rf_rb = float(cfg.rf_rebound_pct)
+        # 等权宇宙净值（面板含各票 close，停牌已前向填充）
+        _uni = [0.0] * n
+        _cnt = [0] * n
+        for _c, _d in panel.items():
+            _cl = _d["close"]
+            _base = None
+            for _i in range(n):
+                _p = _cl[_i]
+                if _p and _p > 0:
+                    if _base is None:
+                        _base = _p
+                    _uni[_i] += _p / _base
+                    _cnt[_i] += 1
+        _eq = [(_uni[_i] / _cnt[_i]) if _cnt[_i] else 1.0 for _i in range(n)]
+        # 近 20 日高/低点、5 日均线（用 5 日均线的斜率>0 判定反弹确认）
+        _sma5 = I.sma(_eq, 5)
+        _sma5_slope = _vec_slope(_sma5, 5)
+        _rebound_confirmed_at = -1
+        for _i in range(n):
+            # 反弹确认（只看近 20 日低点反弹 + 5 日均线斜率>0）
+            _lo = max(0, _i - rf_lb + 1)
+            _near20min = min(_eq[_lo:_i + 1]) if _i >= _lo else _eq[_i]
+            if (_near20min > 0 and _eq[_i] >= _near20min * (1.0 + rf_rb)
+                    and _sma5_slope[_i] is not None and _sma5_slope[_i] > 0):
+                _rebound_confirmed_at = _i
+            # 放宽生效窗口：自最近一次反弹确认日起 rf_relax 个交易日
+            if _rebound_confirmed_at >= 0 and (_i - _rebound_confirmed_at) < rf_relax:
+                rf_relax_until[_i] = _rebound_confirmed_at + rf_relax - 1
+    # 快通道「当日是否放宽生效」布尔序列（供入场分支读取；关闭时全 False）
+    rf_relax_active: List[bool] = [(_x >= 0) for _x in rf_relax_until]
+
     # ----【PM-EVOLVE R29 路径②】AI 强势期信心加仓信号 ----
     # 与 regime_mode 的「弱势期关门」正交：这里在**强 AI 景气期**放大新开仓目标仓位。
     # 复用与 regime breadth 完全相同的广度定义（宇宙内站上 MA(regime_ma) 的比例），
@@ -1425,6 +1534,9 @@ def run_backtest(codes: List[str], cfg: BacktestConfig,
     # 【2026-10-08 第 23 轮】trend_break 顺延到次日开盘成交的挂单（exit_next_open）
     _deferred_trend_exit: List[str] = []
     _prev_close_equity = 0.0  # 昨日收盘权益（强平判定的「开盘资产」口径）
+    # 【2026-10-21 B9】涨跌停不可成交计数（limit_up_block=True 时统计，默认 False 恒为 0）
+    limit_blocked_buy = 0     # 因涨停不可成交而放弃/顺延的买入信号数
+    limit_blocked_sell = 0    # 因跌停封死不可卖出而顺延的离场次数
 
     WARMUP = max(65, int(cfg.momentum_lookback) + 5, exit_ma + 5,
                  int(cfg.min_warmup))
@@ -1630,6 +1742,20 @@ def run_backtest(codes: List[str], cfg: BacktestConfig,
             entry = panel[code]["open"][i]
             if entry <= 0:
                 continue
+            # 【2026-10-21 B9】涨停禁买（limit_up_block=True 时才进入，默认零行为变化）
+            # 语义：买「60 日动量最强、创 20 日新高」的票，信号次日开盘常一字/大幅涨停，
+            #   实盘无法以涨停价成交。若当日 open 或 high 触及涨停价（前一交易日收盘
+            #   ×(1+limit) 四舍五入到 0.01）⇒ 视为不可成交，**放弃**该笔（见
+            #   docs/Spec_B9_backtest_realism.md 的「放弃 vs 顺延」理由）。
+            # 前收用 panel 已有的 close[i-1] 自算，不新增数据依赖。
+            if cfg.limit_up_block and i > 0:
+                _pc = panel[code]["close"][i - 1]
+                if _pc > 0:
+                    _lp = _limit_price_from_prev_close(
+                        _pc, _limit_pct_for(code, cfg), "up")
+                    if entry >= _lp or panel[code]["high"][i] >= _lp:
+                        limit_blocked_buy += 1
+                        continue          # 涨停不可成交 → 放弃该买单
             stop_dist = order["stop_dist"]
             target_dist = order["target_dist"]
             wf = order.get("wf", 1.0)   # 动量排名加权因子（均值=1，强者>1弱<1）
@@ -1797,6 +1923,19 @@ def run_backtest(codes: List[str], cfg: BacktestConfig,
                 # 顺延到次日开盘成交（默认关闭 ⇒ 本分支不进入，零行为变化）
                 _deferred_trend_exit.append(code)
                 continue
+            # 【2026-10-21 B9】跌停禁卖（limit_up_block=True 时才进入，默认零行为变化）
+            # 语义：跌停封死（当日 low 触及跌停价）时卖单无法成交 ⇒ 顺延到下一交易日，
+            #   持仓保留、次日 B 段重新判定（见 docs/Spec_B9_backtest_realism.md）。
+            #   前收用 panel 已有的 close[i-1] 自算；顺延不改 entry，只推迟成交。
+            if (exit_price is not None and cfg.limit_up_block
+                    and i > 0 and panel[code]["low"][i] > 0):
+                _pc = panel[code]["close"][i - 1]
+                if _pc > 0:
+                    _ld = _limit_price_from_prev_close(
+                        _pc, _limit_pct_for(code, cfg), "down")
+                    if panel[code]["low"][i] <= _ld:
+                        limit_blocked_sell += 1
+                        continue          # 跌停封死 → 顺延（持仓保留，明日重判）
             if exit_price is not None:
                 cash += pos["qty"] * exit_price * (1 - cfg.cost_pct)
                 net_entry = entry * (1 + cfg.cost_pct)
@@ -1877,6 +2016,9 @@ def run_backtest(codes: List[str], cfg: BacktestConfig,
                         continue
                     _raws[code] = cc[i] / base - 1
                 _thr = float(cfg.momentum_min_mom)
+                # ---- regime 恢复快通道：确认后放宽动量门槛（仅放宽，不改其它）----
+                if cfg.recovery_fastpath and i < len(rf_relax_active) and rf_relax_active[i]:
+                    _thr = float(cfg.rf_mom_threshold)
                 if cfg.mom_rel_fallback > 0 and _raws:
                     # 触发条件：绝对门槛下通过数 < 入场宽度要求（min_passing_candidates）
                     _need = max(1, int(cfg.min_passing_candidates or 1))
@@ -1964,7 +2106,10 @@ def run_backtest(codes: List[str], cfg: BacktestConfig,
                         continue
                 if cfg.entry_mode == "trend":
                     # 日线突破追涨：处于日线主升 + 价格逼近 20 日新高
-                    if not trend_up_arr[code][i]:
+                    _tu_pass = trend_up_arr[code][i]
+                    if cfg.recovery_fastpath and rf_relax_active[i]:
+                        _tu_pass = _tu_pass or trend_up_noslope_arr[code][i]
+                    if not _tu_pass:
                         continue
                     hi20 = max(c[max(0, i - int(cfg.trend_breakout_window)):i + 1])
                     if c[i] < hi20 * cfg.trend_breakout_near_high:
@@ -1985,7 +2130,9 @@ def run_backtest(codes: List[str], cfg: BacktestConfig,
                         if sum(1 for x in factors.values() if x > 0) < cfg.min_signals:
                             continue
                     if cfg.use_gate and not _bypass and not (
-                            trend_up_arr[code][i]
+                            (trend_up_noslope_arr[code][i]
+                             if (cfg.recovery_fastpath and rf_relax_active[i])
+                             else trend_up_arr[code][i])
                             or bias_arr[code][i] >= cfg.min_daily_bias):
                         continue
                 # 宽度统计：无论是否在动量池内，只要通过全部入场门就算一票
@@ -2232,6 +2379,7 @@ def run_backtest(codes: List[str], cfg: BacktestConfig,
                     stop_dist = max(abs(cfg.stop_loss), ap * cfg.atr_stop_mult)
                 pending.append({
                     "code": code,
+                    "signal_day": i,     # 信号生成日（成交日的前一交易日）
                     "stop_dist": stop_dist,
                     "target_dist": max(abs(cfg.take_profit), ap * cfg.tp_atr_mult),
                     "wf": wf_map.get(code, 1.0) * (0.5 if code in _broad_half_codes else 1.0),
@@ -2384,6 +2532,9 @@ def run_backtest(codes: List[str], cfg: BacktestConfig,
         # 实时 RiskManager −10% 全局暂停建模指标（研究用，默认 0）
         "rm_halted_ever": rm_halted_ever,
         "rm_halted_days": rm_halted_days,
+        # 涨跌停不可成交计数（B9 研究开关，默认 False 恒为 0）
+        "limit_blocked_buy": limit_blocked_buy,
+        "limit_blocked_sell": limit_blocked_sell,
     }
 
 
