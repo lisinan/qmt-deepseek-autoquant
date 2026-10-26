@@ -45,3 +45,5 @@ logs/benchmark_daily.jsonl
 logs/gate_timeline.jsonl
 # DB 维护备份（体积大，本地留存即可）
 storage/qmt.db.bak-*
+# guardian 降级告警的按天去重标记（运行时产物）
+logs/.guardian_alert_last
