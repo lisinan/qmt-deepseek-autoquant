@@ -7875,3 +7875,173 @@ risk/position_sizer.py、risk/risk_manager.py、core/risk_manager.py）：
   其余 12 个变体四窗最差 dSh 全负（X0 −0.402 / X4 −0.153 / Y1~Y3 −0.386 / Y4 −0.418 …）
   ⇒ 与 R33/R35/R41 的四次独立结论一致，**动量阈值轴与相对回退轴再次确认闭合**。
 - ⇒ R41 §7-P2「末端未收盘 bar」的量测卫生风险**本轮实测为零**（收盘 bar 与盘中 bar 给出同一 P0）。
+
+---
+
+## R42-RSI 递归自进化 | 2026-10-28 | 首跑：把"改进方式"本身变成审计对象
+
+> 术语澄清：本项目 **RSI = Recursive Self-Improvement**（递归自进化），
+> 不是 Relative Strength Index。指标 RSI 那条研究同日首跑并已 NO-GO 闭合（见本节末）。
+> 分层定义见 `docs/RECURSIVE_SELF_IMPROVEMENT.md`；脚本 `scripts/_recursive_self_improve.py`；
+> 产物 `reports/meta/RSI_META_LATEST.md`。
+
+### 审计发现（四层实测，2026-10-28 22:58）
+
+| 层 | 指标 | 实测 |
+|---|---|---|
+| L1 搜索空间 | 生产参数 76 个 | 双向可验证 **49（64%）** / 仅实盘 **24** / 仅回测 0 / 死参数 **3** |
+| L2 反馈可信度 | `base_cfg()` vs settings 逐字段比对 | 可比 52，**漂移 0**；未映射 75（多为研究开关） |
+| L3 循环活性 | 10 个任务最近运行时间 | **6 个停在 10-20/21**（10-22~10-28 停摆 7 天，当日已全部恢复 ACTIVE） |
+| L4 循环能力 | 6 项防线 | **6/6 齐备**（划不变量/多窗共识/不变性基线/单仓守卫/末端 bar 守卫/读点扫描） |
+| 账本 | 56 轮 / 落盘 9 / 否决 187 | 迭代效率 **16%**，且**未按原因分类** ⇒ 命中率不可算 |
+
+- **死参数 3**：`rsi_oversold`、`rsi_overbought`（阈值硬编码 30/70/80）、`max_position_amount`
+  （实际生效为 `max_order_amount`，但 `tests/test_leverage_scale_invariance.py:191` 仍对死键做相等断言）。
+- **仅实盘 24**：分钟级指标组（ma_*/rsi_period/macd_*/kdj/boll_*/atr_period/volume_surge）、
+  熔断组（daily_loss_limit_*/halt_recover_days/max_consecutive_losses*/max_daily_trades/dd_recover_days，
+  回测侧对应字段是**硬编码常量**而非接线）、结构开关组（enable_rotation/rotation_cooldown_sec/
+  momentum_scope/require_daily_data/max_order_amount）。
+- ★ **重要连带**：`enable_rotation` 在回测器无同名开关 ⇒ 历史上「轮换无价值」的结论**无回测支撑**，
+  应改标为「未验证」，不得计入已证伪清单。
+
+### 本轮改动
+
+- **不改策略参数**（零行为变化）。
+- 新增 `scripts/_recursive_self_improve.py`（元审计器，只读，1.6s）；
+- 新增 `docs/RECURSIVE_SELF_IMPROVEMENT.md`（分层定义 / 五类缺陷 / 路线图 / 循环自身 KPI）；
+- 自动化 `4a425d4f` 由「RSI 指标研究」**改为「递归自进化 RECURSIVE-SELF-IMPROVE（每周六 11:00）」**，
+  职责改为二阶优化：每周只落地一条「让后续轮次更可能做对」的流程改动。
+
+### 验证方式与结果
+
+元审计为静态+动态只读检查：AST 级读点识别（含 `cfg.x` / `replace(cfg, x=)` / 字符串下标三种形态）、
+`base_cfg()` 与 settings 逐字段比值、自动化 memory mtime。**未触碰任何生产文件**，
+`EXECUTION_MODE=paper` 未变，未 kill 进程。
+
+途中修正两次自身误报（记录以便后人）：
+1. 只扫 `engine/ + strategy/ + main.py` ⇒ 漏掉 `risk/manager.py`，5 个熔断键被误判「死参数」；
+   改为全仓库扫描后修正为 3 个。
+2. 回测用**别名**建模（`consec_loss_trigger ← max_consecutive_losses` 等）；
+   已加显式别名表，并把量纲不等价的（`daily_loss_abs_pct` 比例 vs `daily_loss_limit_abs` 金额）排除，
+   避免制造假漂移。
+
+### 预期如何让后续轮次更可能做对
+
+- ① 基线自动派生 + 漂移守卫（P0-a）⇒ 尺子无法漂移，跨轮增量可比（历史上已漂移 13 次）；
+- ② 账本结构化（P0-b）⇒ 首次可算「迭代命中率 / 浪费率」，L3 度量成立；
+- ③ 搜索空间白名单 ⇒ 网格不再落在死键与不可回测键上，避免把「测不到」误读成「无价值」。
+
+### 回滚方式
+
+删除 `scripts/_recursive_self_improve.py` / `docs/RECURSIVE_SELF_IMPROVEMENT.md`，
+并把自动化 `4a425d4f` 改回停用即可；生产代码与配置零改动，无需回滚。
+
+### 附：指标 RSI（Relative Strength Index）研究结论 —— NO-GO，闭合
+
+`scripts/_rsi_evolve.py`（3.2s，4535 个候选标的日 / 去重叠 461）：
+设置项在日线闸门链无读取点；候选池 RSI(14) 最小 48.4、中位 65.2（超卖桶零样本）；
+唯一显著结果**反向**（`RSI≤55` → Δ20d −6.01%，p=0.0026）；`corr(RSI,mom60)=+0.40` 弱代理。
+护栏：**禁止新增 RSI 上界过滤/超买剔除**。该方向不再排期。
+
+---
+
+## R43 递归自进化·第 1 轮交付 | 2026-10-28 | 搜索空间契约：把「哪些参数根本测不了」变成会红的测试
+
+> 定位：这是 **L2（二阶）改动** —— 不改策略，改「改进方式」。R42 是首跑的**测量**，
+> 本轮是首跑的**处方**。纪律：每周只落一条，保持归因干净。
+
+### 审计发现（全部带数字）
+
+1. **搜索空间真实分辨率只有 64%**：76 个生产参数中，双向可验证 **49**、别名可验证 **1**、
+   仅实盘 **23**、**死参数 3**（`rsi_oversold` / `rsi_overbought` / `max_position_amount`）。
+   即：任何一轮网格若有 1/3 概率落在「仅实盘/死参数」上，dSh 恒为 0.000 **不是策略属性，
+   而是量错了对象**。R41 之前的若干「已证伪」正属此列。
+2. **同一批参数，两个工具报两个数**：元审计脚本报「仅实盘 24」，契约模块报 23。
+   差 1 的来源是「别名接线」计数口径不同 —— 两份实现从诞生起就在静默漂移，
+   而**报告读的是 A、守卫钉的是 B**。这是比数字本身更危险的结构性缺陷。
+3. **`enable_rotation` 的历史「证伪」无回测支撑**：回测器没有 rotation 总开关，
+   该结论只能记「未验证」。已在契约中显式登记原因字符串，防止后人再引用。
+4. **反馈尺子（`base_cfg()`）当前漂移 0/52**：状态健康，但它是**手抄镜像**
+   （docstring 累计记录 13 次历史漂移）⇒ 仍是最高优先级结构风险（P0-a，下周候选）。
+
+### 本轮改动（文件:行）
+
+| 文件 | 性质 | 说明 |
+|---|---|---|
+| `strategy/_param_audit.py`（新增 214 行） | 单一事实源 | `identifiers()`（AST 四形态）/ `_collect()`（全仓库 − 排除目录）/ `classify()` 五分类 / `contract_violations()` 双向校验 |
+| `tests/test_search_space_contract.py`（新增 12 用例） | 守卫 | 钉住 `CONTRACT_LIVE_ONLY`(23) 与 `CONTRACT_DEAD`(3)；含**正向对照** |
+| `tests/run_all.py:280-288` | 注册 | 显式登记，防「漏注册 ⇒ 整文件隐形未执行」 |
+| `scripts/_recursive_self_improve.py:47-58` | 去重 | 删掉自带副本，改为 `from strategy import _param_audit as PA` |
+| `scripts/_recursive_self_improve.py:175-215` | 改造 | `audit_search_space()` 直接消费 `PA.classify()`，不再自行重算 |
+| `scripts/_recursive_self_improve.py:236-251` | 重命名 | `ALIAS` → `DRIFT_ALIAS`，注明与 `PA.ALIAS` 是**不同口径**（能否比值 vs 能否验证） |
+
+**是否改变策略行为：否。** 生产参数零改动、`config/settings.py` 零改动、
+`strategy/backtest_daily.py` 零改动。新模块未被任何生产代码 import。
+
+### 验证方式与结果
+
+| 验证 | 结果 |
+|---|---|
+| 契约自检 `python strategy/_param_audit.py` | 分类 49/1/23/3，**契约校验通过** |
+| 新测试单跑 | **12/12 通过** |
+| 全量 `tests/run_all.py` | **PASSED 627 / FAILED 0（91.25s）**，此前 615 条 + 新 12 条 |
+| 元审计脚本 | 仅实盘 **24 → 23**，与契约**首次一致**；可用率 64%；漂移 0/52；能力 6/6 |
+| **P0 不变性（纪律第 5 条）** | `--mode span --count 900`：**IS +301.05% / Sh 1.93 / MDD −12.97%**，与 R41 记录值逐位相同 |
+
+关于窗口：本次面板为 23 只 × 902 根 `20230208 → 20261028`（上一轮记录为 `20230201 → 20261021`，
+两端各滑 5 个交易日）。**指标仍逐位相同**，原因是两端滑动都落在零成交区：
+头部 `min_warmup + momentum_lookback(60)` 内无入场，尾部回测权益自 2026-07-15 起零变动。
+这条解释同时把 P2「末端 bar 未收盘」疑点收窄了一半 —— 23:16 运行时当日 bar 已收盘。
+
+设计上刻意规避的两个坑（写进代码注释，防复现）：
+- **自污染**：本模块的契约表会列出全部参数名，若不把自己排除在扫描外，3 个死参数会
+  静默变成「仅实盘」、别名对变成「双向可验证」—— 一份更健康的假象。`SELF_EXCLUDE` 已挡；
+  `test_self_module_is_excluded_from_scan` 钉住。
+- **合谋式假绿**：若某次重构让 `identifiers()` 永远返回空集，全部参数会一起变「死参数」，
+  此时只要把契约表一起改掉，`test_contract_matches_actual` 仍会绿。
+  `test_detector_is_not_degenerate` 用「占比 ≥40% + 12 个历史主战场旋钮逐个点名」阻止。
+  ★ 该断言在编写时就抓到一次真错：初版把研究旋钮 `momentum_weight` 写进「必须可验证」清单，
+  实测红 —— 因为它只存在于 `BacktestConfig`，不在生产参数里。
+
+### 预期如何让后续轮次更可能做对
+
+- 以后**任何「网格 dSh 恒 0.000」不再允许直接写成「已证伪」**：先跑契约，
+  落在「仅实盘」⇒ 结论记「未验证」；落在「死参数」⇒ 该轴不该开工。
+  这一条把 R41 期间的一类系统性误判从「靠人记」变成「测试会红」。
+- 报告与守卫**读同一个函数**，杜绝「工具报 24 / 守卫钉 23」的静默分叉。
+- 新增参数若未归类，`test_every_param_is_classified` + `contract_violations()` 反向检查
+  会在**当天**变红，而不是等某个轮次把某轴研究完才发现「这键没人读」。
+
+### 回滚方式
+
+删除 `tests/test_search_space_contract.py` + `strategy/_param_audit.py`，
+并从 `tests/run_all.py` 移除注册项即可。**无生产行为、无参数、无配置改动 ⇒ 无需回滚策略**。
+`scripts/_recursive_self_improve.py` 可保留（只读报告工具）。
+
+### 下周候选（一次只做一条）
+
+- **P0-a**：`base_cfg()` 改为从 `config/settings.py` 自动派生 + 漂移守卫（含显式 IGNORE 白名单）。
+  ★ 需先读过 `test_evolve_baseline_sync.py` —— 它已覆盖 ~50 个同名字段，
+  真实缺口只有别名的 3 对，而那 3 对指向的闸门在 P0 中**本就关闭** ⇒ 收益可能低于预期。
+- **P0-b**：账本结构化（给 57 轮 / 9 落盘 / 189 否决打「原因标签」）⇒ 首次可算迭代命中率。
+- **新增发现（本轮观测副产物）**：循环活性只能靠 memory.md 的 mtime 判断，
+  **无法区分「PAUSED」与「已恢复但还没轮到下次触发」** ⇒ 恢复 ACTIVE 后的一周内，
+  元审计会持续误报「停摆」。这是 L3 度量本身的观测面缺口，记入 P1-b。
+
+### 补记（同日 23:45）：账本三项指标是**词频**，不是事件数
+
+在写本条目时发现一个直接影响 L3 度量有效性的缺陷：`audit_ledger()` 用正则计数
+（`REJECTED|已否决|回滚`、`LANDED|已落盘|已实施`），返回的字段名其实就叫
+`rejected_mentions` / `landed_mentions`，但**报告与终端把它渲染成「否决 189 / 落盘 9」**，
+读者必然当成轮次事件数，进而当成「迭代效率 16%」。
+
+**实证**：本轮追加本段之前，同一文件的计数为「否决 189」；追加带「否决/回滚」字样的
+说明后变为「191」，而轮次、落盘、策略全部未变。⇒ 该比值随**文字描述**漂移。
+
+处理（只改标签，不改算法，避免把本周的 L2 改动扩成两条）：
+- 终端与 Markdown 报告一律加「提及」二字，并显式注明「不可当迭代效率读」；
+- `docs/RECURSIVE_SELF_IMPROVEMENT.md` §2.4 同步更正；
+- 真正的结构化统计仍留 P0-b（本轮不动算法，以免「标签修正」与「口径重写」混在一起无法归因）。
+
+**这条本身就是 L2 的自证**：连「循环如何评价自己」的那个数字都可能是假的。
+与 R40 的「正收折数是划分假象」同型 —— **符号型/计数型指标比比率型更会伪装成事实**。

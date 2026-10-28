@@ -1,0 +1,444 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AI产业链23只股票结构化分析报告 · 2026-10-28</title>
+<script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
+<style>
+  :root{
+    --bg:#0d1220; --bg2:#111828; --card:#161f33; --card2:#1b2540; --line:#26334f;
+    --tx:#e8eef8; --tx2:#9aa8c0; --tx3:#6b7a95;
+    --up:#f0435e; --down:#17b978; --accent:#38bdf8; --gold:#f0b429; --teal:#2dd4bf;
+  }
+  *{box-sizing:border-box; margin:0; padding:0;}
+  body{background:var(--bg); color:var(--tx); font-family:"PingFang SC","Microsoft YaHei","Segoe UI",system-ui,sans-serif; line-height:1.65; font-size:14px;}
+  .wrap{max-width:1280px; margin:0 auto; padding:28px 20px 60px;}
+  header.hero{background:linear-gradient(135deg,#14203a 0%,#0f1830 60%,#131a2e 100%); border:1px solid var(--line); border-radius:16px; padding:34px 36px; margin-bottom:22px; position:relative; overflow:hidden;}
+  header.hero::after{content:""; position:absolute; right:-60px; top:-60px; width:260px; height:260px; border-radius:50%; background:radial-gradient(circle,rgba(56,189,248,.14),transparent 70%);}
+  .hero h1{font-size:26px; letter-spacing:.5px; margin-bottom:8px;}
+  .hero .sub{color:var(--tx2); font-size:13.5px;}
+  .badges{display:flex; flex-wrap:wrap; gap:8px; margin-top:16px;}
+  .badge{background:rgba(56,189,248,.10); border:1px solid rgba(56,189,248,.35); color:#9fd8f6; padding:3px 12px; border-radius:20px; font-size:12px;}
+  .badge.gold{background:rgba(240,180,41,.10); border-color:rgba(240,180,41,.4); color:#f5cf7a;}
+  .badge.red{background:rgba(240,67,94,.10); border-color:rgba(240,67,94,.4); color:#f8a3b1;}
+  .badge.green{background:rgba(23,185,120,.10); border-color:rgba(23,185,120,.4); color:#8fe3c0;}
+  h2.sec{font-size:19px; margin:34px 0 6px; padding-left:12px; border-left:4px solid var(--accent);}
+  .sec-no{color:var(--tx3); font-size:12px; font-weight:400; margin-left:8px;}
+  p.lead{color:var(--tx2); font-size:13px; margin-bottom:14px;}
+  .card{background:var(--card); border:1px solid var(--line); border-radius:12px; padding:18px 20px; margin-bottom:14px;}
+  .kpis{display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:12px; margin:14px 0;}
+  .kpi{background:var(--card2); border:1px solid var(--line); border-radius:12px; padding:14px 16px;}
+  .kpi .v{font-size:22px; font-weight:700;}
+  .kpi .l{font-size:12px; color:var(--tx2); margin-top:2px;}
+  .kpi .d{font-size:11.5px; color:var(--tx3); margin-top:4px;}
+  table{width:100%; border-collapse:collapse; font-size:12.8px; background:var(--card); border-radius:10px; overflow:hidden; margin:10px 0 16px;}
+  th{background:#1a2540; color:#b9c8e2; font-weight:600; padding:8px 9px; text-align:left; white-space:nowrap; border-bottom:1px solid var(--line);}
+  td{padding:7px 9px; border-bottom:1px solid #1e2942; color:var(--tx); vertical-align:top;}
+  tr:hover td{background:rgba(56,189,248,.05);}
+  .num{font-variant-numeric:tabular-nums; text-align:right;}
+  .up{color:var(--up);} .down{color:var(--down);} .flat{color:var(--tx2);}
+  .sc{display:inline-block; min-width:34px; text-align:center; padding:1px 7px; border-radius:6px; font-weight:700; font-size:12px;}
+  .sc5{background:rgba(240,67,94,.22); color:#ff8ba0;} .sc4{background:rgba(240,120,140,.16); color:#f8a3b1;}
+  .sc3{background:rgba(240,180,41,.16); color:#f5cf7a;} .sc2{background:rgba(45,212,191,.14); color:#7fe3d4;}
+  .sc1{background:rgba(120,140,170,.14); color:#a9b8d0;}
+  .tag{display:inline-block; padding:1px 8px; border-radius:5px; font-size:11.5px; background:#223052; color:#a9c3e8; margin:1px 2px;}
+  .chart{width:100%; height:420px; margin:6px 0 4px;}
+  .chart-tall{height:560px;}
+  .note{background:rgba(240,180,41,.07); border:1px solid rgba(240,180,41,.25); border-radius:10px; padding:10px 14px; font-size:12.5px; color:#e8d9b0; margin:10px 0;}
+  .ok{background:rgba(23,185,120,.08); border:1px solid rgba(23,185,120,.3); border-radius:10px; padding:10px 14px; font-size:12.5px; color:#a9e8cc; margin:10px 0;}
+  .warn{background:rgba(240,67,94,.07); border:1px solid rgba(240,67,94,.3); border-radius:10px; padding:10px 14px; font-size:12.5px; color:#f5b8c2; margin:10px 0;}
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:14px;}
+  @media(max-width:900px){.grid2{grid-template-columns:1fr;}}
+  ul.tight{margin:6px 0 12px 18px;} ul.tight li{margin:4px 0; color:var(--tx);}
+  ol.tight{margin:6px 0 12px 20px;} ol.tight li{margin:6px 0;}
+  .src{color:var(--tx3); font-size:11.5px; margin-top:6px;}
+  .flow{display:flex; flex-wrap:wrap; align-items:center; gap:6px; margin:12px 0; font-size:12.5px;}
+  .flow .node{background:var(--card2); border:1px solid var(--line); border-radius:9px; padding:7px 13px;}
+  .flow .node b{color:var(--accent);}
+  .flow .arr{color:var(--tx3);}
+  footer{margin-top:44px; border-top:1px solid var(--line); padding-top:18px; color:var(--tx3); font-size:12px;}
+  .disclaimer{background:#131b30; border:1px dashed #33415f; border-radius:10px; padding:14px 18px; color:var(--tx2); font-size:12.5px; margin-top:18px;}
+  .mini{font-size:12px; color:var(--tx2);}
+  b.r{color:#ff8ba0;} b.g{color:#7fe3d4;} b.y{color:#f5cf7a;}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="hero">
+  <h1>AI 产业链 23 只股票 · 结构化分析报告</h1>
+  <div class="sub">多子agent分工分析 ｜ 宏观 × 基本面 × 技术量化 × 资金情绪 × 数据治理五维交叉验证</div>
+  <div class="badges">
+    <span class="badge">报告日期：2026-10-28（周三·盘前）</span>
+    <span class="badge">数据基准：2026-10-27 收盘</span>
+    <span class="badge gold">标的：23 只个股 · 6 大板块 · 3 大指数</span>
+    <span class="badge green">数据核查：5 项 PASS · 4 项已补齐</span>
+    <span class="badge red">策略入场信号：0 / 23</span>
+  </div>
+</header>
+
+<!-- ============ 执行摘要 ============ -->
+<h2 class="sec">执行摘要<span class="sec-no">Executive Summary</span></h2>
+<div class="kpis">
+  <div class="kpi"><div class="v up">0 / 23</div><div class="l">趋势策略入场信号</div><div class="d">仅 2 只收盘&gt;MA60，60日动量无一达标</div></div>
+  <div class="kpi"><div class="v down">21 / 23</div><div class="l">收盘价低于 MA60</div><div class="d">其中 9 只深度破位（低于MA60≥20%）</div></div>
+  <div class="kpi"><div class="v down">-19.7%</div><div class="l">AI链22只等权近20日</div><div class="d">光模块 -38.5% vs AI应用 +0.8%</div></div>
+  <div class="kpi"><div class="v up">+123.33亿</div><div class="l">23股主力资金近5日净流入</div><div class="d">近20日仍净流出 -45.90亿</div></div>
+  <div class="kpi"><div class="v down">-292.19亿</div><div class="l">23股融资余额13日变化</div><div class="d">两融12连降，电子行业降幅最大</div></div>
+  <div class="kpi"><div class="v">5.38万亿</div><div class="l">23股总市值</div><div class="d">as_of 2026-10-27（tushare）</div></div>
+</div>
+<div class="card">
+<ul class="tight">
+  <li><b>大势偏弱、政策偏强、海外中性</b>：三大指数全部收于 MA60 下方（创业板指 vsMA60 -21.87%、年内位置仅 2.9%），两市成交 1.46 万亿连续 19 日不足 2 万亿；但 10-9 中央「新质生产力」意见全面实施「AI+」行动、央行 10-27 单日净投放 10140 亿，产业逻辑未破坏，受损的是资金面与风险偏好。</li>
+  <li><b>基本面进入「业绩兑现分层」阶段</b>：23 股中 11 家 2026 年归母净利增速超 50%，高增长集中于光模块/PCB/AI芯片/服务器；估值错配是最大风险源——新易盛（PE 25.3/+91.0%）、浪潮信息（PE 17.6/+156~177%）属低估值高增长，寒武纪（PE 137.7）、海光（126.7）、数据港（125.9/净利+0.7%）已大幅透支。</li>
+  <li><b>技术面趋势破位面极大</b>：60 日动量全线哑火（最高太辰光 +3.48%），10 只个股年内位置 &lt;10%，多数跌至年内低点附近；唯一切结构完好的是金山办公（唯一「&gt;MA60 且动量为正」）。</li>
+  <li><b>资金面「短期回流、中期撤退」</b>：10-23 光模块龙头集体公告日单日主力净流入 +122.61 亿（区间峰值），10-27 转为 -36.08 亿；两融 12 连降 -1479.80 亿（全市场），AI 硬件是融资盘撤退重灾区；AI 应用是唯一「短中期资金双正」板块。</li>
+  <li><b>综合评分前三</b>：海康威视 3.83（量价资金三强+防御属性）、金山办公 3.77（唯一趋势完好+资金双正）、新易盛 3.57（低估高增长+资金双正）；综合后三：光环新网 1.97、浪潮信息 2.00、景嘉微 2.07。</li>
+  <li><b>数据治理结论</b>：日线面板已刷新至 2026-10-27（26 代码，与旧面板重叠期逐位一致）；资金流缓存 23/23 达标；核查发现 B/D 两份子报告遗漏中微公司（688012.SH）、面板缺上证指数，均已补齐并标注来源与更新时间。</li>
+</ul>
+</div>
+
+<!-- ============ 一、流程与分工 ============ -->
+<h2 class="sec">一、分析流程拆解与子 Agent 分工<span class="sec-no">Process & Sub-Agent Design</span></h2>
+<p class="lead">按「先数据治理 → 再多维并行分析 → 后交叉汇总」的流水线组织，5 个子 agent 职责互斥、边界清晰，统一数据交付标准。</p>
+<div class="flow">
+  <span class="node"><b>编排层</b> 定Scope/数据底座</span><span class="arr">→</span>
+  <span class="node"><b>E 数据治理</b> 三维度核查+补齐</span><span class="arr">→</span>
+  <span class="node"><b>A 宏观</b>／<b>B 基本面</b>／<b>C 技术量化</b>／<b>D 资金情绪</b>（并行）</span><span class="arr">→</span>
+  <span class="node"><b>编排层</b> 覆盖度交叉核查+缺口补齐</span><span class="arr">→</span>
+  <span class="node"><b>汇总</b> 结构化报告</span>
+</div>
+<table>
+<tr><th style="width:90px">子Agent</th><th style="width:110px">角色</th><th>职责边界（做什么）</th><th>明确不做（边界）</th><th style="width:220px">数据交付标准</th></tr>
+<tr><td><b>A</b></td><td>宏观与市场环境</td><td>A股大势与指数环境；AI/半导体/算力政策与流动性；美股AI链与出口管制映射；对板块的整体影响判断</td><td>个股财务、个股技术形态、个股资金流</td><td>行情≤2026-10-27；政策/新闻≤7天；每数据点带来源(URL/接口)+as_of</td></tr>
+<tr><td><b>B</b></td><td>基本面与估值</td><td>23股估值(PE/PB/PS/市值)；最新财报(ROE/增速/毛利率)；业绩预告；六大板块景气梳理；每股基本面评分</td><td>技术形态、资金流、宏观政策</td><td>估值≤2026-10-27；财报=最新已披露报告期；行业新闻≤14天；缺口须声明不得编造</td></tr>
+<tr><td><b>C</b></td><td>技术面与量化策略</td><td>23股多周期涨跌/均线结构/60日动量/ATR/量能/回撤；指数环境；策略信号口径统计；每股技术评分与关键位</td><td>基本面财务、资金流明细、宏观政策</td><td>数据源=tushare面板(as_of 10-27)；计算公式须注明；脚本可复核</td></tr>
+<tr><td><b>D</b></td><td>资金面与情绪</td><td>主力资金流(近5/20日)；北向与两融；龙虎榜异动；一周舆情；资金面评分与异常清单</td><td>基本面财务、技术形态计算、宏观政策</td><td>资金≤2026-10-27；北向/两融/新闻≤7天；缓存更新须先备份再覆盖</td></tr>
+<tr><td><b>E</b></td><td>数据治理核查</td><td>全数据源完整性/准确性/时效性三维核查；子agent输出覆盖度交叉核查；缺失补齐并记录来源与更新时间</td><td>不产出任何行情观点/投资建议</td><td>核查结论须基于实际检查输出；补齐动作逐条留痕</td></tr>
+</table>
+<div class="note"><b>统一数据交付标准（五条铁律）</b>：① 每个关键数据点必须标注来源（接口名/URL）与 as_of 日期；② 时效红线：行情资金 ≤ T+1、财报 = 最新已披露期、宏观新闻 ≤ 7 天；③ 取不到的数据必须写「未获取+原因」，<b>严禁编造数值</b>；④ 输出为结构化 markdown（含表格），评分统一 1-5 分制；⑤ 严禁修改生产配置/策略参数，严禁 git 操作。</div>
+
+<!-- ============ 二、数据完整性说明 ============ -->
+<h2 class="sec">二、数据完整性 · 准确性 · 时效性核查说明<span class="sec-no">Data Governance</span></h2>
+<p class="lead">核查时间 2026-10-28；核查对象覆盖日线面板、资金流缓存、财务/预告缓存、主库 qmt.db、动态宇宙及五份子agent产出。原则：发现问题当场补齐并标注来源与更新时间；补不了的记录原因，不造数。</p>
+<table>
+<tr><th>数据源</th><th>覆盖范围</th><th>时间范围</th><th>完整性</th><th>准确性</th><th>时效性</th><th>结论</th></tr>
+<tr><td>日线面板 <span class="mini">ts_panel_25_901_20211201_20261027.pkl</span></td><td>26 代码（23股+3指数）</td><td>2021-12-01 → <b>2026-10-27</b></td><td class="up">PASS（26/26）</td><td class="up">PASS（OHLC 0 违规、无重复日期）</td><td class="up">PASS（T+1）</td><td class="up"><b>PASS</b> · 已刷新</td></tr>
+<tr><td>资金流缓存 <span class="mini">data/cache/moneyflow_*.json</span></td><td>23 只个股</td><td>2022-01-04 → <b>2026-10-27</b></td><td class="up">PASS（23/23 文件）</td><td class="up">PASS（与备份重叠期零差异）</td><td class="up">PASS（T+1）</td><td class="up"><b>PASS</b> · 已补齐</td></tr>
+<tr><td>主库 <span class="mini">storage/qmt.db</span></td><td>orders/fills/signals/equity 等 12 表</td><td>末条 <b>2026-10-27T15:04</b></td><td class="up">PASS</td><td class="up">PASS（engine_state 与权益快照对齐）</td><td class="up">PASS</td><td class="up"><b>PASS</b></td></tr>
+<tr><td>动态宇宙 <span class="mini">storage/dynamic_universe.json</span></td><td>375 只 / 活跃池 30 只</td><td>刷新于 <b>2026-10-28 07:26</b></td><td class="up">PASS</td><td class="up">PASS（∩策略池 12 只，口径一致）</td><td class="up">PASS（当日）</td><td class="up"><b>PASS</b></td></tr>
+<tr><td>earnrev 缓存 <span class="mini">data/cache/earnrev_*.json</span></td><td>20 个文件</td><td>—</td><td class="up">诊断完成</td><td class="up">2字节"{}"为设计正常输出（非bug）</td><td>—</td><td class="up"><b>记录在案</b></td></tr>
+<tr><td>子agent产出覆盖度</td><td>A/B/C/D 四份报告</td><td>2026-10-28</td><td class="down">B/D 各缺 688012.SH</td><td>—</td><td>—</td><td class="down"><b>已补齐</b>（编排层追加章节）</td></tr>
+<tr><td>面板指数完整性</td><td>000001.SH 缺失</td><td>—</td><td class="down">缺上证指数序列</td><td>—</td><td>—</td><td class="down"><b>已补齐</b>（pro.index_daily）</td></tr>
+</table>
+
+<div class="card">
+<b style="color:var(--gold)">本轮补齐动作清单（共 6 项，全部标注来源与更新时间）</b>
+<table style="margin-top:10px">
+<tr><th>#</th><th>补齐项</th><th>动作</th><th>来源</th><th>更新时间</th></tr>
+<tr><td>1</td><td>日线面板过期（末日 10-16，落后 7 个交易日）</td><td>全量重拉 23 只个股日线</td><td>tushare pro.daily</td><td>2026-10-28 07:48</td></tr>
+<tr><td>2</td><td>沪深300/创业板指缺失</td><td>补拉并入面板</td><td>tushare pro.index_daily</td><td>2026-10-28 07:49</td></tr>
+<tr><td>3</td><td>上证指数缺失（E1）</td><td>补拉并入面板（收 3648.30）</td><td>tushare pro.index_daily</td><td>2026-10-28 08:05</td></tr>
+<tr><td>4</td><td>资金流缓存过期（末端 08-25，22 只）</td><td>补拉 10-01→10-27，备份后覆盖</td><td>tushare pro.moneyflow</td><td>2026-10-28 07:51（D 子agent）</td></tr>
+<tr><td>5</td><td>中微公司资金流+基本面+两融遗漏</td><td>增量补齐 39 个交易日；估值/财务/预告/两融按 B/D 同口径补算</td><td>tushare pro.moneyflow / daily_basic / fina_indicator / forecast / margin_detail</td><td>2026-10-28 08:00（编排层）</td></tr>
+<tr><td>6</td><td>B/D 报告缺 688012 章节（E4/E5）</td><td>按原子报告口径追加「编排层补齐」章节并修正汇总数</td><td>—（数据侧均已就位）</td><td>2026-10-28 08:10</td></tr>
+</table>
+</div>
+<div class="ok"><b>准确性交叉验证</b>：① 新面板与旧面板（≤2026-10-16）重叠 1180 日 × 23 代码 × 5 字段<b>逐位一致（0 差异）</b>，排除刷新引入的源漂移；② 两融余额 tushare 口径与证券时报公开数据<b>完全一致</b>（10-26 两市 23,892.59 亿 + 北交所 78.10 亿 = 23,970.69 亿）；③ 北向成交额与乐咕乐股序列 ×100 万互证；④ B 报告剔除 3 处媒体错标「2026 前三季度」实为 2025 年数据的冲突稿。</div>
+<div class="note"><b>已知口径限制（不构成数据缺陷）</b>：① 北向个股级净流入自 2024-08-18 起停止披露，仅有成交额口径与券商估算；② 11 家公司最新财报期为 2026H1（Q3 待 11 月初密集披露），中芯国际 2026Q3 财报未入库；③ 景嘉微/光环新网 TTM 净利为负，tushare 不计算负 PE（已用 PB/PS 辅助）；④ 4 只个股存在历史停牌缺口、3 处长假日历缺口（新旧面板一致，正常备案）；⑤ 记忆中的「面板末端未收盘 bar」量测卫生问题（P2）随本轮全量刷新<b>已消除</b>。</div>
+
+<!-- ============ 三、宏观 ============ -->
+<h2 class="sec">三、宏观与市场环境（子Agent A）<span class="sec-no">Macro & Regime · 评分 3/5</span></h2>
+<div class="grid2">
+<div class="card">
+<b>市场环境（as_of 2026-10-27）</b>
+<table style="margin-top:8px">
+<tr><th>指数</th><th class="num">收盘</th><th class="num">近1日</th><th class="num">近20日</th><th class="num">vsMA60</th><th class="num">年内位置</th></tr>
+<tr><td>上证指数</td><td class="num">3648.30</td><td class="num down">-1.33%</td><td class="num down">—</td><td class="num down">≈-5.63%</td><td class="num">—</td></tr>
+<tr><td>沪深300</td><td class="num">4049.55</td><td class="num down">-1.32%</td><td class="num down">-10.79%</td><td class="num down">-9.56%</td><td class="num">8.3%</td></tr>
+<tr><td>创业板指</td><td class="num">2548.15</td><td class="num down">-3.41%</td><td class="num down">-25.05%</td><td class="num down">-21.87%</td><td class="num">2.9%</td></tr>
+</table>
+<p class="mini">两市成交 1.46 万亿，连续 19 日不足 2 万亿；缩量阴跌二次探底，电子回购居首提供底部缓冲。</p>
+</div>
+<div class="card">
+<b>三因素打分</b>
+<table style="margin-top:8px">
+<tr><th>维度</th><th>评分</th><th>要点</th></tr>
+<tr><td>政策面</td><td><span class="sc sc4">4/5</span></td><td>10-9 中央《新质生产力意见》全面实施「AI+」；电子信息「十五五」规划（2030 年 30 万亿）；工信部点名 CPO/高速光电芯片；央行 10-27 净投放 10140 亿</td></tr>
+<tr><td>海外映射</td><td><span class="sc sc3">3/5</span></td><td>台积电 Q3 营收 +41% 超预期验证算力需求；美股 AI 链 10 月初回撤 12-20% 后连续反弹；但美欧日 9 月同步加息、12 月加息概率 80%、10Y 美债 5% 压制估值</td></tr>
+<tr><td>大势环境</td><td><span class="sc sc2">2/5</span></td><td>三指数全部低于 MA60，创业板指 250 日最低分位；短期弱势震荡（三季报暴雷+解禁+美联储议息三重不确定性）</td></tr>
+</table>
+</div>
+</div>
+<div class="card">
+<b>对 AI 产业链的整体判断：「政策强、市场弱、海外摇摆」——产业逻辑未破坏，破坏的是资金面与风险偏好。</b>
+<ul class="tight">
+<li><b>板块分层</b>：AI应用/端侧（★★★★，政策直接受益）＞ 服务器算力/AI芯片/晶圆代工（★★★，国产替代+内需驱动）＞ 光模块/PCB（★★☆，海外 beta 最高、高位补跌，需等费半反弹确认）。</li>
+<li><b>反转条件</b>：量能重回 1.6 万亿上方 + 美联储 12 月议息落地；在此之前以弱势震荡应对。</li>
+<li><b>首要风险</b>：全球流动性紧缩 ＞ 业绩暴雷+解禁 ＞ 量能萎缩 ＞ 出口管制/芯片关税 ＞ 地缘与油价（布油 115）。</li>
+</ul>
+<div class="src">来源：WebSearch/domain_search（政策与海外，≤7天）；指数序列=本地面板 tushare pro.index_daily，as_of 2026-10-27。上证指数近5/20/60日序列因面板未纳入单列而缺失（已在数据节记录，收盘价与年内区间已补齐）。</div>
+</div>
+
+<!-- ============ 四、基本面 ============ -->
+<h2 class="sec">四、基本面与估值（子Agent B）<span class="sec-no">Fundamental · 数据 as_of 2026-10-27</span></h2>
+<div class="card">
+<b>每股基本面评分表（1-5 分；维度：成长性 40% + 盈利质量 30% + 估值匹配度 30%）</b>
+<table style="margin-top:8px">
+<tr><th>板块</th><th>代码</th><th>名称</th><th class="num">PE_TTM</th><th class="num">PB</th><th class="num">总市值(亿)</th><th class="num">归母净利同比</th><th>评分</th><th>估值评价</th></tr>
+<tr><td>光模块</td><td>300308.SZ</td><td>中际旭创</td><td class="num">33.23</td><td class="num">17.05</td><td class="num">6,796.5</td><td class="num up">+241.7%</td><td><span class="sc sc5">4.8</span></td><td>合理偏低</td></tr>
+<tr><td>光模块</td><td>300502.SZ</td><td>新易盛</td><td class="num">25.26</td><td class="num">13.64</td><td class="num">3,313.8</td><td class="num up">+91.0%</td><td><span class="sc sc5">4.7</span></td><td>低估</td></tr>
+<tr><td>光模块</td><td>300394.SZ</td><td>天孚通信</td><td class="num">88.60</td><td class="num">32.93</td><td class="num">2,057.5</td><td class="num up">+33.9%</td><td><span class="sc sc4">3.6</span></td><td>偏高</td></tr>
+<tr><td>光模块</td><td>300570.SZ</td><td>太辰光</td><td class="num">109.76</td><td class="num">19.86</td><td class="num">331.4</td><td class="num flat">+1.71%</td><td><span class="sc sc3">2.8</span></td><td>显著偏高</td></tr>
+<tr><td>AI芯片</td><td>688256.SH</td><td>寒武纪</td><td class="num">137.71</td><td class="num">37.96</td><td class="num">5,741.3</td><td class="num up">+131.5%</td><td><span class="sc sc4">4.2</span></td><td>偏高</td></tr>
+<tr><td>AI芯片</td><td>688041.SH</td><td>海光信息</td><td class="num">126.74</td><td class="num">16.45</td><td class="num">4,347.2</td><td class="num up">+45.1%</td><td><span class="sc sc4">3.9</span></td><td>显著偏高</td></tr>
+<tr><td>AI芯片</td><td>300474.SZ</td><td>景嘉微</td><td class="num">亏损</td><td class="num">3.88</td><td class="num">262.9</td><td class="num down">-154.5%</td><td><span class="sc sc2">1.8</span></td><td>难以估值</td></tr>
+<tr><td>AI芯片</td><td>603986.SH</td><td>兆易创新</td><td class="num">23.88</td><td class="num">5.08</td><td class="num">1,893.5</td><td class="num up">+1,091.5%</td><td><span class="sc sc5">4.6</span></td><td>低估（注意周期）</td></tr>
+<tr><td>晶圆代工</td><td>688981.SH</td><td>中芯国际</td><td class="num">118.80</td><td class="num">4.99</td><td class="num">8,562.4</td><td class="num up">+94.2%</td><td><span class="sc sc3">3.3</span></td><td>偏高</td></tr>
+<tr><td>晶圆代工</td><td>002371.SZ</td><td>北方华创</td><td class="num">62.56</td><td class="num">8.77</td><td class="num">3,556.1</td><td class="num up">+5.05%</td><td><span class="sc sc3">3.2</span></td><td>偏高</td></tr>
+<tr><td>晶圆代工</td><td>688012.SH</td><td>中微公司</td><td class="num">53.94</td><td class="num">7.60</td><td class="num">2,281.9</td><td class="num up">+300.2%</td><td><span class="sc sc4">4.0*</span></td><td>中性偏高</td></tr>
+<tr><td>服务器算力</td><td>000977.SZ</td><td>浪潮信息</td><td class="num">17.64</td><td class="num">3.28</td><td class="num">805.3</td><td class="num up">+269.6%</td><td><span class="sc sc4">4.0</span></td><td>低估</td></tr>
+<tr><td>服务器算力</td><td>603019.SH</td><td>中科曙光</td><td class="num">44.69</td><td class="num">4.69</td><td class="num">1,081.1</td><td class="num up">+78.5%</td><td><span class="sc sc4">3.6</span></td><td>合理</td></tr>
+<tr><td>服务器算力</td><td>002415.SZ</td><td>海康威视</td><td class="num">17.65</td><td class="num">3.72</td><td class="num">3,139.0</td><td class="num up">+38.6%</td><td><span class="sc sc4">3.9</span></td><td>合理偏低</td></tr>
+<tr><td>服务器算力</td><td>300383.SZ</td><td>光环新网</td><td class="num">微利</td><td class="num">1.51</td><td class="num">179.0</td><td class="num down">-47.1%</td><td><span class="sc sc2">1.9</span></td><td>无法用PE评估</td></tr>
+<tr><td>PCB互联</td><td>002916.SZ</td><td>深南电路</td><td class="num">34.87</td><td class="num">8.83</td><td class="num">1,771.0</td><td class="num up">+77.5%</td><td><span class="sc sc5">4.5</span></td><td>合理偏低</td></tr>
+<tr><td>PCB互联</td><td>300476.SZ</td><td>胜宏科技</td><td class="num">34.04</td><td class="num">4.51</td><td class="num">1,710.9</td><td class="num up">+33.3%</td><td><span class="sc sc4">3.9</span></td><td>合理</td></tr>
+<tr><td>PCB互联</td><td>603881.SH</td><td>数据港</td><td class="num">125.90</td><td class="num">5.17</td><td class="num">175.8</td><td class="num flat">+0.7%</td><td><span class="sc sc2">2.2</span></td><td>显著偏高</td></tr>
+<tr><td>AI应用</td><td>002230.SZ</td><td>科大讯飞</td><td class="num">98.86</td><td class="num">4.02</td><td class="num">917.4</td><td class="num">扣非亏7.63亿</td><td><span class="sc sc2">2.4</span></td><td>显著偏高</td></tr>
+<tr><td>AI应用</td><td>688111.SH</td><td>金山办公</td><td class="num">31.45</td><td class="num">7.52</td><td class="num">1,134.4</td><td class="num up">+123.8%※</td><td><span class="sc sc4">3.7</span></td><td>合理</td></tr>
+<tr><td>AI应用</td><td>300033.SZ</td><td>同花顺</td><td class="num">36.55</td><td class="num">17.16</td><td class="num">1,475.1</td><td class="num up">+68.9%</td><td><span class="sc sc4">4.3</span></td><td>合理</td></tr>
+<tr><td>AI应用</td><td>300496.SZ</td><td>中科创达</td><td class="num">48.97</td><td class="num">2.49</td><td class="num">263.1</td><td class="num up">+46.5%</td><td><span class="sc sc3">3.0</span></td><td>合理偏高</td></tr>
+</table>
+<p class="mini">* 中微公司为编排层补齐评分（H1 归母净利 +300.2%、预告 +282%~311%、PE_TTM 53.9）。※ 金山办公 GAAP 累计口径含非经常性损益，Q3 单季 GAAP -72.3% vs 经调整 +8.44%（双口径已标注）。板块口径以 config/settings.py::SECTOR_CONFIG 为准。</p>
+</div>
+<div class="grid2">
+<div class="card"><b>板块景气排序（三季报季边际变化）</b>
+<ol class="tight">
+<li><b>PCB互联</b>：涨价超级周期（年内 +300%）+订单排至 2027+毛利率逐季抬升</li>
+<li><b>光模块</b>：1.6T 持续放量+订单饱满+龙头净利翻两番，景气看到 2027 云厂商 capex</li>
+<li><b>AI芯片</b>：国产替代从政策驱动转向市场驱动，寒武纪/海光进入利润兑现周期</li>
+<li><b>服务器算力</b>：订单饱满（浪潮合同负债 283.69 亿）但毛利天花板与现金流受限，IDC 分化</li>
+<li><b>晶圆代工</b>：产能满载+涨价约 10%，但 ROE 低（中芯 2.77%）、折旧压制利润</li>
+<li><b>AI应用</b>：收入端有增长，利润兑现明显弱于硬件（科大讯飞扣非仍亏）</li>
+</ol></div>
+<div class="card"><b>核心结论</b>
+<ul class="tight">
+<li><b>业绩兑现分层</b>：11/23 家净利增速超 50%，集中在光模块/PCB/AI芯片/服务器；IDC（光环新网、数据港）与弱兑现 AI 应用（科大讯飞）掉队。</li>
+<li><b>估值错配是最大风险源</b>：寒武纪 PB 37.96/PS 50.3，任何增速下修都会双杀；数据港 PE 125.9 对净利 +0.7%。</li>
+<li><b>低估值高增长组</b>：新易盛、浪潮信息、深南电路、兆易创新（PE 17.6~34.9 对增速 77%~1091%）。</li>
+<li><b>规避名单</b>：景嘉微 1.8（亏损扩大）、光环新网 1.9（营收利润双降）、数据港 2.2、科大讯飞 2.4。</li>
+</ul></div>
+</div>
+<div class="src">来源：tushare pro.daily_basic / pro.fina_indicator / pro.forecast / pro.income（as_of 2026-10-27）；行业新闻 ≤14 天（证券时报、经济参考网、里昂研报等）。已知缺口：中芯国际 2026Q3 财报未入库；11 家公司最新报告期为 2026H1。</div>
+
+<!-- ============ 五、技术面 ============ -->
+<h2 class="sec">五、技术面与量化策略（子Agent C）<span class="sec-no">Technical & Quant · as_of 2026-10-27</span></h2>
+<div class="kpis">
+  <div class="kpi"><div class="v">2 / 23</div><div class="l">收盘价 &gt; MA60</div><div class="d">金山办公 +1.58%、中科创达 +0.54%</div></div>
+  <div class="kpi"><div class="v down">0 / 23</div><div class="l">60日动量 &gt; 0.15</div><div class="d">最高太辰光 +3.48%，策略入池下限 15%</div></div>
+  <div class="kpi"><div class="v down">9 / 23</div><div class="l">深度破位（&lt;MA60 ≥20%）</div><div class="d">新易盛 -39.20% 最深</div></div>
+  <div class="kpi"><div class="v">6 / 23</div><div class="l">年内正收益</div><div class="d">澜起 +39.6%、太辰光 +26.3%、兆易 +25.5% 领先</div></div>
+</div>
+<div class="card">
+<b>策略信号口径统计（与项目趋势策略入场条件对齐：收盘&gt;MA60 且 60日动量达标）</b>
+<div class="ok" style="margin-top:10px"><b>结论：当前无任何一只股票同时满足入场条件（0/23）</b>——这与实盘引擎「连续零 BUY、100% 现金」的状态完全互洽：弱市里动量闸门不是绑定约束，<b>trend_up（收盘&gt;MA60）才是</b>；23 只中 21 只收盘低于 MA60，其中 9 只低于 MA60 逾 20%。</div>
+<b style="display:block;margin-top:14px">趋势最强（技术评分 Top4）</b>
+<table style="margin-top:8px">
+<tr><th>排名</th><th>代码</th><th>名称</th><th>评分</th><th>趋势状态</th><th>第一支撑</th><th>第一压力</th></tr>
+<tr><td>1</td><td>688111.SH</td><td>金山办公</td><td><span class="sc sc3">3.1</span></td><td>趋势完好（唯一 &gt;MA60 且动量为正，20日 +9.34%）</td><td>231.24 (MA20)</td><td>244.01 (MA5)</td></tr>
+<tr><td>2</td><td>300570.SZ</td><td>太辰光</td><td><span class="sc sc3">2.8</span></td><td>接近企稳（动量 +3.48% 全场最高，仍 &lt;MA60）</td><td>145.90 (20日低)</td><td>159.56 (MA5)</td></tr>
+<tr><td>3</td><td>002415.SZ</td><td>海康威视</td><td><span class="sc sc3">2.6</span></td><td>相对强势（贴 MA60，年内位 48.8% 最高，类防御）</td><td>33.19 (MA20)</td><td>34.48 (MA60)</td></tr>
+<tr><td>4</td><td>300496.SZ</td><td>中科创达</td><td><span class="sc sc2">2.3</span></td><td>弱趋势完好（站上 MA60，动量 -1.84% 未转正）</td><td>53.57 (MA20)</td><td>56.67 (MA60)</td></tr>
+</table>
+<b style="display:block;margin-top:14px">趋势最弱（破位最深）</b>
+<p class="mini" style="margin-top:6px">新易盛（动量 -51.61%、距60日高 -49.98%、年内 -44.86% 全场垫底）、中际旭创（动量 -46.42%）、中微公司（-40.41%）、海光信息（-40.36%）、兆易创新（-38.03%）。10 只个股年内位置 &lt;10%；9 只收盘价距 20 日最低价不足 2%，下跌尚未出现企稳结构。</p>
+</div>
+<div class="note"><b>结构解读</b>：20 日收益极差近 39pp——AI应用 +0.80%（唯一正）vs 光模块 -38.48%，呈「AI硬件杀跌 + AI软件/防御避险」轮动。年内幸存者（澜起/太辰/兆易仍 +25%~40%）提示回调主因是<b>估值动量压缩</b>而非逻辑证伪，但右侧信号未现。计算脚本可复核：scripts/_analysis_tech_quant.py。</div>
+
+<!-- ============ 六、资金面 ============ -->
+<h2 class="sec">六、资金面与情绪（子Agent D）<span class="sec-no">Flow & Sentiment · as_of 2026-10-27</span></h2>
+<div class="grid2">
+<div class="card"><b>主力资金总貌（23 股，net_mf_amount 累计）</b>
+<table style="margin-top:8px">
+<tr><th>口径</th><th class="num">合计</th><th>结构特征</th></tr>
+<tr><td>近5日（10-21~10-27）</td><td class="num up">+123.33 亿</td><td>10-23 公告日单日 +122.61 亿为峰值；10-27 转 -36.08 亿回吐</td></tr>
+<tr><td>近20日</td><td class="num down">-45.90 亿</td><td>短期回流、中期仍净流出</td></tr>
+<tr><td>融资余额变化（10-09→10-27）</td><td class="num down">-292.19 亿</td><td>23 只全线下降；中际旭创 -105.17 亿、新易盛 -63.05 亿居前</td></tr>
+</table>
+<p class="mini" style="margin-top:8px">全市场两融余额 24,261.79 亿，连续 12 个交易日下降累计 -1,479.80 亿，电子行业 -465.07 亿为 31 个行业最多（tushare 与证券时报交叉验证一致）。</p></div>
+<div class="card"><b>北向与情绪</b>
+<ul class="tight">
+<li><b>北向</b>：成交额口径 10 月日均约 2485 亿（10-23 峰值 3131.78 亿）；净流入方向以券商估算为准——国信证券：10/19-23 估算净流出 56 亿；光模块双雄仍是北向交易主战场（中际旭创周成交 173 亿、新易盛 116 亿）。个股级净流入自 2024-08-18 停止披露。</li>
+<li><b>舆情冷暖</b>：产业侧年内最强验证（订单排至 2027-28、龙头回购、寒武纪/海光/深南三季报高增、成熟制程涨价、国家数据集团成立）；资金侧明确降温（杠杆撤退、外资犹豫、CoreWeave 信用信号）。</li>
+<li><b>情绪结论</b>：「产业强、资金弱、高位分化」；11 只「价跌钱进」（光模块/AI芯片深跌后主力承接），AI 应用量价资金三强；龙虎榜区间零上榜（纯机构博弈）。</li>
+</ul></div>
+</div>
+<div class="card">
+<b>资金面评分（1-5 分制；规则：双正=5，近5日强流入=4，方向不明=3，近5日回流但中期大幅流出=2，双流出=1）</b>
+<div id="chartFlow" class="chart"></div>
+<div class="src">来源：tushare pro.moneyflow（本地缓存已更新至 2026-10-27）/ pro.margin_detail / pro.moneyflow_hsgt / pro.top_list；舆情来源 ≤7 天。已知缺口：北向个股净流入不可得（停止披露）、10-19 北向成交额缺失、寒武纪两融口径差异已标注。</div>
+</div>
+
+<!-- ============ 七、综合矩阵 ============ -->
+<h2 class="sec">七、23 股综合评分矩阵<span class="sec-no">Master Matrix · 三维交叉</span></h2>
+<p class="lead">综合分 =（基本面 B + 技术 C + 资金 D）÷ 3。涨跌幅颜色遵循 A 股惯例（<span class="up">红涨绿跌</span>）。板块口径以 config/settings.py::SECTOR_CONFIG 为准（澜起科技归 PCB互联、海康威视归 AI应用、中微公司归晶圆代工——与 D 报告自有归类略有差异，已在各报告标注）。</p>
+<div class="card" style="overflow-x:auto">
+<table id="matrixTable">
+<tr><th>#</th><th>代码</th><th>名称</th><th>板块</th><th class="num">收盘价</th><th class="num">近20日</th><th class="num">年内</th><th class="num">PE_TTM</th><th class="num">净利同比</th><th>B基本面</th><th>C技术</th><th>D资金</th><th>综合分</th><th class="num">近5日主力(亿)</th><th class="num">近20日主力(亿)</th></tr>
+</table>
+</div>
+<div id="chartScore" class="chart chart-tall"></div>
+<div id="chartRet" class="chart"></div>
+<div class="src">数据来源：估值/财务 = tushare pro.daily_basic + pro.fina_indicator（as_of 2026-10-27）；技术 = 本地面板计算（as_of 2026-10-27）；资金 = tushare pro.moneyflow（as_of 2026-10-27）。中微公司（688012.SH）三围度均为编排层补齐值。</div>
+
+<!-- ============ 八、板块汇总 ============ -->
+<h2 class="sec">八、板块汇总<span class="sec-no">Sector Summary</span></h2>
+<div class="card" style="overflow-x:auto">
+<table>
+<tr><th>板块</th><th class="num">家数</th><th class="num">总市值(亿)</th><th class="num">B均分</th><th class="num">C均分</th><th class="num">D均分</th><th class="num">综合均分</th><th class="num">近5日主力(亿)</th><th class="num">近20日主力(亿)</th><th>一句话定位</th></tr>
+<tr><td>AI应用</td><td class="num">5</td><td class="num">6,929.0</td><td class="num">3.5</td><td class="num">2.2</td><td class="num">4.3</td><td class="num"><b>3.33</b></td><td class="num up">+39.55</td><td class="num up">+41.20</td><td>唯一量价资金三强，防御+政策受益</td></tr>
+<tr><td>光模块</td><td class="num">4</td><td class="num">12,499.2</td><td class="num">4.0</td><td class="num">1.5</td><td class="num">4.0</td><td class="num"><b>3.15</b></td><td class="num up">+74.24</td><td class="num down">-0.78</td><td>基本面最强但高位补跌，两融撤离最猛</td></tr>
+<tr><td>PCB互联</td><td class="num">3</td><td class="num">5,489.7</td><td class="num">4.1</td><td class="num">1.1</td><td class="num">2.7</td><td class="num"><b>2.60</b></td><td class="num up">+3.67</td><td class="num down">-15.99</td><td>景气极高（涨价300%）但资金利好兑现</td></tr>
+<tr><td>晶圆代工</td><td class="num">3</td><td class="num">14,400.4</td><td class="num">3.5</td><td class="num">1.0</td><td class="num">3.7</td><td class="num"><b>2.72</b></td><td class="num up">+6.75</td><td class="num up">+9.03</td><td>市值最大，涨价+国产替代，内部严重分化</td></tr>
+<tr><td>AI芯片</td><td class="num">4</td><td class="num">12,244.9</td><td class="num">3.6</td><td class="num">1.1</td><td class="num">2.6</td><td class="num"><b>2.45</b></td><td class="num up">+2.06</td><td class="num down">-46.39</td><td>业绩兑现周期开启，估值透支与供给约束并存</td></tr>
+<tr><td>服务器算力</td><td class="num">4</td><td class="num">2,241.2</td><td class="num">2.9</td><td class="num">1.0</td><td class="num">2.8</td><td class="num"><b>2.23</b></td><td class="num down">-2.94</td><td class="num down">-33.97</td><td>订单饱满但毛利/现金流硬约束，IDC 证伪</td></tr>
+</table>
+</div>
+<div id="chartSector" class="chart"></div>
+
+<!-- ============ 九、结论 ============ -->
+<h2 class="sec">九、结论 · 关注名单 · 风险提示<span class="sec-no">Conclusion</span></h2>
+<div class="grid2">
+<div class="card"><b>关注名单（按三维综合分）</b>
+<ul class="tight">
+<li><b class="r">第一梯队（综合 ≥3.5，4 只）</b>：海康威视 3.83（量价资金三强+防御+ROE 15.4%）、金山办公 3.77（唯一趋势完好+资金双正）、新易盛 3.57（低估高增长+资金双正+回购护盘）、澜起科技 3.33（净利 +72.3%+近20日资金流入全场第一）。</li>
+<li><b class="y">第二梯队（综合 3.0~3.5，4 只）</b>：中际旭创 3.27、同花顺 3.10、中科创达 3.10、北方华创 3.07——基本面或资金面有明确长处，等待技术右侧信号。</li>
+<li><b class="g">谨慎/规避（综合 &lt;2.3，7 只）</b>：光环新网 1.97（IDC 逻辑证伪）、浪潮信息 2.00（订单利好与资金持续背离）、景嘉微 2.07（亏损扩大）、数据港 2.07、深南电路 2.17（利好兑现）、兆易创新 2.20（双弱+周期）、胜宏科技 2.30。</li>
+</ul>
+<p class="mini" style="margin-top:8px">名单为研究性结论，不构成投资建议；任何参数/配置变更须经人工确认（生产安全闸门）。</p></div>
+<div class="card"><b>风险提示</b>
+<ol class="tight">
+<li><b>全球流动性紧缩</b>：美欧日 9 月同步加息，12 月加息概率 80%，10Y 美债 5% 压制成长股估值。</li>
+<li><b>业绩暴雷+解禁</b>：三季报密集披露期，高估值标的（寒武纪 PB 38、海光 PE 127）对增速下修极度敏感。</li>
+<li><b>资金结构恶化</b>：两融 12 连降、AI 硬件融资盘撤退最猛，主力近5日回流随时可能再度回吐（10-27 已转 -36.08 亿）。</li>
+<li><b>技术面无右侧信号</b>：0/23 满足趋势策略入场条件，弱势环境下任何抄底均需等待 MA60 收复确认。</li>
+<li><b>数据时效风险</b>：11 家公司最新财报期为 2026H1，Q3 数据待 11 月初更新；北向个股净流入不可得。</li>
+</ol></div>
+</div>
+
+<div class="disclaimer">
+<b>免责声明</b>：本报告由多子agent分析流水线自动生成，全部数据来源于 tushare 公开行情/财务接口与公开新闻（截至 2026-10-27 收盘，报告生成于 2026-10-28 盘前），数据完整性核查记录见第二节。报告仅供研究参考，<b>不构成任何投资建议</b>。市场中必有不确定性，历史业绩与景气度不代表未来表现。本报告未修改任何生产策略参数或配置（子agent运行全程受安全闸门约束）。
+</div>
+
+<footer>
+  <div>qmtIDE-deepseek · 股票分析子agent流水线 ｜ 报告生成：2026-10-28 ｜ 数据基准：2026-10-27 ｜ 子agent产出：reports/agent_outputs/（A_macro_regime.md · B_fundamental.md · C_technical_quant.md · D_flow_sentiment.md · E_data_governance.md）</div>
+  <div style="margin-top:4px">数据源：tushare pro.daily / index_daily / daily_basic / fina_indicator / forecast / moneyflow / margin_detail / moneyflow_hsgt / top_list；WebSearch/domain_search（政策、海外、舆情）。</div>
+</footer>
+</div>
+
+<script>
+const UP='#f0435e', DOWN='#17b978', TXT='#9aa8c0', LINE='#26334f';
+const STOCKS=[
+ {code:'300308.SZ',name:'中际旭创',sector:'光模块',close:577.00,d20:-38.68,ytd:-5.41,pe:33.23,np:241.7,b:4.8,c:1.0,d:4.0,f5:36.62,f20:-11.40},
+ {code:'300502.SZ',name:'新易盛',sector:'光模块',close:237.59,d20:-47.98,ytd:-44.86,pe:25.26,np:91.0,b:4.7,c:1.0,d:5.0,f5:30.57,f20:16.81},
+ {code:'300394.SZ',name:'天孚通信',sector:'光模块',close:188.62,d20:-32.46,ytd:-7.10,pe:88.60,np:33.9,b:3.6,c:1.0,d:4.0,f5:8.03,f20:-7.76},
+ {code:'300570.SZ',name:'太辰光',sector:'光模块',close:145.90,d20:-34.78,ytd:26.27,pe:109.76,np:1.7,b:2.8,c:2.8,d:3.0,f5:-0.98,f20:2.57},
+ {code:'688256.SH',name:'寒武纪',sector:'AI芯片',close:912.98,d20:-17.95,ytd:-32.65,pe:137.71,np:131.5,b:4.2,c:1.0,d:3.0,f5:0.51,f20:-14.36},
+ {code:'688041.SH',name:'海光信息',sector:'AI芯片',close:187.03,d20:-24.11,ytd:-16.66,pe:126.74,np:45.1,b:3.9,c:1.0,d:3.5,f5:3.92,f20:-12.50},
+ {code:'300474.SZ',name:'景嘉微',sector:'AI芯片',close:50.30,d20:-3.70,ytd:-30.01,pe:null,np:-154.5,b:1.8,c:1.4,d:3.0,f5:1.85,f20:3.53},
+ {code:'603986.SH',name:'兆易创新',sector:'AI芯片',close:268.98,d20:-31.33,ytd:25.54,pe:23.88,np:1091.5,b:4.6,c:1.0,d:1.0,f5:-4.22,f20:-23.06},
+ {code:'688981.SH',name:'中芯国际',sector:'晶圆代工',close:100.00,d20:-18.04,ytd:-18.59,pe:118.80,np:94.2,b:3.3,c:1.0,d:4.0,f5:6.53,f20:-1.18},
+ {code:'002371.SZ',name:'北方华创',sector:'晶圆代工',close:488.50,d20:-27.80,ytd:6.41,pe:62.56,np:5.1,b:3.2,c:1.0,d:5.0,f5:3.84,f20:18.49},
+ {code:'688012.SH',name:'中微公司',sector:'晶圆代工',close:238.23,d20:-32.62,ytd:-12.65,pe:53.94,np:300.2,b:4.0,c:1.0,d:2.0,f5:-3.62,f20:-8.28},
+ {code:'603019.SH',name:'中科曙光',sector:'服务器算力',close:73.89,d20:-11.97,ytd:-13.72,pe:44.69,np:78.5,b:3.6,c:1.0,d:4.0,f5:3.30,f20:-5.26},
+ {code:'000977.SZ',name:'浪潮信息',sector:'服务器算力',close:54.84,d20:-23.67,ytd:-17.66,pe:17.64,np:269.6,b:4.0,c:1.0,d:1.0,f5:-6.97,f20:-25.53},
+ {code:'300383.SZ',name:'光环新网',sector:'服务器算力',close:9.96,d20:-11.78,ytd:-20.38,pe:null,np:-47.1,b:1.9,c:1.0,d:3.0,f5:1.14,f20:0.55},
+ {code:'603881.SH',name:'数据港',sector:'服务器算力',close:20.39,d20:-17.25,ytd:-32.99,pe:125.90,np:0.7,b:2.2,c:1.0,d:3.0,f5:-0.41,f20:-3.73},
+ {code:'002916.SZ',name:'深南电路',sector:'PCB互联',close:260.01,d20:-34.18,ytd:11.93,pe:34.87,np:77.5,b:4.5,c:1.0,d:1.0,f5:-7.01,f20:-18.46},
+ {code:'300476.SZ',name:'胜宏科技',sector:'PCB互联',close:174.09,d20:-29.80,ytd:-39.46,pe:34.04,np:33.3,b:3.9,c:1.0,d:2.0,f5:4.33,f20:-20.65},
+ {code:'688008.SH',name:'澜起科技',sector:'PCB互联',close:164.50,d20:-21.70,ytd:39.64,pe:65.32,np:72.3,b:3.8,c:1.2,d:5.0,f5:6.35,f20:23.12},
+ {code:'002230.SZ',name:'科大讯飞',sector:'AI应用',close:38.19,d20:-1.60,ytd:-24.06,pe:98.86,np:null,b:2.4,c:2.1,d:4.0,f5:6.45,f20:5.35},
+ {code:'688111.SH',name:'金山办公',sector:'AI应用',close:244.48,d20:9.34,ytd:-20.38,pe:31.45,np:123.8,b:3.7,c:3.1,d:4.5,f5:5.74,f20:10.01},
+ {code:'300033.SZ',name:'同花顺',sector:'AI应用',close:195.99,d20:-6.96,ytd:-39.17,pe:36.55,np:68.9,b:4.3,c:1.0,d:4.0,f5:11.49,f20:10.92},
+ {code:'300496.SZ',name:'中科创达',sector:'AI应用',close:56.98,d20:2.41,ytd:-15.59,pe:48.97,np:46.5,b:3.0,c:2.3,d:4.0,f5:3.71,f20:4.91},
+ {code:'002415.SZ',name:'海康威视',sector:'AI应用',close:34.25,d20:5.13,ytd:14.78,pe:17.65,np:38.6,b:3.9,c:2.6,d:5.0,f5:12.16,f20:10.01}
+];
+const fmt=(v,d=2)=>(v==null?'—':v.toFixed(d));
+const pct=v=>v==null?'—':(v>0?'+':'')+v.toFixed(2)+'%';
+const cls=v=>v==null?'flat':(v>0?'up':'down');
+const scCls=s=>s>=4.5?'sc5':s>=4?'sc4':s>=3.5?'sc3':s>=2.5?'sc2':'sc1';
+const npTxt=s=>s.np==null?(s.code==='002230.SZ'?'扣非亏损':'亏损'):(s.np>0?'+':'')+s.np.toFixed(1)+'%';
+
+// ---- 综合矩阵表 ----
+const rows=[...STOCKS].map(s=>({...s,comp:(s.b+s.c+s.d)/3})).sort((a,b)=>b.comp-a.comp);
+const tb=document.getElementById('matrixTable');
+rows.forEach((s,i)=>{
+  const tr=document.createElement('tr');
+  tr.innerHTML=`<td>${i+1}</td><td>${s.code}</td><td><b>${s.name}</b></td><td><span class="tag">${s.sector}</span></td>
+  <td class="num">${fmt(s.close)}</td><td class="num ${cls(s.d20)}">${pct(s.d20)}</td><td class="num ${cls(s.ytd)}">${pct(s.ytd)}</td>
+  <td class="num">${s.pe==null?'亏损':fmt(s.pe,1)}</td><td class="num ${s.np==null?'flat':(s.np>0?'up':'down')}">${npTxt(s)}</td>
+  <td><span class="sc ${scCls(s.b)}">${s.b.toFixed(1)}</span></td><td><span class="sc ${scCls(s.c)}">${s.c.toFixed(1)}</span></td>
+  <td><span class="sc ${scCls(s.d)}">${s.d.toFixed(1)}</span></td><td><b>${s.comp.toFixed(2)}</b></td>
+  <td class="num ${cls(s.f5)}">${fmt(s.f5)}</td><td class="num ${cls(s.f20)}">${fmt(s.f20)}</td>`;
+  tb.appendChild(tr);
+});
+
+// ---- ECharts ----
+const baseText={color:TXT}, axisCommon={axisLine:{lineStyle:{color:LINE}},axisLabel:baseText,splitLine:{lineStyle:{color:'#1c2740'}}};
+const tip={trigger:'axis',backgroundColor:'#1b2540',borderColor:LINE,textStyle:{color:'#e8eef8',fontSize:12}};
+
+function draw(){
+  if(typeof echarts==='undefined')return;
+  // 1) 近20日涨跌幅
+  const r1=[...STOCKS].sort((a,b)=>b.d20-a.d20);
+  echarts.init(document.getElementById('chartRet')).setOption({
+    title:{text:'23股近20日涨跌幅（%，as_of 2026-10-27）',textStyle:{color:'#e8eef8',fontSize:14},left:0},
+    tooltip:tip,grid:{left:110,right:50,top:36,bottom:24},
+    xAxis:{type:'value',...axisCommon},yAxis:{type:'category',data:r1.map(s=>s.name),...axisCommon,axisLabel:{...baseText,fontSize:11}},
+    series:[{type:'bar',data:r1.map(s=>({value:s.d20,itemStyle:{color:s.d20>=0?UP:DOWN}})),barWidth:10,
+      label:{show:true,position:'right',color:TXT,fontSize:10,formatter:p=>(p.value>0?'+':'')+p.value.toFixed(1)+'%'}}]
+  });
+  // 2) 三维评分堆叠
+  echarts.init(document.getElementById('chartScore')).setOption({
+    title:{text:'23股三维评分结构（B基本面 / C技术 / D资金，按综合分排序）',textStyle:{color:'#e8eef8',fontSize:14},left:0},
+    tooltip:{...tip,axisPointer:{type:'shadow'}},legend:{textStyle:{color:TXT},top:26},grid:{left:100,right:60,top:60,bottom:24},
+    xAxis:{type:'value',max:5,...axisCommon},yAxis:{type:'category',data:rows.map(s=>s.name),...axisCommon,axisLabel:{...baseText,fontSize:11}},
+    series:[
+      {name:'B 基本面',type:'bar',stack:'t',data:rows.map(s=>s.b),itemStyle:{color:'#f0435e'},barWidth:11},
+      {name:'C 技术',type:'bar',stack:'t',data:rows.map(s=>s.c),itemStyle:{color:'#f0b429'},barWidth:11},
+      {name:'D 资金',type:'bar',stack:'t',data:rows.map(s=>s.d),itemStyle:{color:'#38bdf8'},barWidth:11,
+       label:{show:true,position:'right',color:'#e8eef8',fontSize:10,formatter:p=>rows[p.dataIndex].comp.toFixed(2)}}
+    ]
+  });
+  // 3) 板块资金流
+  const secs={};
+  STOCKS.forEach(s=>{const k=s.sector;(secs[k]=secs[k]||{f5:0,f20:0,n:0});secs[k].f5+=s.f5;secs[k].f20+=s.f20;secs[k].n++;});
+  const ks=Object.keys(secs);
+  echarts.init(document.getElementById('chartSector')).setOption({
+    title:{text:'板块主力资金净流入（亿元，23股口径）',textStyle:{color:'#e8eef8',fontSize:14},left:0},
+    tooltip:tip,legend:{textStyle:{color:TXT},top:26},grid:{left:60,right:40,top:60,bottom:40},
+    xAxis:{type:'category',data:ks,...axisCommon,axisLabel:{...baseText,fontSize:11}},
+    yAxis:{type:'value',...axisCommon},
+    series:[
+      {name:'近5日',type:'bar',data:ks.map(k=>+secs[k].f5.toFixed(2)),itemStyle:{color:'#f0435e'},barWidth:26,label:{show:true,position:'top',color:TXT,fontSize:10}},
+      {name:'近20日',type:'bar',data:ks.map(k=>+secs[k].f20.toFixed(2)),itemStyle:{color:'#38bdf8'},barWidth:26,label:{show:true,position:'top',color:TXT,fontSize:10}}
+    ]
+  });
+  // 4) 个股资金流
+  const r4=[...STOCKS].sort((a,b)=>b.f5-a.f5);
+  echarts.init(document.getElementById('chartFlow')).setOption({
+    title:{text:'个股主力资金净流入（亿元）：近5日 vs 近20日',textStyle:{color:'#e8eef8',fontSize:13},left:0},
+    tooltip:tip,legend:{textStyle:{color:TXT},top:24},grid:{left:90,right:50,top:56,bottom:24},
+    xAxis:{type:'value',...axisCommon},yAxis:{type:'category',data:r4.map(s=>s.name),...axisCommon,axisLabel:{...baseText,fontSize:10}},
+    series:[
+      {name:'近5日',type:'bar',data:r4.map(s=>s.f5),itemStyle:{color:'#f0435e'},barWidth:8},
+      {name:'近20日',type:'bar',data:r4.map(s=>s.f20),itemStyle:{color:'#38bdf8'},barWidth:8}
+    ]
+  });
+}
+if(typeof echart!=='undefined'||document.readyState!=='loading'){draw();}else{window.addEventListener('DOMContentLoaded',draw);}
+window.addEventListener('resize',()=>{document.querySelectorAll('.chart').forEach(el=>{const c=echarts.getInstanceByDom(el);if(c)c.resize();});});
+</script>
+</body>
+</html>

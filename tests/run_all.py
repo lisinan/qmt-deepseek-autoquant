@@ -269,7 +269,15 @@ def _collect_tests():
             # 【2026-10-22 P0-2】KPI gate 显著性严格模式（DSR 门槛）。
             "tests.test_kpi_gate_significance",
             # 【2026-10-23】入场闸门逐只明细（学习/排障面板后端）。
-            "tests.test_gate_detail"]
+            "tests.test_gate_detail",
+            # 【2026-10-28 R42 递归自进化第 1 轮】搜索空间契约守卫。
+            #   背景：R41 把「回测无反应」当「参数无价值」，但其中一批参数在
+            #   backtest_daily.py 里**根本没有读取点** ⇒ 那些「证伪」测的是空气。
+            #   本模块钉住「每个生产参数被谁读」的显式清单：
+            #   仅实盘 ⇒ 结论只能记「未验证」；死参数 ⇒ 任何网格纯浪费。
+            #   含**正向对照**（占比 ≥40% + 关键旋钮点名），防止「检测器坏了、
+            #   契约跟着坏」的合谋式假绿。零策略参数改动。
+            "tests.test_search_space_contract"]
     tests = []
     import_errors = []
     for m in mods:

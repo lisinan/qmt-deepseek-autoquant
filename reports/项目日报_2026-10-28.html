@@ -1,0 +1,360 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>qmtIDE-deepseek 项目日报 · 2026-10-28（盘后）</title>
+<script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
+<style>
+  :root{
+    --bg:#0d1220; --bg2:#111828; --card:#161f33; --card2:#1b2540; --line:#26334f;
+    --tx:#e8eef8; --tx2:#9aa8c0; --tx3:#6b7a95;
+    --up:#f0435e; --down:#17b978; --accent:#38bdf8; --gold:#f0b429; --teal:#2dd4bf;
+  }
+  *{box-sizing:border-box; margin:0; padding:0;}
+  body{background:var(--bg); color:var(--tx); font-family:"PingFang SC","Microsoft YaHei","Segoe UI",system-ui,sans-serif; line-height:1.65; font-size:14px;}
+  .wrap{max-width:1280px; margin:0 auto; padding:28px 20px 60px;}
+  header.hero{background:linear-gradient(135deg,#14203a 0%,#0f1830 60%,#131a2e 100%); border:1px solid var(--line); border-radius:16px; padding:34px 36px; margin-bottom:22px; position:relative; overflow:hidden;}
+  header.hero::after{content:""; position:absolute; right:-60px; top:-60px; width:260px; height:260px; border-radius:50%; background:radial-gradient(circle,rgba(56,189,248,.14),transparent 70%);}
+  .hero h1{font-size:25px; letter-spacing:.5px; margin-bottom:8px;}
+  .hero .sub{color:var(--tx2); font-size:13.5px;}
+  .badges{display:flex; flex-wrap:wrap; gap:8px; margin-top:16px;}
+  .badge{background:rgba(56,189,248,.10); border:1px solid rgba(56,189,248,.35); color:#9fd8f6; padding:3px 12px; border-radius:20px; font-size:12px;}
+  .badge.gold{background:rgba(240,180,41,.10); border-color:rgba(240,180,41,.4); color:#f5cf7a;}
+  .badge.red{background:rgba(240,67,94,.10); border-color:rgba(240,67,94,.4); color:#f8a3b1;}
+  .badge.green{background:rgba(23,185,120,.10); border-color:rgba(23,185,120,.4); color:#8fe3c0;}
+  h2.sec{font-size:19px; margin:34px 0 6px; padding-left:12px; border-left:4px solid var(--accent);}
+  .sec-no{color:var(--tx3); font-size:12px; font-weight:400; margin-left:8px;}
+  p.lead{color:var(--tx2); font-size:13px; margin-bottom:14px;}
+  .card{background:var(--card); border:1px solid var(--line); border-radius:12px; padding:18px 20px; margin-bottom:14px;}
+  .kpis{display:grid; grid-template-columns:repeat(auto-fit,minmax(175px,1fr)); gap:12px; margin:14px 0;}
+  .kpi{background:var(--card2); border:1px solid var(--line); border-radius:12px; padding:14px 16px;}
+  .kpi .v{font-size:21px; font-weight:700;}
+  .kpi .l{font-size:12px; color:var(--tx2); margin-top:2px;}
+  .kpi .d{font-size:11.5px; color:var(--tx3); margin-top:4px;}
+  table{width:100%; border-collapse:collapse; font-size:12.8px; background:var(--card); border-radius:10px; overflow:hidden; margin:10px 0 16px;}
+  th{background:#1a2540; color:#b9c8e2; font-weight:600; padding:8px 9px; text-align:left; white-space:nowrap; border-bottom:1px solid var(--line);}
+  td{padding:7px 9px; border-bottom:1px solid #1e2942; color:var(--tx); vertical-align:top;}
+  tr:hover td{background:rgba(56,189,248,.05);}
+  .num{font-variant-numeric:tabular-nums; text-align:right;}
+  .up{color:var(--up);} .down{color:var(--down);} .flat{color:var(--tx2);}
+  .chart{width:100%; height:400px; margin:6px 0 4px;}
+  .chart-tall{height:520px;}
+  .note{background:rgba(240,180,41,.07); border:1px solid rgba(240,180,41,.25); border-radius:10px; padding:10px 14px; font-size:12.5px; color:#e8d9b0; margin:10px 0;}
+  .ok{background:rgba(23,185,120,.08); border:1px solid rgba(23,185,120,.3); border-radius:10px; padding:10px 14px; font-size:12.5px; color:#a9e8cc; margin:10px 0;}
+  .warn{background:rgba(240,67,94,.07); border:1px solid rgba(240,67,94,.3); border-radius:10px; padding:10px 14px; font-size:12.5px; color:#f5b8c2; margin:10px 0;}
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:14px;}
+  @media(max-width:900px){.grid2{grid-template-columns:1fr;}}
+  ul.tight{margin:6px 0 12px 18px;} ul.tight li{margin:4px 0;}
+  ol.tight{margin:6px 0 12px 20px;} ol.tight li{margin:6px 0;}
+  .src{color:var(--tx3); font-size:11.5px; margin-top:6px;}
+  .flow{display:flex; flex-wrap:wrap; align-items:center; gap:6px; margin:12px 0; font-size:12.5px;}
+  .flow .node{background:var(--card2); border:1px solid var(--line); border-radius:9px; padding:7px 13px;}
+  .flow .node b{color:var(--accent);}
+  .flow .arr{color:var(--tx3);}
+  footer{margin-top:44px; border-top:1px solid var(--line); padding-top:18px; color:var(--tx3); font-size:12px;}
+  .lv{display:inline-block; padding:1px 8px; border-radius:5px; font-size:11.5px; font-weight:700;}
+  .lv-h{background:rgba(240,67,94,.18); color:#ff8ba0;} .lv-m{background:rgba(240,180,41,.16); color:#f5cf7a;} .lv-l{background:rgba(45,212,191,.14); color:#7fe3d4;}
+  .mini{font-size:12px; color:var(--tx2);}
+  b.r{color:#ff8ba0;} b.g{color:#7fe3d4;} b.y{color:#f5cf7a;}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="hero">
+  <h1>qmtIDE-deepseek 项目日报 · 2026-10-28（周三 · 盘后）</h1>
+  <div class="sub">四子agent分工核查：实盘交易 × 今日市场与策略 × 数据工程健康 × 运维自动化 ｜ 行情 as_of 2026-10-28 收盘（xtdata）</div>
+  <div class="badges">
+    <span class="badge">报告生成：2026-10-28 15:55</span>
+    <span class="badge green">引擎/GUARD/miniQMT 三进程健康</span>
+    <span class="badge red">零 BUY 连续 15 个交易日</span>
+    <span class="badge up">今日 AI 链等权 +2.95%（17涨6跌）</span>
+    <span class="badge gold">信号闸门仍 0/23 通过</span>
+    <span class="badge red">交易日自动化套件自 10-22 停摆（高优）</span>
+  </div>
+</header>
+
+<!-- ============ 执行摘要 ============ -->
+<h2 class="sec">执行摘要</h2>
+<div class="kpis">
+  <div class="kpi"><div class="v">972,533.60</div><div class="l">总资产（100% 现金）</div><div class="d">自 10-09 清仓后停摆 13 个交易日</div></div>
+  <div class="kpi"><div class="v red">15 天</div><div class="l">零 BUY 连续交易日</div><div class="d">最后信号 09-30；最后订单 10-09 清仓 SELL</div></div>
+  <div class="kpi"><div class="v up">+2.95%</div><div class="l">AI链23只今日等权</div><div class="d">10月以来最强反弹日；光模块 +7.78% 领涨</div></div>
+  <div class="kpi"><div class="v">0 / 23</div><div class="l">双闸门通过数</div><div class="d">收盘&gt;MA60 仅 1/23；动量≥0.15 仅 1/23</div></div>
+  <div class="kpi"><div class="v down">-3.31%</div><div class="l">当前回撤（冻结）</div><div class="d">距 -20% 断路器余量 16.69pp</div></div>
+  <div class="kpi"><div class="v">244 条</div><div class="l">引擎今日权益快照</div><div class="d">09:30:34→15:04:45 全程无中断</div></div>
+</div>
+<div class="card">
+<ul class="tight">
+  <li><b>交易面</b>：今日 0 信号 0 成交，零 BUY 进入第 15 个交易日；引擎 25 次实时漏斗全部卡在动量闸门（min_mom=0.15），与策略口径独立互证——非故障，是弱市下的<b>预期行为</b>。</li>
+  <li><b>市场面</b>：10 月以来最强超跌放量反弹日——创业板指 +3.40%、AI 链等权 +2.95%（17 涨 6 跌），光模块 4/4 上涨（旭创 +10.28% 放量 1.5x）；但三大指数全部仍收于 MA60 下方（创业板 vsMA60 -18.9%），定性为<b>「趋势未复的反弹」</b>，右侧未确认。</li>
+  <li><b>策略面</b>：今日首次出现动量闸门被点亮（太辰光 60 日动量 +23.7% 过 0.15 线，但距 MA60 尚差 17.8% 且 2/3 动量跳升来自窗口滚动机械效应）；中科创达站上 MA60 但动量 -1.5% 被拦。双闸门 0/23，入池仍为空。</li>
+  <li><b>数据面</b>：日线面板/资金流缓存均达标（末端 10-27）；今日收盘数据 tushare 未更新（晚间补），已由 xtdata 收盘帧取得并经 26/26 程序化交叉核验；北向缓存陈旧 64 天但判定为 fail-open 死闸门（northbound_mode 已被研究证伪冻结），<b>不刷新</b>。</li>
+  <li><b>运维面（今日最重要发现）</b>：交易日自动化套件（OBSERVE/AM/PM-EVOLVE/PRE-MARKET）<b>自 10-22 起停摆</b>——review 产物连续 4 个交易日缺失、BACKLOG 自 10-07 未更新、memory 日记 10-22~27 断档；15:35 触发后 <code>review_2026-10-28.json</code> 未生成（15:54 核查）。GUARD 巡检今晨被 health_check 重新拉起，当前恢复每 5 分钟正常。</li>
+  <li><b>工程面</b>：pip check 通过；7 项未提交（今日分析产出）；requirements 缺 tushare/pytest 声明；测试落盘 artifact 断档（最近 09-22）。</li>
+</ul>
+</div>
+
+<!-- ============ 一、分工 ============ -->
+<h2 class="sec">一、子 Agent 分工（按项目惯例拆分）<span class="sec-no">T1-T4</span></h2>
+<div class="flow">
+  <span class="node"><b>编排层</b> 现场勘察</span><span class="arr">→</span>
+  <span class="node"><b>T1 交易</b>／<b>T3 市场策略</b>／<b>T2 数据工程</b>／<b>T4 运维</b>（并行）</span><span class="arr">→</span>
+  <span class="node"><b>编排层</b> 复核+汇总日报</span>
+</div>
+<table>
+<tr><th style="width:70px">子Agent</th><th style="width:120px">角色</th><th>职责边界</th><th>核查对象</th><th style="width:200px">产出</th></tr>
+<tr><td><b>T1</b></td><td>实盘交易状态</td><td>只读 DB/日志核查交易与引擎运行；不碰参数与进程</td><td>qmt.db 五表 + 引擎日志 + 闸门一致性</td><td>T_trading_status.md</td></tr>
+<tr><td><b>T3</b></td><td>今日市场与策略</td><td>xtdata 只读取数复盘+闸门重算；不改生产文件</td><td>收盘帧 26 代码 + 面板 + BACKLOG + 未决决策</td><td>T_strategy_review.md</td></tr>
+<tr><td><b>T2</b></td><td>数据与工程健康</td><td>数据资产时效+日志分类+git 只读；不提交不刷新（除安全项）</td><td>面板/资金流/北向/earnrev/db + logs + git</td><td>T_data_health.md</td></tr>
+<tr><td><b>T4</b></td><td>运维与自动化</td><td>进程/端口/巡检/磁盘只读；不 kill 不改自动化</td><td>tasklist + guardian/health/notices + 自动化痕迹</td><td>T_ops.md</td></tr>
+</table>
+
+<!-- ============ 二、交易状态 ============ -->
+<h2 class="sec">二、实盘交易与引擎状态（T1）<span class="sec-no">as_of 2026-10-28 收盘</span></h2>
+<div class="grid2">
+<div class="card"><b>今日运行时间线</b>
+<table style="margin-top:8px">
+<tr><th>时刻</th><th>事件</th></tr>
+<tr><td>07:25:44</td><td>引擎进程启动（python.exe 23580，main.py --web）；启动落 mock 模式（盘前探活失败，禁成交）</td></tr>
+<tr><td>07:41:15</td><td>miniQMT 就绪（PID 23508）</td></tr>
+<tr><td>09:30:34</td><td><b>成功重连 xtdata</b>（与首条权益快照相差 4.6ms），交易时段全程真实行情，无再次落 mock</td></tr>
+<tr><td>09:30:34→15:04:45</td><td>244 条权益快照（60s/条，唯一 gap 为午休）；25 条心跳全部「交易中/风控正常/重连 0」</td></tr>
+<tr><td>15:04:45</td><td>engine_state 推进至收盘后：cash 972,533.60 / positions [] / 今日成交 0</td></tr>
+<tr><td>15:02</td><td>快照陈旧告警（34 只，收盘后 miniQMT 停推+2 分钟阈值，<b>每日固定模式非故障</b>）</td></tr>
+</table></div>
+<div class="card"><b>停摆与风控</b>
+<table style="margin-top:8px">
+<tr><th>指标</th><th class="num">数值</th><th>说明</th></tr>
+<tr><td>零 BUY 连续</td><td class="num"><b>15 个交易日</b></td><td>signals 表 10-01 起零记录；最后信号 09-30（212 条全 BUY）</td></tr>
+<tr><td>权益停摆</td><td class="num"><b>13 个交易日</b></td><td>10-09 09:15:50 清仓后恒定 972,533.60（3,373 条无变化）</td></tr>
+<tr><td>峰值权益</td><td class="num">1,005,860</td><td>09-22 旧值；回撤冻结 -3.31%</td></tr>
+<tr><td>风控状态</td><td class="num">halted=false</td><td>position_scale=1.0 / consec_loss=1；10-08 曾因日内亏损 -5,527 熔断（53 条），10-09 恢复</td></tr>
+<tr><td>回撤余量</td><td class="num">16.69pp</td><td>距 max_drawdown_pct=-0.20 断路器</td></tr>
+<tr><td>LLM 重排</td><td class="num">25 次/日</td><td>10 分钟/次，cached=0，macro=bullish；链路活跃</td></tr>
+</table></div>
+</div>
+<div class="ok"><b>闸门一致性核查通过</b>：引擎 25 次实时漏斗均卡在动量门（宇宙 38 → trend_up 10 → score 16 → <b>动量 0</b>），与 T3 独立重算（23 只中 60 日动量≥0.15 仅 1 只）互证；bias≥2.0 通道系 R22 有意关闭（值域外恒 0），非配置错误。今日 0 信号是<b>弱市下的预期行为</b>，恢复交易需中期反弹约 12%+。</div>
+<div class="note"><b>轻微漂移记录</b>：① 交易日历不可用致 10-07 休市日空跑一次；② 引擎启动时刻自 10-22 起由 09:15 漂移至 09:30（与 GUARD 10-23 断裂后由 health_check 重拉有关，见第五节）；③ 北向缓存陈旧 64 天（fail-open，零交易影响）。</div>
+
+<!-- ============ 三、市场与策略 ============ -->
+<h2 class="sec">三、今日市场与策略复盘（T3）<span class="sec-no">as_of 2026-10-28 收盘 · xtdata</span></h2>
+<div class="grid2">
+<div class="card"><b>三大指数（今日 vs 昨日）</b>
+<table style="margin-top:8px">
+<tr><th>指数</th><th class="num">今收</th><th class="num">今日%</th><th class="num">vsMA60</th><th class="num">60日动量</th></tr>
+<tr><td>上证指数</td><td class="num">3681.47</td><td class="num up">+0.91%</td><td class="num down">-4.7%</td><td class="num down">-3.5%</td></tr>
+<tr><td>沪深300</td><td class="num">4083.87</td><td class="num up">+0.85%</td><td class="num down">-8.6%</td><td class="num down">-10.6%</td></tr>
+<tr><td>创业板指</td><td class="num">2634.76</td><td class="num up">+3.40%</td><td class="num down">-18.9%</td><td class="num down">-20.8%</td></tr>
+</table>
+<p class="mini" style="margin-top:6px">三大指数全部仍收于 MA60 下方（regime 参考口径市场环境仍「不健康」，regime_mode=off 仅研究参考）。成长风格强反弹：创业板 +3.40% ≫ 上证 +0.91%。</p></div>
+<div class="card"><b>AI 链板块表现（等权，23 只）</b>
+<table style="margin-top:8px">
+<tr><th>板块</th><th class="num">上涨/总数</th><th class="num">今日等权</th></tr>
+<tr><td>光模块</td><td class="num">4/4</td><td class="num up">+7.78%</td></tr>
+<tr><td>PCB互联</td><td class="num">3/3</td><td class="num up">+5.82%</td></tr>
+<tr><td>AI芯片</td><td class="num">3/4</td><td class="num up">+3.21%</td></tr>
+<tr><td>晶圆代工</td><td class="num">3/3</td><td class="num up">+2.50%</td></tr>
+<tr><td>服务器算力</td><td class="num">3/4</td><td class="num up">+1.75%</td></tr>
+<tr><td>AI应用</td><td class="num">1/5</td><td class="num down">-1.59%</td></tr>
+<tr><td><b>全池</b></td><td class="num"><b>17/23</b></td><td class="num up"><b>+2.95%</b></td></tr>
+</table>
+<p class="mini" style="margin-top:6px">结构：超跌硬件全面反弹（旭创 +10.28%/新易盛 +8.08% 放量 1.5x）vs 高位防御补跌（金山办公放量 -8.75%，昨日唯一「趋势完好」标的今日破位）。板块口径按 settings::SECTOR_CONFIG。</p></div>
+</div>
+<div class="card">
+<b>23 只个股今日明细（as_of 2026-10-28 收盘）</b>
+<table style="margin-top:8px">
+<tr><th>代码</th><th>名称</th><th>板块</th><th class="num">今收</th><th class="num">今日%</th><th class="num">近5日%</th><th class="num">vsMA60</th><th class="num">60日动量</th><th class="num">量能比</th><th class="num">年内位置%</th></tr>
+<tr><td>300308.SZ</td><td>中际旭创</td><td>光模块</td><td class="num">636.30</td><td class="num up">+10.28%</td><td class="num down">-1.62%</td><td class="num down">-24.1%</td><td class="num down">-29.9%</td><td class="num">1.50</td><td class="num">14.3</td></tr>
+<tr><td>300502.SZ</td><td>新易盛</td><td>光模块</td><td class="num">256.79</td><td class="num up">+8.08%</td><td class="num down">-12.69%</td><td class="num down">-33.9%</td><td class="num down">-36.9%</td><td class="num">1.47</td><td class="num">3.6</td></tr>
+<tr><td>300394.SZ</td><td>天孚通信</td><td>光模块</td><td class="num">201.43</td><td class="num up">+6.79%</td><td class="num down">-6.30%</td><td class="num down">-16.6%</td><td class="num up">+10.9%</td><td class="num">1.19</td><td class="num">12.4</td></tr>
+<tr><td>300570.SZ</td><td>太辰光</td><td>光模块</td><td class="num">154.60</td><td class="num up">+5.96%</td><td class="num down">-12.20%</td><td class="num down">-15.1%</td><td class="num up"><b>+23.7%</b></td><td class="num">0.99</td><td class="num">29.3</td></tr>
+<tr><td>688256.SH</td><td>寒武纪</td><td>AI芯片</td><td class="num">958.00</td><td class="num up">+4.93%</td><td class="num up">+4.54%</td><td class="num down">-8.4%</td><td class="num down">-15.1%</td><td class="num">1.07</td><td class="num">11.0</td></tr>
+<tr><td>688041.SH</td><td>海光信息</td><td>AI芯片</td><td class="num">192.70</td><td class="num up">+3.03%</td><td class="num down">-0.31%</td><td class="num down">-20.1%</td><td class="num down">-35.4%</td><td class="num">0.81</td><td class="num">3.2</td></tr>
+<tr><td>300474.SZ</td><td>景嘉微</td><td>AI芯片</td><td class="num">48.85</td><td class="num down">-2.88%</td><td class="num down">-0.91%</td><td class="num down">-4.0%</td><td class="num down">-2.6%</td><td class="num">1.34</td><td class="num">6.2</td></tr>
+<tr><td>603986.SH</td><td>兆易创新</td><td>AI芯片</td><td class="num">289.88</td><td class="num up">+7.77%</td><td class="num up">+0.65%</td><td class="num down">-20.4%</td><td class="num down">-25.8%</td><td class="num">1.43</td><td class="num">11.0</td></tr>
+<tr><td>688981.SH</td><td>中芯国际</td><td>晶圆代工</td><td class="num">102.00</td><td class="num up">+2.00%</td><td class="num up">+1.76%</td><td class="num down">-13.8%</td><td class="num down">-25.4%</td><td class="num">0.87</td><td class="num">12.7</td></tr>
+<tr><td>002371.SZ</td><td>北方华创</td><td>晶圆代工</td><td class="num">511.68</td><td class="num up">+4.75%</td><td class="num down">-8.79%</td><td class="num down">-22.1%</td><td class="num down">-28.4%</td><td class="num">1.49</td><td class="num">16.4</td></tr>
+<tr><td>688012.SH</td><td>中微公司</td><td>晶圆代工</td><td class="num">240.00</td><td class="num up">+0.74%</td><td class="num down">-12.41%</td><td class="num down">-28.2%</td><td class="num down">-37.3%</td><td class="num">1.61</td><td class="num">2.7</td></tr>
+<tr><td>603019.SH</td><td>中科曙光</td><td>服务器算力</td><td class="num">77.20</td><td class="num up">+4.48%</td><td class="num up">+1.61%</td><td class="num down">-5.9%</td><td class="num down">-16.2%</td><td class="num">1.08</td><td class="num">23.7</td></tr>
+<tr><td>000977.SZ</td><td>浪潮信息</td><td>服务器算力</td><td class="num">56.03</td><td class="num up">+2.17%</td><td class="num down">-4.06%</td><td class="num down">-20.7%</td><td class="num down">-29.8%</td><td class="num">0.93</td><td class="num">3.0</td></tr>
+<tr><td>300383.SZ</td><td>光环新网</td><td>服务器算力</td><td class="num">9.95</td><td class="num flat">-0.10%</td><td class="num down">-3.49%</td><td class="num down">-15.1%</td><td class="num down">-21.3%</td><td class="num">0.86</td><td class="num">2.5</td></tr>
+<tr><td>603881.SH</td><td>数据港</td><td>服务器算力</td><td class="num">20.48</td><td class="num up">+0.44%</td><td class="num down">-5.93%</td><td class="num down">-15.7%</td><td class="num down">-14.4%</td><td class="num">0.76</td><td class="num">2.0</td></tr>
+<tr><td>002916.SZ</td><td>深南电路</td><td>PCB互联</td><td class="num">280.04</td><td class="num up">+7.70%</td><td class="num down">-8.36%</td><td class="num down">-20.2%</td><td class="num down">-12.0%</td><td class="num">1.21</td><td class="num">25.2</td></tr>
+<tr><td>300476.SZ</td><td>胜宏科技</td><td>PCB互联</td><td class="num">180.31</td><td class="num up">+3.57%</td><td class="num down">-4.02%</td><td class="num down">-19.9%</td><td class="num down">-14.2%</td><td class="num">0.91</td><td class="num">6.0</td></tr>
+<tr><td>688008.SH</td><td>澜起科技</td><td>PCB互联</td><td class="num">174.70</td><td class="num up">+6.20%</td><td class="num down">-2.04%</td><td class="num down">-11.3%</td><td class="num down">-15.2%</td><td class="num">0.97</td><td class="num">25.9</td></tr>
+<tr><td>002230.SZ</td><td>科大讯飞</td><td>AI应用</td><td class="num">38.05</td><td class="num down">-0.37%</td><td class="num up">+2.56%</td><td class="num down">-3.5%</td><td class="num down">-4.4%</td><td class="num">1.25</td><td class="num">8.0</td></tr>
+<tr><td>688111.SH</td><td>金山办公</td><td>AI应用</td><td class="num">223.08</td><td class="num down"><b>-8.75%</b></td><td class="num down">-5.94%</td><td class="num down">-7.2%</td><td class="num down">-7.5%</td><td class="num">1.97</td><td class="num">10.7</td></tr>
+<tr><td>300033.SZ</td><td>同花顺</td><td>AI应用</td><td class="num">199.00</td><td class="num up">+1.54%</td><td class="num up">+1.61%</td><td class="num down">-7.7%</td><td class="num down">-7.0%</td><td class="num">1.14</td><td class="num">5.6</td></tr>
+<tr><td>300496.SZ</td><td>中科创达</td><td>AI应用</td><td class="num">56.93</td><td class="num flat">-0.09%</td><td class="num up">+6.19%</td><td class="num up"><b>+0.5%</b></td><td class="num down">-1.5%</td><td class="num">2.05</td><td class="num">18.3</td></tr>
+<tr><td>002415.SZ</td><td>海康威视</td><td>AI应用</td><td class="num">34.15</td><td class="num down">-0.29%</td><td class="num up">+5.60%</td><td class="num down">-0.8%</td><td class="num down">-5.5%</td><td class="num">1.05</td><td class="num">47.7</td></tr>
+</table>
+<p class="mini">今日 17 涨 6 跌，等权 +2.95%（昨日 23 只全跌等权 -4.00%）。数据源：xtdata get_full_tick 收盘帧（26 代码全部取得，lastClose 与面板 10-27 收盘 26/26 程序化核验一致，引擎收盘 change_pct 5 只可比全部吻合）。</p>
+</div>
+<div id="chartToday" class="chart chart-tall"></div>
+<div class="grid2">
+<div class="card"><b>信号闸门复核（今日 vs 昨日）</b>
+<table style="margin-top:8px">
+<tr><th>闸门（N=23）</th><th class="num">今日 10-28</th><th class="num">昨日 10-27</th><th>变化</th></tr>
+<tr><td>收盘 &gt; MA60</td><td class="num"><b>1/23</b>（中科创达）</td><td class="num">2/23</td><td class="down">-1（金山办公破位丢失）</td></tr>
+<tr><td>60日动量 ≥ 0.15</td><td class="num"><b>1/23</b>（太辰光 +23.7%）</td><td class="num">0/23</td><td class="up"><b>+1，入池动量线首次点亮</b></td></tr>
+<tr><td>两者同时满足</td><td class="num"><b>0/23</b></td><td class="num">0/23</td><td class="flat">0——仍无入场信号</td></tr>
+<tr><td>动量 &gt; 0（转正）</td><td class="num">2/23</td><td class="num">2/23</td><td class="flat">家数持平、构成换血（金山转负）</td></tr>
+</table></div>
+<div class="card"><b>接近达标个股点名</b>
+<table style="margin-top:8px">
+<tr><th>代码</th><th>名称</th><th>状态</th><th>差口</th></tr>
+<tr><td>300570.SZ</td><td>太辰光</td><td>动量已过线（+23.7%）</td><td>距 MA60 差 17.8%；动量跳升约 2/3 来自 60 日窗口滚动机械效应，需防「假点亮」</td></tr>
+<tr><td>300496.SZ</td><td>中科创达</td><td>站上 MA60、trend_up=True</td><td>动量 -1.5% 被拦；bias +0.40 远低于 2.0（该通道为关闭态）</td></tr>
+<tr><td>300394.SZ</td><td>天孚通信</td><td>动量 +10.9% 转正</td><td>差 4.1pt 达入池线；vsMA60 仍 -16.6%</td></tr>
+</table>
+<p class="mini" style="margin-top:6px">结论：按策略入场链（日线闸门→评分/因子数→动量 top_n=3 & min_mom=0.15），<b>top_momentum 入池为空</b>，今日仍无入场信号。</p></div>
+</div>
+
+<!-- ============ 四、数据工程 ============ -->
+<h2 class="sec">四、数据与工程健康（T2）<span class="sec-no">核查时间 2026-10-28 15:30</span></h2>
+<div class="card">
+<b>数据资产时效审计</b>
+<table style="margin-top:8px">
+<tr><th>数据源</th><th>末端日期</th><th>龄期</th><th>结论</th><th>处置</th></tr>
+<tr><td>日线面板 ts_panel_25_901_20211201_20261027.pkl</td><td>2026-10-27</td><td class="num">1 天</td><td class="up">达标</td><td>今日 10-28 数据 tushare 未更新（17-18 点后），<b>今晚刷新</b>；今日行情已由 xtdata 收盘帧取得</td></tr>
+<tr><td>资金流缓存 moneyflow_*.json（23 只）</td><td>2026-10-27</td><td class="num">1 天</td><td class="up">达标</td><td>抽查 4 只全部一致（今早补齐）</td></tr>
+<tr><td>北向缓存 northbound</td><td>2026-08-25</td><td class="num">64 天</td><td class="flat">陈旧但零影响</td><td><b>判定不刷新</b>：fail-open 死闸门（northbound_mode 轴已被证伪、OWNER 冻结待 re-baseline），末 60 全正=数据源退化，刷新无收益</td></tr>
+<tr><td>earnrev 缓存（20 个）</td><td>—</td><td>—</td><td class="up">正常</td><td>2 字节 "{}" 为设计输出（今早已诊断）</td></tr>
+<tr><td>qmt.db + wal</td><td>2026-10-28 15:04</td><td>—</td><td class="up">正常</td><td>只读核查未改动</td></tr>
+</table>
+</div>
+<div class="grid2">
+<div class="card"><b>今日日志 ERROR 分类（无新问题）</b>
+<ul class="tight">
+<li><b>老问题·每日重复</b>：25×「无入场信号」漏斗记录；15:02 快照陈旧暂停建仓（10-27 同样出现，收盘后设计行为）。</li>
+<li><b>一次性·07:25 重启</b>：mock 禁成交提示、交易日历不可用、风险预算、北向陈旧 ERROR——均为盘前启动探活失败的预期日志。</li>
+<li><b>结论</b>：今日无新增故障模式；引擎日志末条 15:32（Web 请求+名称缓存正常）。</li>
+</ul></div>
+<div class="card"><b>git 工作区（7 项未提交，只读盘点）</b>
+<table style="margin-top:8px">
+<tr><th>类别</th><th>项</th><th>建议</th></tr>
+<tr><td>数据类</td><td>storage/dynamic_universe.json（M）</td><td>已跟踪，随研究轮入库（历史惯例）</td></tr>
+<tr><td>研究产出类</td><td>reports/agent_outputs/（9 份）+ 股票分析报告 HTML</td><td>提交</td></tr>
+<tr><td>脚本类</td><td>scripts/_analysis_*.py（5 个）</td><td>提交（符合 scripts/_* 惯例）</td></tr>
+</table>
+<p class="mini" style="margin-top:6px">提交前必须过 safe-github-push 敏感串扫描（sk-bbb3/a0470/AKID）；是否提交待你确认，我不擅自 commit/push。</p></div>
+</div>
+<div class="note"><b>工程健康快照</b>：pip check 通过、关键包版本达标；⚠️ requirements.txt 缺 tushare/pytest 声明（环境可用但不可复现）；⚠️ 测试落盘 artifact 断档——「533/533」仅有提交信息佐证，最近已存盘测试报告为 09-22（228/230）；__pycache__ 1.3MB（含 115 个 3.13 误跑残留，可清理）。</div>
+
+<!-- ============ 五、运维 ============ -->
+<h2 class="sec">五、运维与自动化（T4）<span class="sec-no">核查时间 2026-10-28 15:30，全程只读</span></h2>
+<div class="grid2">
+<div class="card"><b>进程与端口（健康）</b>
+<table style="margin-top:8px">
+<tr><th>进程</th><th>PID</th><th>启动</th><th>状态</th></tr>
+<tr><td>引擎 main.py --web</td><td class="num">23580</td><td>07:25:44</td><td class="up">5000 端口回环 LISTENING，curl 200/0.163s</td></tr>
+<tr><td>GUARD guardian.py</td><td class="num">25296</td><td>今晨重拉</td><td class="up">今日 100 条巡检，末条 15:51 miniQMT=True engine=True</td></tr>
+<tr><td>miniQMT</td><td class="num">23508</td><td>07:41:15</td><td class="up">行情供给正常（未触碰）</td></tr>
+</table>
+<p class="mini" style="margin-top:6px">EXECUTION_MODE=paper ✓；engine.pid 一致；GUARD 唯一告警 08:16 engine_log_stale 已瞬时自愈。</p></div>
+<div class="card"><b>磁盘（无异常）</b>
+<table style="margin-top:8px">
+<tr><th>位置</th><th class="num">大小</th><th>今日增量</th></tr>
+<tr><td>logs/</td><td class="num">38MB</td><td>KB 级（零 BUY 防御态）</td></tr>
+<tr><td>storage/</td><td class="num">134MB</td><td>—（含旧 DB 备份约 92MB，待归档）</td></tr>
+<tr><td>notices.log</td><td class="num">3.2MB</td><td>正常增长</td></tr>
+</table></div>
+</div>
+<div class="warn"><b>【高优】交易日自动化套件自 10-22 起停摆——事实链</b>：
+① OBSERVE / AM / PM-EVOLVE 自 10-22 起无产物；PRE-MARKET 自 10-21 断供；evolution_ledger 末条 10-21 15:36；memory 日记 10-22~27 连续缺失；
+② BACKLOG（reports/OPTIMIZATION_BACKLOG.md）mtime 停在 10-07（陈旧 21 天，10-21 曾一度缺失）；
+③ GUARD 10-23 16:42 后断裂、10-26 晨旧实例 pid=21828 僵持占锁、10-27 全天 0 条——今晨 07:25:44 才被 health_check 重新拉起；
+④ <b>15:35 盘后复盘自动化触发后，review_2026-10-28.json 未生成</b>（15:54 复核）；今日仅 GUARD 与 benchmark_daily.jsonl（15:41）在活动。
+⇒ 形态符合「WorkBuddy 自动化被暂停/宿主未运行」：引擎本地侧一切正常，断的是<b>自动化调度层</b>。需你确认自动化状态（我无自动化管理工具，无法直接查验/修复）。</div>
+<div class="card"><b>研究待办与未决决策状态（T3 盘点）</b>
+<table style="margin-top:8px">
+<tr><th>项</th><th>状态</th><th>备注</th></tr>
+<tr><td>D10 弱市期独立诊断</td><td><span class="lv lv-m">待OWNER接受</span></td><td>R41/R42 已做实：亏损 100% 源于宇宙级 beta、参数空间穷尽；接受后自进化重心整体转向</td></tr>
+<tr><td>D1 KPI#4（15条证据无解）</td><td><span class="lv lv-m">未决</span></td><td>目标本身存疑</td></tr>
+<tr><td>D3 conviction_boost</td><td><span class="lv lv-m">未决</span></td><td>L2 唯一未落尺度型路径；价签需重估（历史 IS 虚增 +9.4pt）</td></tr>
+<tr><td>D4 KPI#1 口径 / D8 / D9</td><td><span class="lv lv-m">未决</span></td><td>折均值 1.669 vs 拼接 2.143；建议一次性裁决</td></tr>
+<tr><td>BACKLOG 消费链</td><td><span class="lv lv-h">断档 3 周</span></td><td>待 OBSERVE 恢复后验证追加正常</td></tr>
+</table></div>
+
+<!-- ============ 六、风险清单 ============ -->
+<h2 class="sec">六、风险与待决策清单<span class="sec-no">按优先级</span></h2>
+<table>
+<tr><th style="width:60px">级别</th><th>事项</th><th>影响</th><th>建议动作</th></tr>
+<tr><td><span class="lv lv-h">高</span></td><td>交易日自动化套件停摆（10-22 起，review 连续 4 日缺失）</td><td>自进化/盘后复盘/观测链全面断供；BACKLOG 3 周未更新</td><td>确认 WorkBuddy 自动化是否被置 PAUSED/宿主未运行；恢复后复核今日 review 产物</td></tr>
+<tr><td><span class="lv lv-h">高</span></td><td>GUARD 空档期（10-23 晚~10-28 晨）无守护兜底</td><td>空档期内进程死亡无自动重拉（引擎靠 health_check 兜住）</td><td>排查 pid=21828 僵持占锁原因；确认 GUARD 重拉机制可靠性</td></tr>
+<tr><td><span class="lv lv-m">中</span></td><td>测试落盘 artifact 断档（最近 09-22）</td><td>「533/533 通过」缺磁盘证据；改杠杆/仓位前必须全量 run_all</td><td>下次参数变更前补跑 tests/run_all.py 并归档报告</td></tr>
+<tr><td><span class="lv lv-m">中</span></td><td>requirements 缺 tushare/pytest</td><td>环境不可复现</td><td>工程维护时补依赖声明</td></tr>
+<tr><td><span class="lv lv-m">中</span></td><td>7 项未提交（今日分析产出）</td><td>工作区与仓库脱节</td><td>过 safe-github-push 扫描后提交（待你确认）</td></tr>
+<tr><td><span class="lv lv-l">低</span></td><td>北向缓存 64 天陈旧</td><td>零交易影响（死闸门）</td><td>随 D10 re-baseline 一并退役决策</td></tr>
+<tr><td><span class="lv lv-l">低</span></td><td>旧 DB 备份约 92MB / __pycache__ 1.3MB</td><td>磁盘占用</td><td>17:00 工程维护窗口归档/清理</td></tr>
+</table>
+
+<!-- ============ 七、下一步 ============ -->
+<h2 class="sec">七、下一步行动建议<span class="sec-no">Next Actions</span></h2>
+<div class="card">
+<ol class="tight">
+<li><b>今晚（tushare 更新后，约 17-18 点）</b>：将日线面板刷新至 2026-10-28（pro.daily + index_daily），保持「面板末端=T-1 完整收盘」纪律；今日 xtdata 收盘帧数据已核验可用作交叉源。</li>
+<li><b>需你决策</b>：① 自动化套件停摆的处置（我无法直接管理自动化）；② 是否提交今日 7 项未提交产出；③ D10 是否正式接受（决定自进化重心转向）。</li>
+<li><b>观察项</b>：太辰光动量「假点亮」的后续演化（窗口滚动效应约占 2/3）；MA60 收复家数（今日 1/23，昨日 2/23）——连续 3 日回升才算右侧信号初现。</li>
+<li><b>纪律保持</b>：本周不动任何生产参数（安全闸门）；零 BUY 状态下重点完成数据底座与自动化修复，为弱市期诊断（D10）备好弹药。</li>
+</ol>
+</div>
+
+<div class="note" style="margin-top:18px"><b>数据完整性说明</b>：本日报全部数字来自 ① qmt.db 只读查询（as_of 2026-10-28 15:04）② xtdata get_full_tick 收盘帧（as_of 2026-10-28 15:00，26/26 代码与面板 10-27 收盘交叉核验一致）③ 本地面板与缓存（末端 10-27，tushare，今早刷新）④ logs/ 与 git 只读盘点。未获取项：全市场涨跌家数/成交额（无本地源，未编造）、000001.SH 的 ATR/量能（面板 volume=0）、自动化管理状态（无工具，基于文件证据推断）。子 agent 原始产出见 reports/agent_outputs/T_*.md（4 份）。</div>
+
+<footer>
+  <div>qmtIDE-deepseek 项目日报 ｜ 生成：2026-10-28 15:55 ｜ 编排层汇总 ｜ 子agent：T1 交易 / T3 市场策略 / T2 数据工程 / T4 运维</div>
+  <div style="margin-top:4px">铁律执行情况：未修改任何策略参数/生产配置；未 kill 任何进程；未触碰 miniQMT；未执行 git 写操作；未改动自动化。</div>
+</footer>
+</div>
+
+<script>
+const UP='#f0435e', DOWN='#17b978', TXT='#9aa8c0', LINE='#26334f';
+const STOCKS=[
+ {code:'300308.SZ',name:'中际旭创',sector:'光模块',close:636.30,today:10.28,d5:-1.62,mom:-29.9,vr:1.50},
+ {code:'300502.SZ',name:'新易盛',sector:'光模块',close:256.79,today:8.08,d5:-12.69,mom:-36.9,vr:1.47},
+ {code:'300394.SZ',name:'天孚通信',sector:'光模块',close:201.43,today:6.79,d5:-6.30,mom:10.9,vr:1.19},
+ {code:'300570.SZ',name:'太辰光',sector:'光模块',close:154.60,today:5.96,d5:-12.20,mom:23.7,vr:0.99},
+ {code:'688256.SH',name:'寒武纪',sector:'AI芯片',close:958.00,today:4.93,d5:4.54,mom:-15.1,vr:1.07},
+ {code:'688041.SH',name:'海光信息',sector:'AI芯片',close:192.70,today:3.03,d5:-0.31,mom:-35.4,vr:0.81},
+ {code:'300474.SZ',name:'景嘉微',sector:'AI芯片',close:48.85,today:-2.88,d5:-0.91,mom:-2.6,vr:1.34},
+ {code:'603986.SH',name:'兆易创新',sector:'AI芯片',close:289.88,today:7.77,d5:0.65,mom:-25.8,vr:1.43},
+ {code:'688981.SH',name:'中芯国际',sector:'晶圆代工',close:102.00,today:2.00,d5:1.76,mom:-25.4,vr:0.87},
+ {code:'002371.SZ',name:'北方华创',sector:'晶圆代工',close:511.68,today:4.75,d5:-8.79,mom:-28.4,vr:1.49},
+ {code:'688012.SH',name:'中微公司',sector:'晶圆代工',close:240.00,today:0.74,d5:-12.41,mom:-37.3,vr:1.61},
+ {code:'603019.SH',name:'中科曙光',sector:'服务器算力',close:77.20,today:4.48,d5:1.61,mom:-16.2,vr:1.08},
+ {code:'000977.SZ',name:'浪潮信息',sector:'服务器算力',close:56.03,today:2.17,d5:-4.06,mom:-29.8,vr:0.93},
+ {code:'300383.SZ',name:'光环新网',sector:'服务器算力',close:9.95,today:-0.10,d5:-3.49,mom:-21.3,vr:0.86},
+ {code:'603881.SH',name:'数据港',sector:'服务器算力',close:20.48,today:0.44,d5:-5.93,mom:-14.4,vr:0.76},
+ {code:'002916.SZ',name:'深南电路',sector:'PCB互联',close:280.04,today:7.70,d5:-8.36,mom:-12.0,vr:1.21},
+ {code:'300476.SZ',name:'胜宏科技',sector:'PCB互联',close:180.31,today:3.57,d5:-4.02,mom:-14.2,vr:0.91},
+ {code:'688008.SH',name:'澜起科技',sector:'PCB互联',close:174.70,today:6.20,d5:-2.04,mom:-15.2,vr:0.97},
+ {code:'002230.SZ',name:'科大讯飞',sector:'AI应用',close:38.05,today:-0.37,d5:2.56,mom:-4.4,vr:1.25},
+ {code:'688111.SH',name:'金山办公',sector:'AI应用',close:223.08,today:-8.75,d5:-5.94,mom:-7.5,vr:1.97},
+ {code:'300033.SZ',name:'同花顺',sector:'AI应用',close:199.00,today:1.54,d5:1.61,mom:-7.0,vr:1.14},
+ {code:'300496.SZ',name:'中科创达',sector:'AI应用',close:56.93,today:-0.09,d5:6.19,mom:-1.5,vr:2.05},
+ {code:'002415.SZ',name:'海康威视',sector:'AI应用',close:34.15,today:-0.29,d5:5.60,mom:-5.5,vr:1.05}
+];
+const axisCommon={axisLine:{lineStyle:{color:LINE}},axisLabel:{color:TXT},splitLine:{lineStyle:{color:'#1c2740'}}};
+const tip={trigger:'axis',backgroundColor:'#1b2540',borderColor:LINE,textStyle:{color:'#e8eef8',fontSize:12}};
+function draw(){
+  if(typeof echarts==='undefined')return;
+  const r=[...STOCKS].sort((a,b)=>b.today-a.today);
+  echarts.init(document.getElementById('chartToday')).setOption({
+    title:{text:'23 股今日涨跌幅（%，as_of 2026-10-28 收盘，红涨绿跌）',textStyle:{color:'#e8eef8',fontSize:14},left:0},
+    tooltip:{...tip,formatter:p=>{const s=r[p.dataIndex];return `${s.name}（${s.sector}）<br>今日：<b style="color:${s.today>=0?UP:DOWN}">${(s.today>0?'+':'')+s.today.toFixed(2)}%</b><br>近5日：${s.d5.toFixed(2)}%<br>60日动量：${s.mom.toFixed(1)}%<br>量能比：${s.vr.toFixed(2)}`;}},
+    grid:{left:90,right:60,top:36,bottom:24},
+    xAxis:{type:'value',...axisCommon},
+    yAxis:{type:'category',data:r.map(s=>s.name),...axisCommon,axisLabel:{...axisCommon.axisLabel,fontSize:11}},
+    series:[{type:'bar',data:r.map(s=>({value:s.today,itemStyle:{color:s.today>=0?UP:DOWN,borderRadius:s.today>=0?[0,3,3,0]:[3,0,0,3]}})),barWidth:9,
+      label:{show:true,position:'right',color:TXT,fontSize:10,formatter:p=>(p.value>0?'+':'')+p.value.toFixed(2)+'%'},
+      markLine:{symbol:'none',lineStyle:{color:'#f0b429',type:'dashed'},label:{color:'#f5cf7a',fontSize:10},data:[{xAxis:2.95,label:{formatter:'等权+2.95%'}}]}}]
+  });
+}
+if(document.readyState!=='loading'){draw();}else{window.addEventListener('DOMContentLoaded',draw);}
+window.addEventListener('resize',()=>{document.querySelectorAll('.chart').forEach(el=>{const c=echarts.getInstanceByDom(el);if(c)c.resize();});});
+</script>
+</body>
+</html>

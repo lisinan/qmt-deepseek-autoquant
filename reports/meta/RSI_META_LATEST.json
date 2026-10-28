@@ -1,0 +1,1966 @@
+{
+ "generated_at": "2026-10-28 23:10:55",
+ "search_space": {
+  "total": 76,
+  "by_class": {
+   "仅实盘": 23,
+   "死参数": 3,
+   "双向可验证": 49,
+   "别名可验证": 1
+  },
+  "usable_ratio": 0.645,
+  "rows": [
+   {
+    "param": "ma_short",
+    "live": 1,
+    "research": 0,
+    "alias": [],
+    "class": "仅实盘",
+    "note": "回测器不读该键 → A/B 测的是另一个策略，结论只能记「未验证」",
+    "live_files": {
+     "strategy/trend_strategy.py": 1
+    },
+    "research_files": {}
+   },
+   {
+    "param": "ma_medium",
+    "live": 1,
+    "research": 0,
+    "alias": [],
+    "class": "仅实盘",
+    "note": "回测器不读该键 → A/B 测的是另一个策略，结论只能记「未验证」",
+    "live_files": {
+     "strategy/trend_strategy.py": 1
+    },
+    "research_files": {}
+   },
+   {
+    "param": "ma_long",
+    "live": 3,
+    "research": 0,
+    "alias": [],
+    "class": "仅实盘",
+    "note": "回测器不读该键 → A/B 测的是另一个策略，结论只能记「未验证」",
+    "live_files": {
+     "engine/event_engine.py": 1,
+     "strategy/_probe_livedata.py": 1,
+     "strategy/trend_strategy.py": 1
+    },
+    "research_files": {}
+   },
+   {
+    "param": "rsi_period",
+    "live": 1,
+    "research": 0,
+    "alias": [],
+    "class": "仅实盘",
+    "note": "回测器不读该键 → A/B 测的是另一个策略，结论只能记「未验证」",
+    "live_files": {
+     "strategy/trend_strategy.py": 1
+    },
+    "research_files": {}
+   },
+   {
+    "param": "rsi_oversold",
+    "live": 0,
+    "research": 0,
+    "alias": [],
+    "class": "死参数",
+    "note": "全仓库生产代码无读点 → 任何网格纯浪费",
+    "live_files": {},
+    "research_files": {}
+   },
+   {
+    "param": "rsi_overbought",
+    "live": 0,
+    "research": 0,
+    "alias": [],
+    "class": "死参数",
+    "note": "全仓库生产代码无读点 → 任何网格纯浪费",
+    "live_files": {},
+    "research_files": {}
+   },
+   {
+    "param": "macd_fast",
+    "live": 1,
+    "research": 0,
+    "alias": [],
+    "class": "仅实盘",
+    "note": "回测器不读该键 → A/B 测的是另一个策略，结论只能记「未验证」",
+    "live_files": {
+     "strategy/trend_strategy.py": 1
+    },
+    "research_files": {}
+   },
+   {
+    "param": "macd_slow",
+    "live": 1,
+    "research": 0,
+    "alias": [],
+    "class": "仅实盘",
+    "note": "回测器不读该键 → A/B 测的是另一个策略，结论只能记「未验证」",
+    "live_files": {
+     "strategy/trend_strategy.py": 1
+    },
+    "research_files": {}
+   },
+   {
+    "param": "macd_signal",
+    "live": 1,
+    "research": 0,
+    "alias": [],
+    "class": "仅实盘",
+    "note": "回测器不读该键 → A/B 测的是另一个策略，结论只能记「未验证」",
+    "live_files": {
+     "strategy/trend_strategy.py": 1
+    },
+    "research_files": {}
+   },
+   {
+    "param": "kdj_period",
+    "live": 1,
+    "research": 0,
+    "alias": [],
+    "class": "仅实盘",
+    "note": "回测器不读该键 → A/B 测的是另一个策略，结论只能记「未验证」",
+    "live_files": {
+     "strategy/trend_strategy.py": 1
+    },
+    "research_files": {}
+   },
+   {
+    "param": "boll_period",
+    "live": 1,
+    "research": 0,
+    "alias": [],
+    "class": "仅实盘",
+    "note": "回测器不读该键 → A/B 测的是另一个策略，结论只能记「未验证」",
+    "live_files": {
+     "strategy/trend_strategy.py": 1
+    },
+    "research_files": {}
+   },
+   {
+    "param": "boll_std",
+    "live": 1,
+    "research": 0,
+    "alias": [],
+    "class": "仅实盘",
+    "note": "回测器不读该键 → A/B 测的是另一个策略，结论只能记「未验证」",
+    "live_files": {
+     "strategy/trend_strategy.py": 1
+    },
+    "research_files": {}
+   },
+   {
+    "param": "atr_period",
+    "live": 1,
+    "research": 0,
+    "alias": [],
+    "class": "仅实盘",
+    "note": "回测器不读该键 → A/B 测的是另一个策略，结论只能记「未验证」",
+    "live_files": {
+     "strategy/trend_strategy.py": 1
+    },
+    "research_files": {}
+   },
+   {
+    "param": "buy_score_threshold",
+    "live": 4,
+    "research": 4,
+    "alias": [],
+    "class": "双向可验证",
+    "note": "同名读取，闸门可验证",
+    "live_files": {
+     "engine/event_engine.py": 1,
+     "engine/observability.py": 1,
+     "strategy/research_lab.py": 1,
+     "strategy/trend_strategy.py": 1
+    },
+    "research_files": {
+     "strategy/_evolve_wf.py": 1,
+     "strategy/backtest_daily.py": 1,
+     "strategy/backtest_minute.py": 1,
+     "strategy/opt_harness.py": 1
+    }
+   },
+   {
+    "param": "volume_surge",
+    "live": 1,
+    "research": 0,
+    "alias": [],
+    "class": "仅实盘",
+    "note": "回测器不读该键 → A/B 测的是另一个策略，结论只能记「未验证」",
+    "live_files": {
+     "strategy/trend_strategy.py": 1
+    },
+    "research_files": {}
+   },
+   {
+    "param": "min_signals",
+    "live": 4,
+    "research": 4,
+    "alias": [],
+    "class": "双向可验证",
+    "note": "同名读取，闸门可验证",
+    "live_files": {
+     "engine/event_engine.py": 1,
+     "engine/observability.py": 1,
+     "strategy/research_lab.py": 1,
+     "strategy/trend_strategy.py": 1
+    },
+    "research_files": {
+     "strategy/_evolve_wf.py": 1,
+     "strategy/backtest_daily.py": 1,
+     "strategy/backtest_minute.py": 1,
+     "strategy/opt_harness.py": 1
+    }
+   },
+   {
+    "param": "min_daily_bias",
+    "live": 2,
+    "research": 2,
+    "alias": [],
+    "class": "双向可验证",
+    "note": "同名读取，闸门可验证",
+    "live_files": {
+     "engine/event_engine.py": 1,
+     "strategy/trend_strategy.py": 1
+    },
+    "research_files": {
+     "strategy/_evolve_wf.py": 1,
+     "strategy/backtest_daily.py": 1
+    }
+   },
+   {
+    "param": "require_daily_data",
+    "live": 2,
+    "research": 0,
+    "alias": [],
+    "class": "仅实盘",
+    "note": "回测器不读该键 → A/B 测的是另一个策略，结论只能记「未验证」",
+    "live_files": {
+     "engine/event_engine.py": 1,
+     "strategy/trend_strategy.py": 1
+    },
+    "research_files": {}
+   },
+   {
+    "param": "momentum_scope",
+    "live": 1,
+    "research": 0,
+    "alias": [],
+    "class": "仅实盘",
+    "note": "回测器不读该键 → A/B 测的是另一个策略，结论只能记「未验证」",
+    "live_files": {
+     "engine/event_engine.py": 1
+    },
+    "research_files": {}
+   },
+   {
+    "param": "stop_loss",
+    "live": 7,
+    "research": 1,
+    "alias": [],
+    "class": "双向可验证",
+    "note": "同名读取，闸门可验证",
+    "live_files": {
+     "engine/event_engine.py": 1,
+     "risk/position_sizer.py": 1,
+     "strategy/experiments.py": 1,
+     "strategy/research_lab.py": 1,
+     "strategy/sweep_daily.py": 1,
+     "strategy/trend_strategy.py": 1,
+     "verify_basket.py": 1
+    },
+    "research_files": {
+     "strategy/backtest_daily.py": 1
+    }
+   },
+   {
+    "param": "take_profit",
+    "live": 6,
+    "research": 1,
+    "alias": [],
+    "class": "双向可验证",
+    "note": "同名读取，闸门可验证",
+    "live_files": {
+     "engine/event_engine.py": 1,
+     "strategy/experiments.py": 1,
+     "strategy/research_lab.py": 1,
+     "strategy/sweep_daily.py": 1,
+     "strategy/trend_strategy.py": 1,
+     "verify_basket.py": 1
+    },
+    "research_files": {
+     "strategy/backtest_daily.py": 1
+    }
+   },
+   {
+    "param": "atr_stop_mult",
+    "live": 6,
+    "research": 3,
+    "alias": [],
+    "class": "双向可验证",
+    "note": "同名读取，闸门可验证",
+    "live_files": {
+     "engine/event_engine.py": 1,
+     "risk/position_sizer.py": 1,
+     "strategy/experiments.py": 1,
+     "strategy/research_lab.py": 1,
+     "strategy/sweep_daily.py": 1,
+     "verify_basket.py": 1
+    },
+    "research_files": {
+     "strategy/_evolve_wf.py": 1,
+     "strategy/backtest_daily.py": 1,
+     "strategy/opt_harness.py": 1
+    }
+   },
+   {
+    "param": "tp_atr_mult",
+    "live": 5,
+    "research": 3,
+    "alias": [],
+    "class": "双向可验证",
+    "note": "同名读取，闸门可验证",
+    "live_files": {
+     "engine/event_engine.py": 1,
+     "strategy/experiments.py": 1,
+     "strategy/research_lab.py": 1,
+     "strategy/sweep_daily.py": 1,
+     "verify_basket.py": 1
+    },
+    "research_files": {
+     "strategy/_evolve_wf.py": 1,
+     "strategy/backtest_daily.py": 1,
+     "strategy/opt_harness.py": 1
+    }
+   },
+   {
+    "param": "trailing_stop",
+    "live": 4,
+    "research": 1,
+    "alias": [],
+    "class": "双向可验证",
+    "note": "同名读取，闸门可验证",
+    "live_files": {
+     "strategy/experiments.py": 1,
+     "strategy/research_lab.py": 1,
+     "strategy/sweep_daily.py": 1,
+     "verify_basket.py": 1
+    },
+    "research_files": {
+     "strategy/backtest_daily.py": 1
+    }
+   },
+   {
+    "param": "trailing_activation",
+    "live": 4,
+    "research": 1,
+    "alias": [],
+    "class": "双向可验证",
+    "note": "同名读取，闸门可验证",
+    "live_files": {
+     "strategy/experiments.py": 1,
+     "strategy/research_lab.py": 1,
+     "strategy/sweep_daily.py": 1,
+     "verify_basket.py": 1
+    },
+    "research_files": {
+     "strategy/backtest_daily.py": 1
+    }
+   },
+   {
+    "param": "trailing_floor",
+    "live": 3,
+    "research": 1,
+    "alias": [],
+    "class": "双向可验证",
+    "note": "同名读取，闸门可验证",
+    "live_files": {
+     "strategy/research_lab.py": 1,
+     "strategy/sweep_daily.py": 1,
+     "verify_basket.py": 1
+    },
+    "research_files": {
+     "strategy/backtest_daily.py": 1
+    }
+   },
+   {
+    "param": "max_hold_days",
+    "live": 5,
+    "research": 2,
+    "alias": [],
+    "class": "双向可验证",
+    "note": "同名读取，闸门可验证",
+    "live_files": {
+     "strategy/experiments.py": 1,
+     "strategy/research_lab.py": 1,
+     "strategy/sweep_daily.py": 1,
+     "strategy/trend_strategy.py": 1,
+     "verify_basket.py": 1
+    },
+    "research_files": {
+     "strategy/backtest_daily.py": 1,
+     "strategy/opt_harness.py": 1
+    }
+   },
+   {
+    "param": "exit_mode",
+    "live": 9,
+    "research": 4,
+    "alias": [],
+    "class": "双向可验证",
+    "note": "同名读取，闸门可验证",
+    "live_files": {
+     "diag_equity_bug.py": 1,
+     "engine/event_engine.py": 1,
+     "strategy/_opt_earnrev.py": 1,
+     "strategy/_opt_newalpha.py": 1,
+     "strategy/experiments.py": 1,
+     "strategy/research_lab.py": 1,
+     "strategy/review_daily.py": 1,
+     "strategy/trend_strategy.py": 1,
+     "verify_basket.py": 1
+    },
+    "research_files": {
+     "strategy/_evolve_wf.py": 1,
+     "strategy/backtest_daily.py": 1,
+     "strategy/backtest_minute.py": 1,
+     "strategy/opt_harness.py": 1
+    }
+   },
+   {
+    "param": "trend_exit_ma",
+    "live": 7,
+    "research": 4,
+    "alias": [],
+    "class": "双向可验证",
+    "note": "同名读取，闸门可验证",
+    "live_files": {
+     "diag_equity_bug.py": 1,
+     "strategy/_opt_earnrev.py": 1,
+     "strategy/_opt_newalpha.py": 1,
+     "strategy/experiments.py": 1,
+     "strategy/research_lab.py": 1,
+     "strategy/trend_strategy.py": 1,
+     "verify_basket.py": 1
+    },
+    "research_files": {
+     "strategy/_evolve_wf.py": 1,
+     "strategy/backtest_daily.py": 1,
+     "strategy/backtest_minute.py": 1,
+     "strategy/opt_harness.py": 1
+    }
+   },
+   {
+    "param": "hard_stop_pct",
+    "live": 8,
+    "research": 4,
+    "alias": [],
+    "class": "双向可验证",
+    "note": "同名读取，闸门可验证",
+    "live_files": {
+     "diag_equity_bug.py": 1,
+     "engine/event_engine.py": 1,
+     "strategy/_opt_earnrev.py": 1,
+     "strategy/_opt_newalpha.py": 1,
+     "strategy/experiments.py": 1,
+     "strategy/research_lab.py": 1,
+     "strategy/trend_strategy.py": 1,
+     "verify_basket.py": 1
+    },
+    "research_files": {
+     "strategy/_evolve_wf.py": 1,
+     "strategy/backtest_daily.py": 1,
+     "strategy/backtest_minute.py": 1,
+     "strategy/opt_harness.py": 1
+    }
+   },
+   {
+    "param": "trend_max_hold_days",
+    "live": 6,
+    "research": 4,
+    "alias": [],
+    "class": "双向可验证",
+    "note": "同名读取，闸门可验证",
+    "live_files": {
+     "diag_equity_bug.py": 1,
+     "strategy/_opt_earnrev.py": 1,
+     "strategy/_opt_newalpha.py": 1,
+     "strategy/review_daily.py": 1,
+     "strategy/trend_strategy.py": 1,
+     "verify_basket.py": 1
+    },
+    "research_files": {
+     "strategy/_evolve_wf.py": 1,
+     "strategy/backtest_daily.py": 1,
+     "strategy/backtest_minute.py": 1,
+     "strategy/opt_harness.py": 1
+    }
+   },
+   {
+    "param": "momentum_rank",
+    "live": 7,
+    "research": 3,
+    "alias": [],
+    "class": "双向可验证",
+    "note": "同名读取，闸门可验证",
+    "live_files": {
+     "diag_equity_bug.py": 1,
+     "engine/event_engine.py": 1,
+     "strategy/_opt_earnrev.py": 1,
+     "strategy/_opt_newalpha.py": 1,
+     "strategy/experiments.py": 1,
+     "strategy/research_lab.py": 1,
+     "verify_basket.py": 1
+    },
+    "research_files": {
+     "strategy/_evolve_wf.py": 1,
+     "strategy/backtest_daily.py": 1,
+     "strategy/opt_harness.py": 1
+    }
+   },
+   {
+    "param": "momentum_lookback",
+    "live": 8,
+    "research": 3,
+    "alias": [],
+    "class": "双向可验证",
+    "note": "同名读取，闸门可验证",
+    "live_files": {
+     "diag_equity_bug.py": 1,
+     "engine/event_engine.py": 1,
+     "engine/observability.py": 1,
+     "strategy/_opt_earnrev.py": 1,
+     "strategy/_opt_newalpha.py": 1,
+     "strategy/experiments.py": 1,
+     "strategy/research_lab.py": 1,
+     "verify_basket.py": 1
+    },
+    "research_files": {
+     "strategy/_evolve_wf.py": 1,
+     "strategy/backtest_daily.py": 1,
+     "strategy/opt_harness.py": 1
+    }
+   },
+   {
+    "param": "momentum_top_n",
+    "live": 7,
+    "research": 3,
+    "alias": [],
+    "class": "双向可验证",
+    "note": "同名读取，闸门可验证",
+    "live_files": {
+     "diag_equity_bug.py": 1,
+     "engine/event_engine.py": 1,
+     "strategy/_opt_earnrev.py": 1,
+     "strategy/_opt_newalpha.py": 1,
+     "strategy/experiments.py": 1,
+     "strategy/research_lab.py": 1,
+     "verify_basket.py": 1
+    },
+    "research_files": {
+     "strategy/_evolve_wf.py": 1,
+     "strategy/backtest_daily.py": 1,
+     "strategy/opt_harness.py": 1
+    }
+   },
+   {
+    "param": "momentum_min_mom",
+    "live": 3,
+    "research": 3,
+    "alias": [],
+    "class": "双向可验证",
+    "note": "同名读取，闸门可验证",
+    "live_files": {
+     "engine/event_engine.py": 1,
+     "engine/observability.py": 1,
+     "strategy/daily_context.py": 1
+    },
+    "research_files": {
+     "strategy/_evolve_wf.py": 1,
+     "strategy/backtest_daily.py": 1,
+     "strategy/opt_harness.py": 1
+    }
+   },
+   {
+    "param": "down_day_exit_pct",
+    "live": 7,
+    "research": 3,
+    "alias": [],
+    "class": "双向可验证",
+    "note": "同名读取，闸门可验证",
+    "live_files": {
+     "diag_equity_bug.py": 1,
+     "strategy/_opt_earnrev.py": 1,
+     "strategy/_opt_newalpha.py": 1,
+     "strategy/experiments.py": 1,
+     "strategy/research_lab.py": 1,
+     "strategy/trend_strategy.py": 1,
+     "verify_basket.py": 1
+    },
+    "research_files": {
+     "strategy/_evolve_wf.py": 1,
+     "strategy/backtest_daily.py": 1,
+     "strategy/opt_harness.py": 1
+    }
+   },
+   {
+    "param": "min_passing_candidates",
+    "live": 3,
+    "research": 2,
+    "alias": [],
+    "class": "双向可验证",
+    "note": "同名读取，闸门可验证",
+    "live_files": {
+     "_backup/scripts_archive_20261008/_r21_diag.py": 1,
+     "_backup/scripts_archive_20261008/_r21_verify.py": 1,
+     "engine/event_engine.py": 1
+    },
+    "research_files": {
+     "strategy/_evolve_wf.py": 1,
+     "strategy/backtest_daily.py": 1
+    }
+   },
+   {
+    "param": "conviction_mode",
+    "live": 1,
+    "research": 1,
+    "alias": [],
+    "class": "双向可验证",
+    "note": "同名读取，闸门可验证",
+    "live_files": {
+     "strategy/daily_context.py": 1
+    },
+    "research_files": {
+     "strategy/backtest_daily.py": 1
+    }
+   },
+   {
+    "param": "conviction_boost",
+    "live": 1,
+    "research": 1,
+    "alias": [],
+    "class": "双向可验证",
+    "note": "同名读取，闸门可验证",
+    "live_files": {
+     "strategy/daily_context.py": 1
+    },
+    "research_files": {
+     "strategy/backtest_daily.py": 1
+    }
+   },
+   {
+    "param": "conviction_breadth_thr",
+    "live": 1,
+    "research": 1,
+    "alias": [],
+    "class": "双向可验证",
+    "note": "同名读取，闸门可验证",
+    "live_files": {
+     "strategy/daily_context.py": 1
+    },
+    "research_files": {
+     "strategy/backtest_daily.py": 1
+    }
+   },
+   {
+    "param": "northbound_mode",
+    "live": 2,
+    "research": 3,
+    "alias": [],
+    "class": "双向可验证",
+    "note": "同名读取，闸门可验证",
+    "live_files": {
+     "engine/event_engine.py": 1,
+     "strategy/_research_northbound_wf.py": 1
+    },
+    "research_files": {
+     "strategy/_evolve_wf.py": 1,
+     "strategy/backtest_daily.py": 1,
+     "strategy/opt_harness.py": 1
+    }
+   },
+   {
+    "param": "nb_lookback",
+    "live": 2,
+    "research": 3,
+    "alias": [],
+    "class": "双向可验证",
+    "note": "同名读取，闸门可验证",
+    "live_files": {
+     "engine/event_engine.py": 1,
+     "strategy/_research_northbound_wf.py": 1
+    },
+    "research_files": {
+     "strategy/_evolve_wf.py": 1,
+     "strategy/backtest_daily.py": 1,
+     "strategy/opt_harness.py": 1
+    }
+   },
+   {
+    "param": "nb_credibility_guard",
+    "live": 1,
+    "research": 1,
+    "alias": [],
+    "class": "双向可验证",
+    "note": "同名读取，闸门可验证",
+    "live_files": {
+     "engine/event_engine.py": 1
+    },
+    "research_files": {
+     "strategy/backtest_daily.py": 1
+    }
+   },
+   {
+    "param": "nb_stale_days",
+    "live": 1,
+    "research": 1,
+    "alias": [],
+    "class": "双向可验证",
+    "note": "同名读取，闸门可验证",
+    "live_files": {
+     "engine/event_engine.py": 1
+    },
+    "research_files": {
+     "strategy/backtest_daily.py": 1
+    }
+   },
+   {
+    "param": "nb_degenerate_days",
+    "live": 1,
+    "research": 1,
+    "alias": [],
+    "class": "双向可验证",
+    "note": "同名读取，闸门可验证",
+    "live_files": {
+     "engine/event_engine.py": 1
+    },
+    "research_files": {
+     "strategy/backtest_daily.py": 1
+    }
+   },
+   {
+    "param": "manual_entry_codes",
+    "live": 1,
+    "research": 2,
+    "alias": [],
+    "class": "双向可验证",
+    "note": "同名读取，闸门可验证",
+    "live_files": {
+     "engine/event_engine.py": 1
+    },
+    "research_files": {
+     "strategy/_evolve_wf.py": 1,
+     "strategy/backtest_daily.py": 1
+    }
+   },
+   {
+    "param": "manual_entry_exit_exempt",
+    "live": 1,
+    "research": 2,
+    "alias": [],
+    "class": "双向可验证",
+    "note": "同名读取，闸门可验证",
+    "live_files": {
+     "engine/event_engine.py": 1
+    },
+    "research_files": {
+     "strategy/_evolve_wf.py": 1,
+     "strategy/backtest_daily.py": 1
+    }
+   },
+   {
+    "param": "regime_mode",
+    "live": 11,
+    "research": 2,
+    "alias": [],
+    "class": "双向可验证",
+    "note": "同名读取，闸门可验证",
+    "live_files": {
+     "engine/event_engine.py": 1,
+     "engine/observability.py": 1,
+     "strategy/_opt_cooldown.py": 1,
+     "strategy/_opt_ddcontrol.py": 1,
+     "strategy/_opt_gatemode.py": 1,
+     "strategy/_opt_gatemode_sens.py": 1,
+     "strategy/_opt_momweight.py": 1,
+     "strategy/_opt_newalpha.py": 1,
+     "strategy/_opt_rollwf.py": 1,
+     "strategy/_opt_volconfirm.py": 1,
+     "strategy/_optround3.py": 1
+    },
+    "research_files": {
+     "strategy/backtest_daily.py": 1,
+     "strategy/opt_harness.py": 1
+    }
+   },
+   {
+    "param": "regime_index",
+    "live": 10,
+    "research": 2,
+    "alias": [],
+    "class": "双向可验证",
+    "note": "同名读取，闸门可验证",
+    "live_files": {
+     "engine/event_engine.py": 1,
+     "engine/observability.py": 1,
+     "strategy/_opt_cooldown.py": 1,
+     "strategy/_opt_ddcontrol.py": 1,
+     "strategy/_opt_gatemode.py": 1,
+     "strategy/_opt_gatemode_sens.py": 1,
+     "strategy/_opt_momweight.py": 1,
+     "strategy/_opt_rollwf.py": 1,
+     "strategy/_opt_volconfirm.py": 1,
+     "strategy/_optround3.py": 1
+    },
+    "research_files": {
+     "strategy/backtest_daily.py": 1,
+     "strategy/opt_harness.py": 1
+    }
+   },
+   {
+    "param": "regime_ma",
+    "live": 13,
+    "research": 2,
+    "alias": [],
+    "class": "双向可验证",
+    "note": "同名读取，闸门可验证",
+    "live_files": {
+     "engine/event_engine.py": 1,
+     "engine/observability.py": 1,
+     "strategy/_opt_cooldown.py": 1,
+     "strategy/_opt_ddcontrol.py": 1,
+     "strategy/_opt_gatemode.py": 1,
+     "strategy/_opt_gatemode_sens.py": 1,
+     "strategy/_opt_momweight.py": 1,
+     "strategy/_opt_rollwf.py": 1,
+     "strategy/_opt_volconfirm.py": 1,
+     "strategy/_optround3.py": 1,
+     "strategy/daily_context.py": 1,
+     "strategy/experiments.py": 1,
+     "strategy/research_lab.py": 1
+    },
+    "research_files": {
+     "strategy/backtest_daily.py": 1,
+     "strategy/opt_harness.py": 1
+    }
+   },
+   {
+    "param": "regime_breadth_thresh",
+    "live": 1,
+    "research": 2,
+    "alias": [],
+    "class": "双向可验证",
+    "note": "同名读取，闸门可验证",
+    "live_files": {
+     "engine/event_engine.py": 1
+    },
+    "research_files": {
+     "strategy/backtest_daily.py": 1,
+     "strategy/opt_harness.py": 1
+    }
+   },
+   {
+    "param": "regime_force_exit",
+    "live": 10,
+    "research": 2,
+    "alias": [],
+    "class": "双向可验证",
+    "note": "同名读取，闸门可验证",
+    "live_files": {
+     "engine/event_engine.py": 1,
+     "engine/observability.py": 1,
+     "strategy/_opt_cooldown.py": 1,
+     "strategy/_opt_ddcontrol.py": 1,
+     "strategy/_opt_gatemode.py": 1,
+     "strategy/_opt_gatemode_sens.py": 1,
+     "strategy/_opt_momweight.py": 1,
+     "strategy/_opt_rollwf.py": 1,
+     "strategy/_opt_volconfirm.py": 1,
+     "strategy/_optround3.py": 1
+    },
+    "research_files": {
+     "strategy/backtest_daily.py": 1,
+     "strategy/opt_harness.py": 1
+    }
+   },
+   {
+    "param": "trend_vol_sizing",
+    "live": 2,
+    "research": 2,
+    "alias": [],
+    "class": "双向可验证",
+    "note": "同名读取，闸门可验证",
+    "live_files": {
+     "_backup/scripts_archive_20261008/_probe_tvs.py": 1,
+     "engine/event_engine.py": 1
+    },
+    "research_files": {
+     "strategy/_evolve_wf.py": 1,
+     "strategy/backtest_daily.py": 1
+    }
+   },
+   {
+    "param": "risk_per_trade",
+    "live": 11,
+    "research": 3,
+    "alias": [],
+    "class": "双向可验证",
+    "note": "同名读取，闸门可验证",
+    "live_files": {
+     "diag_equity_bug.py": 1,
+     "engine/event_engine.py": 1,
+     "risk/position_sizer.py": 1,
+     "strategy/_gen_report_rmpause.py": 1,
+     "strategy/_opt_earnrev.py": 1,
+     "strategy/_opt_newalpha.py": 1,
+     "strategy/_opt_rmpause.py": 1,
+     "strategy/_verify_pausefix.py": 1,
+     "strategy/experiments.py": 1,
+     "strategy/research_lab.py": 1,
+     "verify_basket.py": 1
+    },
+    "research_files": {
+     "strategy/_evolve_wf.py": 1,
+     "strategy/backtest_daily.py": 1,
+     "strategy/opt_harness.py": 1
+    }
+   },
+   {
+    "param": "max_position_amount",
+    "live": 0,
+    "research": 0,
+    "alias": [],
+    "class": "死参数",
+    "note": "全仓库生产代码无读点 → 任何网格纯浪费",
+    "live_files": {},
+    "research_files": {}
+   },
+   {
+    "param": "max_positions",
+    "live": 9,
+    "research": 4,
+    "alias": [],
+    "class": "双向可验证",
+    "note": "同名读取，闸门可验证",
+    "live_files": {
+     "engine/event_engine.py": 1,
+     "engine/observability.py": 1,
+     "strategy/_opt_earnrev.py": 1,
+     "strategy/_opt_newalpha.py": 1,
+     "strategy/experiments.py": 1,
+     "strategy/portfolio_strategy.py": 1,
+     "strategy/research_lab.py": 1,
+     "strategy/review_daily.py": 1,
+     "web/routes.py": 1
+    },
+    "research_files": {
+     "strategy/_evolve_wf.py": 1,
+     "strategy/backtest_daily.py": 1,
+     "strategy/backtest_minute.py": 1,
+     "strategy/opt_harness.py": 1
+    }
+   },
+   {
+    "param": "enable_rotation",
+    "live": 1,
+    "research": 0,
+    "alias": [],
+    "class": "仅实盘",
+    "note": "回测器不读该键 → A/B 测的是另一个策略，结论只能记「未验证」",
+    "live_files": {
+     "engine/event_engine.py": 1
+    },
+    "research_files": {}
+   },
+   {
+    "param": "rotation_min_score_gap",
+    "live": 1,
+    "research": 1,
+    "alias": [],
+    "class": "双向可验证",
+    "note": "同名读取，闸门可验证",
+    "live_files": {
+     "engine/event_engine.py": 1
+    },
+    "research_files": {
+     "strategy/backtest_daily.py": 1
+    }
+   },
+   {
+    "param": "rotation_cooldown_sec",
+    "live": 1,
+    "research": 0,
+    "alias": [],
+    "class": "仅实盘",
+    "note": "回测器不读该键 → A/B 测的是另一个策略，结论只能记「未验证」",
+    "live_files": {
+     "engine/event_engine.py": 1
+    },
+    "research_files": {}
+   },
+   {
+    "param": "rotation_hot_top_n",
+    "live": 1,
+    "research": 2,
+    "alias": [],
+    "class": "双向可验证",
+    "note": "同名读取，闸门可验证",
+    "live_files": {
+     "engine/event_engine.py": 1
+    },
+    "research_files": {
+     "strategy/_evolve_wf.py": 1,
+     "strategy/backtest_daily.py": 1
+    }
+   },
+   {
+    "param": "rotation_intraday_breakout_pct",
+    "live": 1,
+    "research": 1,
+    "alias": [],
+    "class": "双向可验证",
+    "note": "同名读取，闸门可验证",
+    "live_files": {
+     "engine/event_engine.py": 1
+    },
+    "research_files": {
+     "strategy/backtest_daily.py": 1
+    }
+   },
+   {
+    "param": "rotation_min_score_gap_hot",
+    "live": 1,
+    "research": 1,
+    "alias": [],
+    "class": "双向可验证",
+    "note": "同名读取，闸门可验证",
+    "live_files": {
+     "engine/event_engine.py": 1
+    },
+    "research_files": {
+     "strategy/backtest_daily.py": 1
+    }
+   },
+   {
+    "param": "rotation_max_swaps_per_eval",
+    "live": 1,
+    "research": 1,
+    "alias": [],
+    "class": "双向可验证",
+    "note": "同名读取，闸门可验证",
+    "live_files": {
+     "engine/event_engine.py": 1
+    },
+    "research_files": {
+     "strategy/backtest_daily.py": 1
+    }
+   },
+   {
+    "param": "rotation_fill_empty_slot",
+    "live": 1,
+    "research": 1,
+    "alias": [],
+    "class": "双向可验证",
+    "note": "同名读取，闸门可验证",
+    "live_files": {
+     "engine/event_engine.py": 1
+    },
+    "research_files": {
+     "strategy/backtest_daily.py": 1
+    }
+   },
+   {
+    "param": "rotation_require_daily_gate",
+    "live": 1,
+    "research": 2,
+    "alias": [],
+    "class": "双向可验证",
+    "note": "同名读取，闸门可验证",
+    "live_files": {
+     "engine/event_engine.py": 1
+    },
+    "research_files": {
+     "strategy/_evolve_wf.py": 1,
+     "strategy/backtest_daily.py": 1
+    }
+   },
+   {
+    "param": "daily_loss_limit_pct",
+    "live": 1,
+    "research": 0,
+    "alias": [],
+    "class": "仅实盘",
+    "note": "回测器不读该键 → A/B 测的是另一个策略，结论只能记「未验证」",
+    "live_files": {
+     "risk/manager.py": 1
+    },
+    "research_files": {}
+   },
+   {
+    "param": "daily_loss_limit_abs",
+    "live": 1,
+    "research": 0,
+    "alias": [],
+    "class": "仅实盘",
+    "note": "回测器不读该键 → A/B 测的是另一个策略，结论只能记「未验证」",
+    "live_files": {
+     "risk/manager.py": 1
+    },
+    "research_files": {}
+   },
+   {
+    "param": "daily_stop_flatten_pct",
+    "live": 1,
+    "research": 2,
+    "alias": [],
+    "class": "双向可验证",
+    "note": "同名读取，闸门可验证",
+    "live_files": {
+     "risk/manager.py": 1
+    },
+    "research_files": {
+     "strategy/_evolve_wf.py": 1,
+     "strategy/backtest_daily.py": 1
+    }
+   },
+   {
+    "param": "max_drawdown_pct",
+    "live": 2,
+    "research": 1,
+    "alias": [],
+    "class": "双向可验证",
+    "note": "同名读取，闸门可验证",
+    "live_files": {
+     "engine/event_engine.py": 1,
+     "risk/manager.py": 1
+    },
+    "research_files": {
+     "strategy/_evolve_wf.py": 1
+    }
+   },
+   {
+    "param": "dd_recover_days",
+    "live": 2,
+    "research": 0,
+    "alias": [],
+    "class": "仅实盘",
+    "note": "回测器不读该键 → A/B 测的是另一个策略，结论只能记「未验证」",
+    "live_files": {
+     "engine/event_engine.py": 1,
+     "risk/manager.py": 1
+    },
+    "research_files": {}
+   },
+   {
+    "param": "halt_recover_days",
+    "live": 1,
+    "research": 0,
+    "alias": [],
+    "class": "仅实盘",
+    "note": "回测器不读该键 → A/B 测的是另一个策略，结论只能记「未验证」",
+    "live_files": {
+     "risk/manager.py": 1
+    },
+    "research_files": {}
+   },
+   {
+    "param": "max_consecutive_losses",
+    "live": 3,
+    "research": 0,
+    "alias": [],
+    "class": "仅实盘",
+    "note": "回测器不读该键 → A/B 测的是另一个策略，结论只能记「未验证」",
+    "live_files": {
+     "risk/manager.py": 1,
+     "strategy/record_ledger.py": 1,
+     "strategy/review_daily.py": 1
+    },
+    "research_files": {}
+   },
+   {
+    "param": "max_consecutive_losses_halt",
+    "live": 1,
+    "research": 0,
+    "alias": [],
+    "class": "仅实盘",
+    "note": "回测器不读该键 → A/B 测的是另一个策略，结论只能记「未验证」",
+    "live_files": {
+     "risk/manager.py": 1
+    },
+    "research_files": {}
+   },
+   {
+    "param": "max_single_position_pct",
+    "live": 4,
+    "research": 2,
+    "alias": [],
+    "class": "双向可验证",
+    "note": "同名读取，闸门可验证",
+    "live_files": {
+     "engine/event_engine.py": 1,
+     "risk/manager.py": 1,
+     "risk/position_sizer.py": 1,
+     "strategy/review_daily.py": 1
+    },
+    "research_files": {
+     "strategy/_evolve_wf.py": 1,
+     "strategy/backtest_daily.py": 1
+    }
+   },
+   {
+    "param": "max_daily_trades",
+    "live": 1,
+    "research": 0,
+    "alias": [],
+    "class": "仅实盘",
+    "note": "回测器不读该键 → A/B 测的是另一个策略，结论只能记「未验证」",
+    "live_files": {
+     "risk/manager.py": 1
+    },
+    "research_files": {}
+   },
+   {
+    "param": "max_order_amount",
+    "live": 3,
+    "research": 0,
+    "alias": [
+     "fixed_amount"
+    ],
+    "class": "别名可验证",
+    "note": "经别名接线：max_order_amount → 回测字段 fixed_amount",
+    "live_files": {
+     "engine/event_engine.py": 1,
+     "risk/manager.py": 1,
+     "risk/position_sizer.py": 1
+    },
+    "research_files": {}
+   }
+  ],
+  "live_files": [
+   "_backup/scripts_archive_20261008/_probe_tvs.py",
+   "_backup/scripts_archive_20261008/_r21_diag.py",
+   "_backup/scripts_archive_20261008/_r21_verify.py",
+   "diag_equity_bug.py",
+   "engine/event_engine.py",
+   "engine/observability.py",
+   "risk/manager.py",
+   "risk/position_sizer.py",
+   "strategy/_gen_report_rmpause.py",
+   "strategy/_opt_cooldown.py",
+   "strategy/_opt_ddcontrol.py",
+   "strategy/_opt_earnrev.py",
+   "strategy/_opt_gatemode.py",
+   "strategy/_opt_gatemode_sens.py",
+   "strategy/_opt_momweight.py",
+   "strategy/_opt_newalpha.py",
+   "strategy/_opt_rmpause.py",
+   "strategy/_opt_rollwf.py",
+   "strategy/_opt_volconfirm.py",
+   "strategy/_optround3.py",
+   "strategy/_probe_livedata.py",
+   "strategy/_research_northbound_wf.py",
+   "strategy/_verify_pausefix.py",
+   "strategy/daily_context.py",
+   "strategy/experiments.py",
+   "strategy/portfolio_strategy.py",
+   "strategy/record_ledger.py",
+   "strategy/research_lab.py",
+   "strategy/review_daily.py",
+   "strategy/sweep_daily.py",
+   "strategy/trend_strategy.py",
+   "verify_basket.py",
+   "web/routes.py"
+  ],
+  "research_files": [
+   "strategy/_evolve_wf.py",
+   "strategy/backtest_daily.py",
+   "strategy/backtest_minute.py",
+   "strategy/opt_harness.py"
+  ]
+ },
+ "loop_activity": [
+  {
+   "id": "ae0e2431",
+   "name": "盘后复盘 OBSERVE",
+   "last_run": "2026-10-21 15:39",
+   "age_days": 7.3,
+   "stale": true,
+   "status": "⚠ 停摆"
+  },
+  {
+   "id": "98ffc7a2",
+   "name": "盘前就绪 PRE-MARKET",
+   "last_run": "2026-10-20 09:14",
+   "age_days": 8.6,
+   "stale": true,
+   "status": "⚠ 停摆"
+  },
+  {
+   "id": "789d671e",
+   "name": "上午自进化 AM-EVOLVE",
+   "last_run": "2026-10-21 11:55",
+   "age_days": 7.5,
+   "stale": true,
+   "status": "⚠ 停摆"
+  },
+  {
+   "id": "d8013e93",
+   "name": "周中自进化 PM-EVOLVE",
+   "last_run": "2026-10-21 18:31",
+   "age_days": 7.2,
+   "stale": true,
+   "status": "⚠ 停摆"
+  },
+  {
+   "id": "f093d93b",
+   "name": "周度深度 SYNTHESIZE",
+   "last_run": "2026-10-10 22:23",
+   "age_days": 18.0,
+   "stale": true,
+   "status": "⚠ 停摆"
+  },
+  {
+   "id": "ebde5d30",
+   "name": "守护兜底 GUARD",
+   "last_run": "2026-10-28 22:18",
+   "age_days": 0.0,
+   "stale": false,
+   "status": "✓ 运行中"
+  },
+  {
+   "id": "2534a859",
+   "name": "工程维护 17:00",
+   "last_run": "2026-10-21 17:05",
+   "age_days": 7.3,
+   "stale": true,
+   "status": "⚠ 停摆"
+  },
+  {
+   "id": "1c6e4605",
+   "name": "开仓归因日报",
+   "last_run": null,
+   "age_days": null,
+   "stale": false,
+   "status": "待首跑（新增）"
+  },
+  {
+   "id": "6265093f",
+   "name": "量测卫生守卫",
+   "last_run": null,
+   "age_days": null,
+   "stale": false,
+   "status": "待首跑（新增）"
+  },
+  {
+   "id": "4a425d4f",
+   "name": "递归自进化",
+   "last_run": null,
+   "age_days": null,
+   "stale": false,
+   "status": "待首跑（新增）"
+  }
+ ],
+ "ledger": {
+  "exists": true,
+  "size_kb": 569.5,
+  "rounds": 58,
+  "rejected_mentions": 191,
+  "landed_mentions": 9,
+  "falsified_mentions": 172,
+  "lines": 8030
+ },
+ "capability": [
+  {
+   "cap": "划分不变量指标（span_sharpe / month_win_rate）",
+   "ok": true,
+   "why": "折均值/正收折数已被证为划分假象（R40）"
+  },
+  {
+   "cap": "多窗口共识（4 套折划分取最差窗）",
+   "ok": true,
+   "why": "单一折划分可被窗口运气欺骗"
+  },
+  {
+   "cap": "P0 不变性基线（逐位相同断言）",
+   "ok": true,
+   "why": "研究代码改动后必须证明 P0 未漂移（R39 靠它抓到 off-by-one）"
+  },
+  {
+   "cap": "单仓上限守卫（防 wf 绕过 position sizing）",
+   "ok": true,
+   "why": "R39：资本倾斜类历史 IS 数字曾虚增 +9.4pt"
+  },
+  {
+   "cap": "末端 bar 收盘守卫（防未完成 bar 进统计）",
+   "ok": true,
+   "why": "P2 疑点：回测面板曾并入当日未收盘 bar"
+  },
+  {
+   "cap": "参数读点扫描（防死参数/单侧参数进网格）",
+   "ok": true,
+   "why": "R41 才发现 7 个参数在回测中无读取点"
+  }
+ ],
+ "baseline_drift": {
+  "checked": 52,
+  "drift_n": 0,
+  "unmapped_n": 75,
+  "drift": [],
+  "unmapped": [
+   {
+    "field": "use_gate",
+    "key": null,
+    "prod": null,
+    "bt": true,
+    "status": "未映射"
+   },
+   {
+    "field": "entry_half_when_one",
+    "key": null,
+    "prod": null,
+    "bt": false,
+    "status": "未映射"
+   },
+   {
+    "field": "limit_up_block",
+    "key": null,
+    "prod": null,
+    "bt": false,
+    "status": "未映射"
+   },
+   {
+    "field": "limit_pct_main",
+    "key": null,
+    "prod": null,
+    "bt": 0.1,
+    "status": "未映射"
+   },
+   {
+    "field": "limit_pct_growth",
+    "key": null,
+    "prod": null,
+    "bt": 0.2,
+    "status": "未映射"
+   },
+   {
+    "field": "t1_restriction",
+    "key": null,
+    "prod": null,
+    "bt": true,
+    "status": "未映射"
+   },
+   {
+    "field": "trend_up_relax",
+    "key": null,
+    "prod": null,
+    "bt": "none",
+    "status": "未映射"
+   },
+   {
+    "field": "max_per_sector",
+    "key": null,
+    "prod": null,
+    "bt": 0,
+    "status": "未映射"
+   },
+   {
+    "field": "vwap_factor_fixed",
+    "key": null,
+    "prod": null,
+    "bt": -1.0,
+    "status": "未映射"
+   },
+   {
+    "field": "vwap_window",
+    "key": null,
+    "prod": null,
+    "bt": 0,
+    "status": "未映射"
+   },
+   {
+    "field": "breakout_bypass_gate",
+    "key": null,
+    "prod": null,
+    "bt": 99.0,
+    "status": "未映射"
+   },
+   {
+    "field": "breakout_bypass_score",
+    "key": null,
+    "prod": null,
+    "bt": false,
+    "status": "未映射"
+   },
+   {
+    "field": "rotation_enabled",
+    "key": null,
+    "prod": null,
+    "bt": false,
+    "status": "未映射"
+   },
+   {
+    "field": "rotation_weak_to_strong",
+    "key": null,
+    "prod": null,
+    "bt": true,
+    "status": "未映射"
+   },
+   {
+    "field": "rotation_oversize_on_t1_block",
+    "key": null,
+    "prod": null,
+    "bt": false,
+    "status": "未映射"
+   },
+   {
+    "field": "consec_loss_scale",
+    "key": null,
+    "prod": null,
+    "bt": false,
+    "status": "未映射"
+   },
+   {
+    "field": "consec_loss_halt_bars",
+    "key": null,
+    "prod": null,
+    "bt": 1,
+    "status": "未映射"
+   },
+   {
+    "field": "consec_loss_floor",
+    "key": null,
+    "prod": null,
+    "bt": 0.0,
+    "status": "未映射"
+   },
+   {
+    "field": "consec_loss_batch",
+    "key": null,
+    "prod": null,
+    "bt": false,
+    "status": "未映射"
+   },
+   {
+    "field": "daily_loss_halt",
+    "key": null,
+    "prod": null,
+    "bt": false,
+    "status": "未映射"
+   },
+   {
+    "field": "daily_loss_halt_bars",
+    "key": null,
+    "prod": null,
+    "bt": 1,
+    "status": "未映射"
+   },
+   {
+    "field": "manual_entry_slots",
+    "key": null,
+    "prod": null,
+    "bt": 5,
+    "status": "未映射"
+   },
+   {
+    "field": "trend_breakout_near_high",
+    "key": null,
+    "prod": null,
+    "bt": 0.98,
+    "status": "未映射"
+   },
+   {
+    "field": "trend_breakout_window",
+    "key": null,
+    "prod": null,
+    "bt": 20,
+    "status": "未映射"
+   },
+   {
+    "field": "mom_rel_fallback",
+    "key": null,
+    "prod": null,
+    "bt": 0.0,
+    "status": "未映射"
+   },
+   {
+    "field": "mom_rel_floor",
+    "key": null,
+    "prod": null,
+    "bt": -9.9,
+    "status": "未映射"
+   },
+   {
+    "field": "min_warmup",
+    "key": null,
+    "prod": null,
+    "bt": 130,
+    "status": "未映射"
+   },
+   {
+    "field": "regime_confirm_days",
+    "key": null,
+    "prod": null,
+    "bt": 1,
+    "status": "未映射"
+   },
+   {
+    "field": "regime_buffer_pct",
+    "key": null,
+    "prod": null,
+    "bt": 0.0,
+    "status": "未映射"
+   },
+   {
+    "field": "regime_slope_days",
+    "key": null,
+    "prod": null,
+    "bt": 0,
+    "status": "未映射"
+   },
+   {
+    "field": "tail_index",
+    "key": null,
+    "prod": null,
+    "bt": "399006.SZ",
+    "status": "未映射"
+   },
+   {
+    "field": "tail_drawdown_pct",
+    "key": null,
+    "prod": null,
+    "bt": -0.12,
+    "status": "未映射"
+   },
+   {
+    "field": "tail_recover_pct",
+    "key": null,
+    "prod": null,
+    "bt": 0.15,
+    "status": "未映射"
+   },
+   {
+    "field": "tail_force_exit",
+    "key": null,
+    "prod": null,
+    "bt": true,
+    "status": "未映射"
+   },
+   {
+    "field": "mom_metric",
+    "key": null,
+    "prod": null,
+    "bt": "raw",
+    "status": "未映射"
+   },
+   {
+    "field": "trend_trailing",
+    "key": null,
+    "prod": null,
+    "bt": false,
+    "status": "未映射"
+   },
+   {
+    "field": "trend_trail_activation",
+    "key": null,
+    "prod": null,
+    "bt": 0.15,
+    "status": "未映射"
+   },
+   {
+    "field": "trend_trail_stop",
+    "key": null,
+    "prod": null,
+    "bt": -0.12,
+    "status": "未映射"
+   },
+   {
+    "field": "trend_trail_floor",
+    "key": null,
+    "prod": null,
+    "bt": 0.0,
+    "status": "未映射"
+   },
+   {
+    "field": "trend_atr_stop_mult",
+    "key": null,
+    "prod": null,
+    "bt": 0.0,
+    "status": "未映射"
+   },
+   {
+    "field": "trend_chandelier_mult",
+    "key": null,
+    "prod": null,
+    "bt": 0.0,
+    "status": "未映射"
+   },
+   {
+    "field": "trend_break_confirm_days",
+    "key": null,
+    "prod": null,
+    "bt": 1,
+    "status": "未映射"
+   },
+   {
+    "field": "trend_break_buffer_pct",
+    "key": null,
+    "prod": null,
+    "bt": 0.0,
+    "status": "未映射"
+   },
+   {
+    "field": "dd_ctrl",
+    "key": null,
+    "prod": null,
+    "bt": false,
+    "status": "未映射"
+   },
+   {
+    "field": "dd_ctrl_start",
+    "key": null,
+    "prod": null,
+    "bt": -0.05,
+    "status": "未映射"
+   },
+   {
+    "field": "dd_ctrl_floor",
+    "key": null,
+    "prod": null,
+    "bt": 0.25,
+    "status": "未映射"
+   },
+   {
+    "field": "dd_ctrl_full",
+    "key": null,
+    "prod": null,
+    "bt": -0.25,
+    "status": "未映射"
+   },
+   {
+    "field": "reentry_cooldown",
+    "key": null,
+    "prod": null,
+    "bt": 0,
+    "status": "未映射"
+   },
+   {
+    "field": "recovery_fastpath",
+    "key": null,
+    "prod": null,
+    "bt": false,
+    "status": "未映射"
+   },
+   {
+    "field": "rf_drawdown_threshold",
+    "key": null,
+    "prod": null,
+    "bt": -0.15,
+    "status": "未映射"
+   },
+   {
+    "field": "rf_lookback",
+    "key": null,
+    "prod": null,
+    "bt": 20,
+    "status": "未映射"
+   },
+   {
+    "field": "rf_rebound_pct",
+    "key": null,
+    "prod": null,
+    "bt": 0.05,
+    "status": "未映射"
+   },
+   {
+    "field": "rf_relax_days",
+    "key": null,
+    "prod": null,
+    "bt": 10,
+    "status": "未映射"
+   },
+   {
+    "field": "rf_mom_threshold",
+    "key": null,
+    "prod": null,
+    "bt": 0.05,
+    "status": "未映射"
+   },
+   {
+    "field": "entry_max_day_gain_pct",
+    "key": null,
+    "prod": null,
+    "bt": 1.0,
+    "status": "未映射"
+   },
+   {
+    "field": "momentum_weight",
+    "key": null,
+    "prod": null,
+    "bt": false,
+    "status": "未映射"
+   },
+   {
+    "field": "vol_confirm",
+    "key": null,
+    "prod": null,
+    "bt": false,
+    "status": "未映射"
+   },
+   {
+    "field": "vol_confirm_mult",
+    "key": null,
+    "prod": null,
+    "bt": 1.5,
+    "status": "未映射"
+   },
+   {
+    "field": "vol_confirm_ma",
+    "key": null,
+    "prod": null,
+    "bt": 20,
+    "status": "未映射"
+   },
+   {
+    "field": "vol_confirm_tol",
+    "key": null,
+    "prod": null,
+    "bt": 0.03,
+    "status": "未映射"
+   },
+   {
+    "field": "risk_parity",
+    "key": null,
+    "prod": null,
+    "bt": false,
+    "status": "未映射"
+   },
+   {
+    "field": "moneyflow_mode",
+    "key": null,
+    "prod": null,
+    "bt": "off",
+    "status": "未映射"
+   },
+   {
+    "field": "moneyflow_window",
+    "key": null,
+    "prod": null,
+    "bt": 5,
+    "status": "未映射"
+   },
+   {
+    "field": "moneyflow_min_amount",
+    "key": null,
+    "prod": null,
+    "bt": 0.0,
+    "status": "未映射"
+   },
+   {
+    "field": "moneyflow_weight",
+    "key": null,
+    "prod": null,
+    "bt": 0.3,
+    "status": "未映射"
+   },
+   {
+    "field": "earnrev_mode",
+    "key": null,
+    "prod": null,
+    "bt": "off",
+    "status": "未映射"
+   },
+   {
+    "field": "earnrev_window",
+    "key": null,
+    "prod": null,
+    "bt": 60,
+    "status": "未映射"
+   },
+   {
+    "field": "earnrev_min",
+    "key": null,
+    "prod": null,
+    "bt": 0.0,
+    "status": "未映射"
+   },
+   {
+    "field": "earnrev_weight",
+    "key": null,
+    "prod": null,
+    "bt": 0.3,
+    "status": "未映射"
+   },
+   {
+    "field": "equity_dd_stop_enable",
+    "key": null,
+    "prod": null,
+    "bt": false,
+    "status": "未映射"
+   },
+   {
+    "field": "equity_dd_stop_pct",
+    "key": null,
+    "prod": null,
+    "bt": -0.15,
+    "status": "未映射"
+   },
+   {
+    "field": "equity_dd_resume_pct",
+    "key": null,
+    "prod": null,
+    "bt": 0.1,
+    "status": "未映射"
+   },
+   {
+    "field": "rm_dd_pause_pct",
+    "key": null,
+    "prod": null,
+    "bt": 0.0,
+    "status": "未映射"
+   },
+   {
+    "field": "rm_dd_pause_recoverable",
+    "key": null,
+    "prod": null,
+    "bt": false,
+    "status": "未映射"
+   },
+   {
+    "field": "rm_dd_pause_bars",
+    "key": null,
+    "prod": null,
+    "bt": 0,
+    "status": "未映射"
+   }
+  ],
+  "error": null
+ },
+ "actions": [
+  {
+   "pri": "P1",
+   "target": "搜索空间",
+   "action": "删除或接线 3 个死参数",
+   "detail": "rsi_oversold、rsi_overbought、max_position_amount",
+   "why": "任何在这些键上跑的网格，结论必然是 0 变化，纯浪费迭代预算"
+  },
+  {
+   "pri": "P2",
+   "target": "口径背离",
+   "action": "把 23 个「仅实盘有读点」参数补进回测器",
+   "detail": "ma_short、ma_medium、ma_long、rsi_period、macd_fast、macd_slow、macd_signal、kdj_period、boll_period、boll_std、atr_period、volume_surge、require_daily_data、momentum_scope、enable_rotation、rotation_cooldown_sec、daily_loss_limit_pct、daily_loss_limit_abs、dd_recover_days、halt_recover_days、max_consecutive_losses、max_consecutive_losses_halt、max_daily_trades",
+   "why": "回测测不到该行为 ⇒ 对该键的 A/B 结论不可信（非「无价值」）"
+  },
+  {
+   "pri": "P0",
+   "target": "循环活性",
+   "action": "恢复 6 个停摆/未运行任务",
+   "detail": "盘后复盘 OBSERVE、盘前就绪 PRE-MARKET、上午自进化 AM-EVOLVE、周中自进化 PM-EVOLVE、周度深度 SYNTHESIZE、工程维护 17:00",
+   "why": "停摆期间没有任何观测与裁决 ⇒ 自进化链条断掉（10-22~10-28 已发生一次）"
+  }
+ ],
+ "elapsed_sec": 1.42
+}

@@ -1,0 +1,359 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>为何没有开仓 · 逐闸门归因 2026-10-28 · qmtIDE-deepseek</title>
+<style>
+  :root{
+    --bg:#f5f6f8; --card:#ffffff; --ink:#1a1d21; --ink2:#5a6169; --ink3:#8b939c;
+    --line:#e3e6ea; --red:#d93025; --redbg:#fdeceb; --green:#0f9d58; --greenbg:#e8f5ee;
+    --blue:#1a73e8; --bluebg:#e8f0fe; --amber:#b06000; --amberbg:#fff4e0;
+    --mono:'SF Mono',Consolas,'Courier New',monospace;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--bg);color:var(--ink);font-family:-apple-system,'Segoe UI','Microsoft YaHei',sans-serif;
+       line-height:1.65;-webkit-font-smoothing:antialiased}
+  .wrap{max-width:1080px;margin:0 auto;padding:40px 24px 80px}
+
+  /* hero */
+  .hero{background:linear-gradient(135deg,#1a1d21 0%,#2d3540 100%);color:#fff;border-radius:16px;
+        padding:36px 40px;margin-bottom:24px;position:relative;overflow:hidden}
+  .hero::after{content:'';position:absolute;right:-60px;top:-60px;width:280px;height:280px;
+        background:radial-gradient(circle,rgba(217,48,37,.28),transparent 70%);border-radius:50%}
+  .hero .tag{display:inline-block;font-size:12px;letter-spacing:.12em;color:#9aa4b2;
+        border:1px solid #3d4650;border-radius:100px;padding:4px 12px;margin-bottom:16px}
+  .hero h1{font-size:27px;font-weight:650;letter-spacing:-.01em;margin-bottom:14px}
+  .hero p{color:#c3cad3;font-size:15px;max-width:820px}
+  .hero .hl{color:#ff8a80;font-weight:650}
+  .hero .hl2{color:#7bd7a8;font-weight:650}
+  .herostats{display:flex;gap:36px;margin-top:24px;flex-wrap:wrap}
+  .herostats div{position:relative}
+  .herostats .n{font-size:26px;font-weight:700;font-family:var(--mono);letter-spacing:-.02em}
+  .herostats .l{font-size:12px;color:#9aa4b2;margin-top:2px}
+
+  /* sections */
+  h2{font-size:17px;font-weight:650;margin:34px 0 14px;padding-left:12px;border-left:3px solid var(--ink)}
+  h2 .sub{font-size:12px;color:var(--ink3);font-weight:400;margin-left:8px}
+  h3{font-size:14px;font-weight:650;margin:18px 0 8px}
+
+  /* kpi grid */
+  .kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px}
+  .kpi{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px 18px}
+  .kpi .v{font-size:21px;font-weight:700;font-family:var(--mono);letter-spacing:-.02em}
+  .kpi .k{font-size:12px;color:var(--ink3);margin-top:3px}
+  .kpi .note{font-size:11px;color:var(--ink3);margin-top:6px;border-top:1px dashed var(--line);padding-top:6px}
+
+  /* funnel */
+  .funnel{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:22px 24px}
+  .frow{display:flex;align-items:center;gap:14px;margin-bottom:11px}
+  .frow .lbl{width:210px;font-size:13px;color:var(--ink2);flex-shrink:0}
+  .frow .track{flex:1;height:30px;background:#f0f2f4;border-radius:6px;position:relative;overflow:hidden}
+  .frow .fill{height:100%;border-radius:6px;display:flex;align-items:center;justify-content:flex-end;
+              padding-right:9px;font-size:12px;font-weight:650;font-family:var(--mono);color:#fff;transition:width .4s}
+  .frow .fill.z{background:repeating-linear-gradient(45deg,#f0f2f4,#f0f2f4 6px,#e6e9ec 6px,#e6e9ec 12px);
+              color:var(--ink3);justify-content:flex-start;padding-left:9px}
+  .frow .src{width:120px;font-size:11px;color:var(--ink3);text-align:right;flex-shrink:0}
+  .f0{background:#9aa4b2}.f1{background:#5b8def}.f2{background:#f0a202}.f3{background:var(--red)}
+
+  /* cards */
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:20px 22px}
+  .card.warn{border-left:3px solid var(--amber)}
+  .card.danger{border-left:3px solid var(--red)}
+  .card.ok{border-left:3px solid var(--green)}
+  .card h4{font-size:13px;font-weight:650;margin-bottom:8px;display:flex;align-items:center;gap:8px}
+  .card p{font-size:13px;color:var(--ink2)}
+  .card .code{font-family:var(--mono);font-size:11.5px;background:#f0f2f4;padding:1px 6px;border-radius:4px;color:#3c4753}
+  .pill{font-size:10.5px;font-weight:650;padding:2px 8px;border-radius:100px;letter-spacing:.03em}
+  .pill.r{background:var(--redbg);color:var(--red)}
+  .pill.g{background:var(--greenbg);color:var(--green)}
+  .pill.b{background:var(--bluebg);color:var(--blue)}
+  .pill.a{background:var(--amberbg);color:var(--amber)}
+
+  /* table */
+  table{width:100%;border-collapse:collapse;background:var(--card);border-radius:12px;overflow:hidden;
+        font-size:13px;border:1px solid var(--line)}
+  th{background:#f0f2f4;text-align:left;padding:10px 14px;font-size:12px;font-weight:650;color:var(--ink2)}
+  td{padding:9px 14px;border-top:1px solid var(--line);color:var(--ink)}
+  td.num{font-family:var(--mono);text-align:right}
+  tr:hover td{background:#fafbfc}
+  .up{color:var(--red);font-weight:650}
+  .down{color:var(--green);font-weight:650}
+  .dim{color:var(--ink3)}
+
+  /* chart */
+  .chartbox{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:20px 22px 12px}
+  .chartbox .cap{font-size:12px;color:var(--ink3);margin-top:6px;line-height:1.6}
+  svg{display:block;width:100%;height:auto}
+  .legend{display:flex;gap:18px;font-size:11.5px;color:var(--ink2);margin-top:10px;flex-wrap:wrap}
+  .legend i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:5px;vertical-align:middle}
+
+  ul.tight{margin:8px 0 0 18px;font-size:13px;color:var(--ink2)}
+  ul.tight li{margin-bottom:5px}
+  .foot{margin-top:40px;padding-top:18px;border-top:1px solid var(--line);font-size:11.5px;color:var(--ink3);line-height:1.8}
+  code{font-family:var(--mono);font-size:12px;background:#f0f2f4;padding:1px 5px;border-radius:4px}
+  @media(max-width:720px){.grid2{grid-template-columns:1fr}.frow .lbl{width:130px}.frow .src{display:none}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="hero">
+    <span class="tag">逐闸门归因 · as_of 2026-10-28 · paper 模式</span>
+    <h1>连续 16 个交易日零买入：不是熔断，是动量闸门</h1>
+    <p>全宇宙 38 只标的，<span class="hl">60 日涨幅最大只有 +10.94%</span>，而闸门要求
+       <span class="hl">&gt; 15%</span> —— 差 <span class="hl">3.7 个百分点</span>。
+       前两道闸门今天其实已经打开：日线 <code style="background:#3d4650;color:#e6e9ec">trend_up</code>
+       有 <span class="hl2">10 只</span>通过（8 个交易日来首次明显上量），评分闸门有
+       <span class="hl2">16 只</span>通过。唯独动量闸门 <span class="hl">0 只</span>，候选池因此为空。</p>
+    <div class="herostats">
+      <div><div class="n" style="color:#ff8a80">+10.94%</div><div class="l">60 日动量最强（300394.SZ）</div></div>
+      <div><div class="n">15.00%</div><div class="l">动量闸门阈值</div></div>
+      <div><div class="n" style="color:#ffd166">3.7pp</div><div class="l">距闸门缺口</div></div>
+      <div><div class="n" style="color:#7bd7a8">−17.58%</div><div class="l">全宇宙 60 日动量中位数</div></div>
+    </div>
+  </div>
+
+  <h2>一、账户现状<span class="sub">来源 storage/qmt.db（只读）· 2026-10-28 15:04:45</span></h2>
+  <div class="kpis">
+    <div class="kpi"><div class="v">972,533.60</div><div class="k">总资产（元）</div><div class="note">峰値 1,005,860</div></div>
+    <div class="kpi"><div class="v">0</div><div class="k">持仓只数</div><div class="note">100% 现金</div></div>
+    <div class="kpi"><div class="v up">16</div><div class="k">连续无买入交易日</div><div class="note">末次买入 09-29</div></div>
+    <div class="kpi"><div class="v down">−3.31%</div><div class="k">当前回撤</div><div class="note">同期宇宙中位 −17.58%</div></div>
+    <div class="kpi"><div class="v" style="color:var(--green)">否</div><div class="k">是否熔断</div><div class="note">consec_loss = 1</div></div>
+  </div>
+  <div class="card ok" style="margin-top:14px">
+    <h4><span class="pill g">系统健康</span> 零买入是「主动不满足条件」，不是「被停机或风控锁死」</h4>
+    <p>末次成交为 10-09 的卖出清仓（300394.SZ）；末次买入为 09-29（688008.SH）。
+       引擎 <code>halted=false</code>、风控状态正常，日线/分钟线数据链路完整。</p>
+  </div>
+
+  <h2>二、闸门漏斗<span class="sub">引擎日志 15:00:44 原文 vs 研究侧同源复算</span></h2>
+  <div class="funnel">
+    <div class="frow">
+      <div class="lbl">宇宙（12 静态 + 4 指数 + 30 动态池）</div>
+      <div class="track"><div class="fill f0" style="width:100%">38 只</div></div>
+      <div class="src">引擎 ✓ / 复算 ✓</div>
+    </div>
+    <div class="frow">
+      <div class="lbl">① 日线闸门 trend_up</div>
+      <div class="track"><div class="fill f1" style="width:26.3%">10 只</div></div>
+      <div class="src">引擎 10 / 复算 2 ⚠</div>
+    </div>
+    <div class="frow">
+      <div class="lbl">①' bias ≥ 2.0（通道已关闭）</div>
+      <div class="track"><div class="fill z" style="width:100%">0 只 — 设计上恒不可达（bias ∈ [−1, 1]）</div></div>
+      <div class="src">引擎 0 / 复算 0 ✓</div>
+    </div>
+    <div class="frow">
+      <div class="lbl">② 评分 score ≥ 4.0 且正因子 ≥ 3</div>
+      <div class="track"><div class="fill f2" style="width:42.1%">16 只</div></div>
+      <div class="src">引擎 16 / 复算 3 ⚠</div>
+    </div>
+    <div class="frow">
+      <div class="lbl">③ 动量 60 日涨幅 &gt; 15%</div>
+      <div class="track"><div class="fill z" style="width:100%">0 只 — 唯一硬卡点</div></div>
+      <div class="src">引擎 0 / 复算 0 ✓</div>
+    </div>
+  </div>
+  <div class="card warn" style="margin-top:14px">
+    <h4><span class="pill a">易误读</span> <code>bias ≥ 2.0 = 0</code> 不是「市场宽度不够」，而是「这条通道从来没通电」</h4>
+    <p><code>bias</code> 由 ±0.35 / ±0.35 / ±0.30 三项加权后 <code>clamp(-1, 1)</code>，<b>数学最大只能到 +1.0</b>；
+       而 <code>min_daily_bias = 2.0</code>。<span class="code">strategy/backtest_daily.py:496-502</span>
+       对该参数有明确注释：「bias ∈ [−1, 1]，故默认 <b>2.0 = 关闭</b>（bias 永不可达），逐位保持既有回测行为」。
+       ⇒ 真正的日线闸门等价于 <code>trend_up</code> 单通道。</p>
+  </div>
+
+  <h2>三、动量分布<span class="sub">38 只标的的 60 日涨幅 · 2026-10-28 收盘</span></h2>
+  <div class="chartbox">
+    <svg viewBox="0 0 680 260" role="img" aria-label="60日动量分布直方图">
+      <!-- grid -->
+      <line x1="60" y1="210" x2="650" y2="210" stroke="#d6dade" stroke-width="1"/>
+      <line x1="60" y1="125" x2="650" y2="125" stroke="#eceff2" stroke-width="1" stroke-dasharray="3 3"/>
+      <line x1="60" y1="40"  x2="650" y2="40"  stroke="#eceff2" stroke-width="1" stroke-dasharray="3 3"/>
+      <text x="52" y="214" font-size="10" fill="#8b939c" text-anchor="end">0</text>
+      <text x="52" y="129" font-size="10" fill="#8b939c" text-anchor="end">6</text>
+      <text x="52" y="44"  font-size="10" fill="#8b939c" text-anchor="end">11</text>
+
+      <!-- bars: counts 1,7,11,9,8,1,0,1,0 ; max=11 ; h=count/11*170 -->
+      <rect x="60"    y="194.5" width="48" height="15.5"  fill="#0f9d58" rx="3"/>
+      <rect x="124.4" y="101.8" width="48" height="108.2" fill="#0f9d58" rx="3"/>
+      <rect x="188.9" y="40"    width="48" height="170"   fill="#0f9d58" rx="3"/>
+      <rect x="253.3" y="70.9"  width="48" height="139.1" fill="#0f9d58" rx="3"/>
+      <rect x="317.8" y="86.4"  width="48" height="123.6" fill="#0f9d58" rx="3"/>
+      <rect x="382.2" y="194.5" width="48" height="15.5"  fill="#d93025" rx="3"/>
+      <rect x="511.1" y="194.5" width="48" height="15.5"  fill="#d93025" rx="3"/>
+      <!-- zero-height buckets: 5-10% and ≥15% -->
+      <rect x="446.7" y="207" width="48" height="3" fill="#c8cfd6" rx="1.5"/>
+      <rect x="575.6" y="207" width="48" height="3" fill="#c8cfd6" rx="1.5"/>
+
+      <!-- counts -->
+      <text x="84"    y="188" font-size="11" font-weight="650" fill="#3c4753" text-anchor="middle">1</text>
+      <text x="148.4" y="95"  font-size="11" font-weight="650" fill="#3c4753" text-anchor="middle">7</text>
+      <text x="212.9" y="33"  font-size="11" font-weight="650" fill="#3c4753" text-anchor="middle">11</text>
+      <text x="277.3" y="64"  font-size="11" font-weight="650" fill="#3c4753" text-anchor="middle">9</text>
+      <text x="341.8" y="79"  font-size="11" font-weight="650" fill="#3c4753" text-anchor="middle">8</text>
+      <text x="406.2" y="188" font-size="11" font-weight="650" fill="#3c4753" text-anchor="middle">1</text>
+      <text x="470.7" y="200" font-size="11" font-weight="650" fill="#b0b8c0" text-anchor="middle">0</text>
+      <text x="535.1" y="188" font-size="11" font-weight="650" fill="#3c4753" text-anchor="middle">1</text>
+      <text x="599.6" y="200" font-size="11" font-weight="650" fill="#b0b8c0" text-anchor="middle">0</text>
+
+      <!-- threshold marker -->
+      <line x1="575.6" y1="24" x2="575.6" y2="210" stroke="#d93025" stroke-width="1.5" stroke-dasharray="5 4"/>
+      <text x="575.6" y="18" font-size="11" font-weight="650" fill="#d93025" text-anchor="middle">闸门 &gt; 15%</text>
+
+      <!-- x labels -->
+      <text x="84"    y="228" font-size="10.5" fill="#5a6169" text-anchor="middle">&lt; −40%</text>
+      <text x="148.4" y="228" font-size="10.5" fill="#5a6169" text-anchor="middle">−40~−30</text>
+      <text x="212.9" y="228" font-size="10.5" fill="#5a6169" text-anchor="middle">−30~−20</text>
+      <text x="277.3" y="228" font-size="10.5" fill="#5a6169" text-anchor="middle">−20~−10</text>
+      <text x="341.8" y="228" font-size="10.5" fill="#5a6169" text-anchor="middle">−10~0</text>
+      <text x="406.2" y="228" font-size="10.5" fill="#5a6169" text-anchor="middle">0~5</text>
+      <text x="470.7" y="228" font-size="10.5" fill="#5a6169" text-anchor="middle">5~10</text>
+      <text x="535.1" y="228" font-size="10.5" fill="#5a6169" text-anchor="middle">10~15</text>
+      <text x="599.6" y="228" font-size="10.5" fill="#5a6169" text-anchor="middle">≥15</text>
+      <text x="355"   y="250" font-size="11" fill="#8b939c" text-anchor="middle">60 日涨跌幅（38 只，2026-10-28 收盘）</text>
+    </svg>
+    <div class="legend">
+      <span><i style="background:#0f9d58"></i>60 日下跌（36 只）</span>
+      <span><i style="background:#d93025"></i>60 日上涨（2 只）</span>
+      <span><i style="background:#c8cfd6"></i>空档桶</span>
+      <span>闸门桶 <b style="color:var(--red)">≥15%：0 只</b></span>
+    </div>
+    <div class="cap">
+      36 / 38 只 60 日为负，中位数 −17.58%，最深 −44.86%。唯一进入 10~15% 区间的是
+      <b>300394.SZ 天孚通信（+10.94%）</b> —— 光模块单日 +7.78% 把它的 60 日动量从昨日的
+      +1.5% 一把拉起 9.4 个百分点。<b>再涨约 3.7% 就会出现 16 个交易日来第一个动量通过标的。</b>
+    </div>
+  </div>
+
+  <h3>反事实阶梯（研究口径，未改任何生产参数）</h3>
+  <table>
+    <thead><tr><th>min_mom 阈值</th><th class="num">0.15（现生产）</th><th class="num">0.12</th><th class="num">0.10</th><th class="num">0.08</th><th class="num">0.05</th><th class="num">0.03</th><th class="num">0.00</th></tr></thead>
+    <tbody>
+      <tr><td>10-27 通过只数</td><td class="num">0</td><td class="num">0</td><td class="num">0</td><td class="num">0</td><td class="num">0</td><td class="num">0</td><td class="num">1</td></tr>
+      <tr><td>10-28 通过只数</td><td class="num"><b>0</b></td><td class="num">0</td><td class="num"><b>1</b></td><td class="num">1</td><td class="num">1</td><td class="num">2</td><td class="num">2</td></tr>
+    </tbody>
+  </table>
+  <p style="font-size:13px;color:var(--ink2);margin-top:10px">
+    即使把闸门砍到 10% 也只有 <b>1 只</b>能进池；砍到 3% 才 2 只。<b>这不是「选股没选好」，是「整个宇宙都没涨够」。</b>
+    （注：放宽阈值已被 R41 证伪 —— 0.0 vs 0.15 使 OOS Sharpe −0.207、最差折 −15.2%，仅作诊断参考。）
+  </p>
+
+  <h2>四、量测卫生：三条发现<span class="sub">均已复现，不影响今日结论，但会影响「闸门在打开」的判断</span></h2>
+  <div class="grid2">
+    <div class="card warn">
+      <h4><span class="pill a">发现 1</span> 漏斗日志全天 25 条逐字节相同</h4>
+      <p>09:30:34 → 15:00:44 每 10 分钟一条，四组数字完全不变。原因：
+      <code>FEATURE_TTL_SEC = 6h</code>（<span class="code">daily_context.py:36</span>），
+      且 <code>_expected_last_trade_date()</code> 在 15:05 前返回<b>上一交易日</b> ⇒ 09:30 的快照用昨收，日内本该不变。
+      <b>盘中不引入当日未完成 bar（无未来函数），这是对的。</b>
+      问题是日志没记录「这份快照的末根 bar 是哪一天」。</p>
+    </div>
+    <div class="card danger">
+      <h4><span class="pill r">发现 2</span> 引擎自报 trend_up=10，同源复算只有 2</h4>
+      <p>已排除数据源差异（xtdata vs tushare 38 只收盘价 0 差异）、宇宙差异（两边同 38 只）、公式差异（直调
+      <code>DailyContext</code> 真类）。逐日对照显示 10-26 / 10-27 恰好是「引擎(D) = 研究(D−1)」的延迟一天，
+      <b>但 10-28 打破规律</b>（应 = 1、实 = 10）。最可能原因：
+      <code>covered_codes()</code>（<span class="code">daily_context.py:504-507</span>）只按 key 存在判定、
+      <b>不校验是否为当日刷新成功</b>，动态池轮换时旧快照被继续计入统计。</p>
+    </div>
+  </div>
+  <div class="card" style="margin-top:14px">
+    <h4><span class="pill b">建议（SAFE，不改任何参数）</span></h4>
+    <ul class="tight">
+      <li>「漏斗分层」日志追加 <code>feat_asof</code>（该批特征末根 bar 日期 min/max）与 <code>stale_n</code>（非当日刷新成功数）</li>
+      <li>日志把 <code>bias&gt;=2.00 0</code> 显式标注为「通道关闭（哨兵值）」，避免误读为市场宽度不足</li>
+      <li><code>covered_codes()</code> 增加日期校验，或单独统计「当日新鲜特征数」</li>
+    </ul>
+    <p style="margin-top:8px">以上已写入新增自动化 <b>METRIC-HYGIENE（交易日 16:10）</b>，每交易日自动巡检告警。</p>
+  </div>
+
+  <h2>五、与既有结论的关系<span class="sub">本轮新增一个重要区分</span></h2>
+  <div class="card">
+    <table style="border:0">
+      <thead><tr><th>既有结论（R41）</th><th style="width:70px">一致性</th><th>说明</th></tr></thead>
+      <tbody>
+        <tr><td>负折全部落在 2026-04 ~ 2026-10，前 22 折全正</td><td><span class="pill g">一致</span></td><td>本次 60 日动量中位 −17.58%，同期普跌</td></tr>
+        <tr><td>「低暴露 + 长骑行 + 深回撤」是不可分割的 alpha 形态</td><td><span class="pill g">一致</span></td><td>空仓 16 日即低暴露端；回撤仅 −3.31% 而宇宙中位 −17.58%</td></tr>
+        <tr><td>参数空间已无可挖 alpha，勿再投单参数网格</td><td><span class="pill g">一致</span></td><td>本次未调任何参数，只做数据归因</td></tr>
+        <tr><td>弱市里 <code>trend_up</code> 才是绑定约束，动量闸门反而不是</td><td><span class="pill a">本次相反</span></td><td><code>trend_up</code> 已放到 10 只，动量成了绑定约束</td></tr>
+      </tbody>
+    </table>
+    <p style="margin-top:12px;font-size:13px;color:var(--ink2)">
+      <b>新区分：</b>弱市深水区卡在 <code>trend_up</code>；<b>底部反弹初期卡在动量</b>（60 日涨幅分母里还背着 8~9 月的跌幅）。
+      两类「零开仓」成因不同、处置也不同 —— 前者无解（策略选择不参与），后者会随行情自然解除。
+    </p>
+  </div>
+
+  <h2>六、定时任务：7 恢复 + 3 新增<span class="sub">根因是 7 个任务全部处于 PAUSED</span></h2>
+  <table>
+    <thead><tr><th>任务</th><th style="width:130px">时间</th><th style="width:80px">状态</th><th>职责</th></tr></thead>
+    <tbody>
+      <tr><td>盘前就绪 PRE-MARKET</td><td>交易日 09:05</td><td><span class="pill g">恢复</span></td><td>paper 守卫 / 在线检查 / 熔断状态 / 双周期改动核验</td></tr>
+      <tr><td>上午自进化 AM-EVOLVE</td><td>交易日 11:40</td><td><span class="pill g">恢复</span></td><td>热读参数候选 + 半日度量</td></tr>
+      <tr><td>盘后复盘 OBSERVE</td><td>交易日 15:35</td><td><span class="pill g">恢复</span></td><td>当日真实收益入账 + review 报告</td></tr>
+      <tr><td>守护兜底 GUARD</td><td>交易时段每小时</td><td><span class="pill g">恢复</span></td><td>引擎 / miniQMT 存活与 paper 守卫</td></tr>
+      <tr><td>工程维护 + 策略改进</td><td>交易日 17:00</td><td><span class="pill g">恢复</span></td><td>db / 日志 / 回归门禁 / 降噪</td></tr>
+      <tr><td>周中自进化 PM-EVOLVE</td><td>每周三 18:00</td><td><span class="pill g">恢复</span></td><td>弱市期独立诊断优先（D10）</td></tr>
+      <tr><td>周度深度 SYNTHESIZE</td><td>每周六 10:00</td><td><span class="pill g">恢复</span></td><td>全量复验 + 双周期协同复盘</td></tr>
+      <tr style="background:#f7fbff"><td><b>开仓归因日报 WHY-NO-ENTRY</b></td><td>交易日 <b>15:40</b></td><td><span class="pill b">新增</span></td><td>每日自动回答「为何没开仓」，闸门首次打开时打标记 —— 即本报告的每日自动化版</td></tr>
+      <tr style="background:#f7fbff"><td><b>量测卫生守卫 METRIC-HYGIENE</b></td><td>交易日 <b>16:10</b></td><td><span class="pill b">新增</span></td><td>末根 bar 日期 / 面板新鲜度 / 漏斗可追溯性 / 缓存陈旧度 / ERROR 面，只读不改</td></tr>
+      <tr style="background:#f7fbff"><td><b>RSI 自进化研究</b></td><td>每周六 <b>11:00</b></td><td><span class="pill b">新增</span></td><td>重跑 RSI 可用性研究并给 GO/NO-GO；NO-GO 只记负证据、GO 只写候选不落盘</td></tr>
+    </tbody>
+  </table>
+  <p style="font-size:12.5px;color:var(--ink3);margin-top:10px">
+    设计原则：新增任务<b>全部只读</b>（不写配置、不改代码、不刷新缓存、不 kill 进程），写操作仍归原有
+    OBSERVE / EVOLVE / 工程维护链路，避免自动化之间抢改同一处。
+  </p>
+
+  <h2>七、RSI 自进化：NO-GO<span class="sub">scripts/_rsi_evolve.py · 3.2s · 4535 个候选标的日</span></h2>
+  <div class="grid2">
+    <div class="card">
+      <h4><span class="pill a">接线审计</span> settings 里的 RSI 参数是死参数</h4>
+      <p><code>rsi_period / rsi_oversold / rsi_overbought</code> 在<b>日线闸门链无读取点</b>；
+      阈值 30/70/80 硬编码于 <span class="code">daily_context.py:357/359/361</span> 与
+      <span class="code">backtest_daily.py:192/194/196,280/282/284</span>；
+      仅 <span class="code">trend_strategy.py:296</span> 的分钟级路径读 <code>rsi_period</code>。</p>
+    </div>
+    <div class="card danger">
+      <h4><span class="pill r">判别结果</span> 唯一显著的结果是反向的</h4>
+      <p>候选池 RSI(14) <b>最小 48.4、中位 65.2</b> ⇒「超卖」桶<b>零样本</b>，
+      「RSI&lt;30 抄底」在本策略候选池中不存在。<code>RSI≤55</code> 过滤使 Δ20d =
+      <b class="down">−6.01%</b>（p = 0.0026，去重叠后仍显著为负）。
+      <code>corr(RSI, mom60) = +0.40</code> ⇒ 更像动量代理而非独立因子。</p>
+    </div>
+  </div>
+  <div class="card ok" style="margin-top:14px">
+    <h4><span class="pill g">判定 NO-GO</span> 不生成任何补丁</h4>
+    <p>护栏写入自动化：<b>禁止新增「RSI 上界过滤 / 超买剔除」类规则</b>。下一轮方向建议为
+    「RSI 消融实验」而非「新增 RSI 过滤」，并先做全市场横截面验证。</p>
+  </div>
+
+  <h2>八、数据完整性说明</h2>
+  <table>
+    <thead><tr><th>数据</th><th style="width:250px">来源</th><th style="width:150px">as_of</th><th style="width:80px">状态</th></tr></thead>
+    <tbody>
+      <tr><td>实盘成交 / 权益 / 风控状态</td><td><code>storage/qmt.db</code>（只读）</td><td>2026-10-28 15:04:45</td><td><span class="pill g">完整</span></td></tr>
+      <tr><td>引擎漏斗分层日志</td><td><code>logs/quant_system.log</code>（206 条，10-19~10-28）</td><td>2026-10-28 15:00:44</td><td><span class="pill g">完整</span></td></tr>
+      <tr><td>日线（复算用）</td><td>xtdata 本地（miniQMT 58610）+ tushare <code>pro.daily</code> 交叉校验</td><td>2026-10-28 收盘</td><td><span class="pill g">双源 0 差异</span></td></tr>
+      <tr><td>宇宙成分</td><td>settings STOCK_CODES(12) + INDEX_CODES(4) + dynamic_universe active_pool(30)</td><td>2026-10-28</td><td><span class="pill g">完整 38</span></td></tr>
+      <tr><td>研究面板</td><td><code>ts_panel_25_901_20211201_20261028.pkl</code></td><td>2026-10-28</td><td><span class="pill g">含当日收盘</span></td></tr>
+      <tr><td>北向资金</td><td><code>data/cache/</code> 北向缓存</td><td class="dim">陈旧（历史遗留）</td><td><span class="pill a">该闸门 off，不影响</span></td></tr>
+    </tbody>
+  </table>
+  <p style="font-size:12.5px;color:var(--ink3);margin-top:10px">
+    <b>未获取项：</b>引擎进程内存 <code>_feats</code> 的实际构建时刻与每只标的数据末日（无对外接口），
+    故发现 2 的成因标注为「最可能解释」而非定论；已由新增 METRIC-HYGIENE 自动化常态化追踪。
+  </p>
+
+  <div class="foot">
+    qmtIDE-deepseek · 逐闸门归因权威版 · 生成于 2026-10-28 晚<br>
+    数据明细：<code>reports/why_no_entry/WHY_NO_ENTRY_MOMENTUM.json</code> ·
+    <code>WHY_NO_ENTRY_LIVE.json</code> · 时间序列附录 <code>WHY_NO_ENTRY_2026-10-28.md</code><br>
+    <b>本报告不构成任何参数变更。</b>config/settings.py、引擎代码、EXECUTION_MODE=paper 全程未改动。
+  </div>
+</div>
+</body>
+</html>
