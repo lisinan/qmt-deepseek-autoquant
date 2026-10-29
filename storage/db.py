@@ -38,7 +38,8 @@ _SCHEMA = [
         reason TEXT,
         factors_json TEXT,
         ai_comment TEXT,
-        ai_confidence REAL
+        ai_confidence REAL,
+        blocked_by TEXT
     )""",
     """CREATE TABLE IF NOT EXISTS orders (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -204,6 +205,10 @@ class Storage:
             # 已过冷却期 → 连亏降仓把 position_scale 压到 0 后永久无法开仓
             # （僵尸冻结）。补一列 JSON 存 halted/halt_reason/halt_day/consec_loss_date。
             "ALTER TABLE engine_state ADD COLUMN risk_state TEXT",
+            # 【2026-10-29】信号未成交原因。旧库 signals 表无此列；补上后
+            # 「UI 显示 BUY 但没开仓」可以直接在信号行里看到原因，
+            # 不必再靠数日志/数信号数反推。幂等：列已存在时 ALTER 抛错即忽略。
+            "ALTER TABLE signals ADD COLUMN blocked_by TEXT",
         ):
             try:
                 c.execute(stmt)
@@ -227,14 +232,46 @@ class Storage:
                 c = self._conn_get()
                 cur = c.execute(
                     "INSERT INTO signals(ts,code,name,side,score,price,reason,"
-                    "factors_json,ai_comment,ai_confidence) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                    "factors_json,ai_comment,ai_confidence,blocked_by) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                     (s.ts.isoformat(), s.code, s.name, s.side, s.score, s.price,
                      s.reason, json.dumps(s.factors, ensure_ascii=False),
-                     s.ai_comment, s.ai_confidence),
+                     s.ai_comment, s.ai_confidence,
+                     getattr(s, "blocked_by", "") or ""),
                 )
                 return int(cur.lastrowid or 0)
             except Exception as e:
                 logger.warning("save_signal 失败: %s", e)
+                return 0
+
+    def mark_blocked(self, ids, reason: str) -> int:
+        """把一批已入库的信号标上「未成交原因」，返回实际更新行数。
+
+        【为什么需要它】信号在评估循环里就入库（``_save_signal``），而
+        宽度确认 / 现金 / 熔断等闸门在其后才拦 ⇒ 只靠 ``save_signal`` 无法
+        知道结论。这里做**事后补写**，而不是把落库推迟到决策之后：
+        推迟会改变写入顺序与「信号先于决策可见」的既有语义，
+        而补写只多一次 UPDATE，对交易路径零影响。
+
+        只写 ``blocked_by`` 一列，不碰 score/reason 等原始事实
+        （原始信号必须保留，否则「信号成立过」这个证据就丢了）。
+        """
+        try:
+            ids = [int(i) for i in (ids or []) if i]
+        except (TypeError, ValueError):
+            return 0
+        if not ids:
+            return 0
+        with self._lock:
+            try:
+                c = self._conn_get()
+                c.executemany(
+                    "UPDATE signals SET blocked_by=? WHERE id=?",
+                    [(reason, i) for i in ids],
+                )
+                return len(ids)
+            except Exception as e:
+                logger.warning("mark_blocked 失败: %s", e)
                 return 0
 
     def save_order(self, o: Order, order_id: Optional[str] = None,

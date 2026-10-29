@@ -8045,3 +8045,119 @@ risk/position_sizer.py、risk/risk_manager.py、core/risk_manager.py）：
 
 **这条本身就是 L2 的自证**：连「循环如何评价自己」的那个数字都可能是假的。
 与 R40 的「正收折数是划分假象」同型 —— **符号型/计数型指标比比率型更会伪装成事实**。
+
+---
+
+## 2026-10-29 盘中可观测性修复轮 — ★★ 「信号说 BUY、账户没动」的三层谎报：从文案到面板，两处「看着正常其实是空」
+
+> 定位：**L1 工程缺陷修复**（不改策略）。起因是用户早盘一句提问：
+> 「实时信号 中芯国际 BUY 方向，没有开仓的原因是什么？」
+> 逐层查下来发现**没有一个地方在说谎是故意的**，但三处可观测性实现各自
+> 把「不知道」渲染成了「看起来正常」。生产参数零改动。
+
+### 事实链（全部可复核）
+
+| 项 | 实测值 | 来源 |
+|---|---|---|
+| 当日 BUY 信号 | **1 只**：`688981.SH` × **24 轮**（每 5 分钟一次） | `signals` 表 |
+| 分数 | **4.78**，生产阈值 `buy_score_threshold=4.0` | `signals.score` / settings |
+| 分数构成 | `momentum+1.0; volume+1.0; position+0.8; vwap+2.0` | `signals.factors_json` |
+| 真实拦截层 | `[宽度确认] 本轮 BUY 信号仅 1 只 < 2 ⇒ 当日不开新仓` | 引擎日志 ×24 |
+| 成交 | **0 笔** | `fills` 表 |
+| 账户 | 972,533.60 / 100% 现金 / 0 持仓 / 回撤 −3.31% | `equity_snapshots` |
+| 错失幅度 | 昨收 102.00 → 09:50 信号价 99.70 → 11:30 100.34 ⇒ **+0.64%**（约 ¥2,500 @40% 仓） | 1m bar |
+
+### 三个缺陷（按危害排序）
+
+**① `_maybe_log_no_signal` 对「已过阈值」的信号说了「仅」。**
+旧文案恒为 `「候选 N 只、最高分 X 仅 X.XX（阈值 4.0）」`，**不判断 X 是否已过阈值**。
+实盘反例正是本轮：4.78 > 4.0。一个「仅」字把「被下游闸门挡住」说成「分数不够」，
+而 `buy_score_threshold` 在 R40 已被**全档证伪**（>4.0 全负、≤4.0 惰性）
+⇒ 这条文案会把人送进一个已知无解的参数方向。
+**修复**：改成三条分流（见下），只有真的 `score < th` 才允许出现「不足」。
+副产品修正：旧实现在**本轮确实成交**时也会每 10 分钟播一次「无入场信号」
+（标题与事实相反），现在 `n_ok > 0` 直接静默、且**不占用** 600s 节流额度，
+免得把真正需要的那条告警挤掉。
+
+**② 信号在闸门之前入库 ⇒ DB 与 UI 只有裸 `side='BUY'`，拦截原因只活在 `logger.info` 里。**
+`_save_signal` 在评估循环内（`event_engine.py:2504`），而宽度确认/现金/熔断都在其后。
+用户看到的页面是「一只 BUY 静静躺着」，只能靠反推。
+**修复**：`signals.blocked_by`（幂等迁移），原因词表统一为
+`breadth_lt_<N>(…)` / `max_positions(并发持仓已满)` / `no_tick(…)` /
+`position_scale=0(…)` / `price<=0(…)` / `mock_data(…)` / `market_stale(…)` / `ai_veto` / 账户与现金原样。
+`_handle_buy` 有 8 个静默 `return`，**不改其签名**（会动到下单主路径），
+而是读 `_log_reject_once` 已经在维护的 `_reject_latest`，并按 `ts >= 本轮起点` 过滤陈旧原因；
+该表另加**无节流的镜像** `_reject_latest_ts`（旧的 60s 节流会在重复原因时提前 return、
+连时间戳都不写 ⇒ 只给每 60s 窗口的第一轮打标，这是本轮第二个隐蔽坑）。
+
+**③（本轮新发现，危害最大）miniQMT 面板的「数据采集」块恒为空，而且空得像正常。**
+新面板 `core/qmt_health._market_section._client` 写的是
+`from core import qmt_client` —— 因 `core/__init__.py` 是空文件，这里取到的是
+**模块**，而 `health()` / `_mode` 都在**单例实例**上 ⇒ `hasattr` 为假、`mode` 读成 `""`，
+整块退化为 `{"mode": ""}`。它**不报错、不降级、JSON 结构完全合法**，
+只是用户最想问的那一格（「现在是不是 mock」）永远空白。
+更麻烦的是它**依赖 import 顺序**：同一份代码在引擎进程里恰好拿到了实例（返回完整 7 字段），
+在干净进程里拿到模块（返回 `{"mode": ""}`）—— 冷启动复现、改后稳定，这一对观测即证据。
+**修复**：显式 `from core.qmt_client import qmt_client as _qc`，消除歧义。
+
+**④ 引擎未接入 ⇒ `status="ok"`（绿色）。** 用「没数据」冒充「没问题」，
+与本面板的存在理由正好相反。**修复**：`engine_seen=False` 时必报一条 `warn`，
+文案直说「本面板的绿色不代表正常」。
+
+### 本轮改动（文件:行）
+
+| 文件 | 性质 | 说明 |
+|---|---|---|
+| `core/data_models.py:Signal.blocked_by` | 字段 | 默认 `""`，空 = 一路走到下单 |
+| `storage/db.py` `_SCHEMA` / `_migrate` / `save_signal` / 新增 `mark_blocked()` | 存储 | 11 列 INSERT；`ALTER TABLE` 幂等；`mark_blocked` 只改指定 id、空入参返回 0 |
+| `engine/event_engine.py:~2507` | 计数 | `_buy_n` / `_ok_n` / `_stage` 三个事实由本函数自己数出来 |
+| `engine/event_engine.py:2540-2582` | 打标 | 宽度确认 / `max_positions` / `_reject_latest` 三条路径各自写回 |
+| `engine/event_engine.py:2668` | **文案** | `_maybe_log_no_signal` 改为四分流：已成交→静默 / 有 BUY 零成交→报拦截层 / 无 BUY→按 `daily-gate`·`ext-gate`·`score<`·`sigs<`·`no-daily` 判层 / 池空→保留漏斗分层 |
+| `engine/event_engine.py:_handle_buy` | 补齐 | `position_scale<=0` 与 `price<=0` 两个静默 `return` 补 `_log_reject_once` |
+| `core/qmt_client.py` | 遥测 | `_record_probe()` 三处调用 + `health()`（全 `getattr` 兜底）|
+| `core/qmt_health.py`（新增 ~360 行） | 面板数据源 | 三块 + `_verdict`；铁律：绝不抛异常 / 绝不阻塞 IO / 只读 |
+| `web/routes.py:/api/qmt_health` | 路由 | 外层 try 兜底，永 500 不成立 |
+| `web/templates/index.html` + `dashboard.js` + `main.css` | 前端 | 信号表加「状态」列；面板区块 5s 轮询 |
+
+**是否改变策略行为：否。** `config/settings.py` 零改动、`strategy/backtest_daily.py` 零改动（本轮），
+`_maybe_log_no_signal` 只写日志与 `_no_entry_reason`，不参与任何决策。
+
+### 验证方式与结果
+
+| 验证 | 结果 |
+|---|---|
+| `tests/test_signal_blocked_by.py` | **8/8**（默认空 / 旧库幂等迁移 / 不污染原始事实 / 空入参不抛） |
+| `tests/test_qmt_health.py` | **18/18**（含「绝不 import xtdata 路径」静态守卫、路由永不 500、单例读取、引擎缺席必 warn） |
+| `tests/test_no_entry_reason_honesty.py`（新增 11 例） | **11/11**（含 2026-10-29 中芯国际现场复现） |
+| 全量 `tests/run_all.py` | **PASSED 662 / FAILED 0（95.40s）**；本轮后 +2 例 qmt_health 补强 |
+| 面板实拉（在线 5000 端口，只读） | `mode=xtdata` / `impl=_XtdClient` / `subscribed=38` / `probe_ok=true` / `ready_ge_60=38/38` / bars `2026-10-23 13:11 → 2026-10-29 11:30` / `broker=paper-disconnected` / `mock_block=None` |
+| 面板耗时 | 稳态 **0.0ms**；冷启动首次 **1187ms** 全在 `calendar_health()` 的日历缓存，且生产进程启动即预热 |
+| 生产库迁移 | `storage/qmt.db` 的 `signals` 已有 `blocked_by`（幂等，备份库未迁移符合预期） |
+
+### 未生效项（需用户重启，本轮不自行 kill 进程）
+
+引擎 `python.exe` PID **28428** 启动于 **11:55:19**，而 `engine/event_engine.py`
+mtime 为 **12:03:24**、`core/qmt_health.py` 为 **12:06:29**，且 `web/app.py:47`
+是 `use_reloader=False` ⇒ **Python 代码不会热载**。
+因此：面板路由与前端（模板 `TEMPLATES_AUTO_RELOAD=True`）**已在线**；
+`blocked_by` 打标与新播报文案**要重启后才生效**。
+当前 `rejects` 显示 `(无阻断) 24` 正是旧代码的遗留（24 行都是 NULL）。
+
+### 本轮新增纪律（接续 §四）
+
+**第 25 条：凡是「比较 + 形容词」的文案，都必须把比较结果结构化，否则文案会说谎且没人会发现。**
+「最高分**仅** 4.78（阈值 4.0）」= 一个未被任何测试覆盖的判定；
+它写错了一年也不会红，因为**它只是日志**。判据：文案里每出现一个「仅/够/不足/超」，
+就要能指出对应的布尔量在代码里是哪一行算出来的。
+
+**第 26 条：`from pkg import sub` 与 `from pkg.sub import inst` 在 `__init__.py` 为空的包上不等价，
+且结果依赖 import 顺序。** 本轮实测：同一份代码在引擎进程里拿到实例、在干净进程里拿到模块。
+判据：读生产单例一律显式写到实例，不靠包的属性转发。
+
+**第 27 条：看板在「无数据」时不得返回 ok —— 绿色必须来自证据。**
+否则最危险的失败模式（进程挂着、面板全绿）与正常态外观完全一致。
+
+### 回滚
+
+删除三个新测试模块与 `core/qmt_health.py`、还原 `web/*` 三件前端即可；
+`blocked_by` 列可留（`NULL` 与旧语义等价，`_migrate` 幂等）。

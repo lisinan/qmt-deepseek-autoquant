@@ -58,6 +58,13 @@ class Signal:
     factors: dict = field(default_factory=dict)   # 各因子明细
     ai_comment: str = ""          # AI 分析补充（可选）
     ai_confidence: float = 0.0    # AI 置信度 -1~1
+    # 【2026-10-29】未成交原因（空 = 信号成立且一路走到下单，无阻断）。
+    # 存在的理由：信号在**闸门之前**就入库（_save_signal 在评估循环内），
+    # 而宽度确认/现金/熔断等闸门在之后才拦 ⇒ UI 只看到「BUY」却查不到
+    # 「为什么没买」。实盘案例：2026-10-29 中芯国际 688981.SH 全天 24 轮
+    # BUY（score 4.78）却零成交，真实原因是「宽度确认 <2 只」，但日志与
+    # 界面都不显示，只能人工翻日志 + 数信号数才能还原。
+    blocked_by: str = ""
 
 
 @dataclass

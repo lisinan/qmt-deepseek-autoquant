@@ -160,6 +160,60 @@
       </div>
     </section>
 
+    <section class="panel span-12" id="qmt-panel">
+      <h2>miniQMT 交互
+        <span id="qmt-status" class="badge neutral">等待数据...</span>
+        <span class="muted" id="qmt-session">--</span>
+        <span class="muted" id="qmt-ts">--</span>
+      </h2>
+      <div id="qmt-issues" class="qmt-issues"></div>
+      <div class="qmt-grid">
+        <div class="qmt-block">
+          <h3>① 数据采集</h3>
+          <div class="risk-box">
+            <div><label>行情源:</label> <span id="qmt-mode">--</span></div>
+            <div><label>探活:</label> <span id="qmt-probe">--</span></div>
+            <div><label>订阅标的:</label> <span id="qmt-sub">--</span></div>
+            <div><label>tick 陈旧:</label> <span id="qmt-stale">--</span></div>
+            <div><label>1m 缓冲:</label> <span id="qmt-bar">--</span></div>
+          </div>
+        </div>
+        <div class="qmt-block">
+          <h3>② 交易订单</h3>
+          <div class="risk-box">
+            <div><label>交易通道:</label> <span id="qmt-broker">--</span></div>
+            <div><label>今日委托/成交:</label> <span id="qmt-orders">--</span></div>
+            <div><label>未匹配委托:</label> <span id="qmt-unmatched">--</span></div>
+            <div><label>在途挂单:</label> <span id="qmt-pending">--</span></div>
+            <div><label>未成交原因:</label> <span id="qmt-reject">--</span></div>
+          </div>
+        </div>
+        <div class="qmt-block">
+          <h3>③ 引擎运行</h3>
+          <div class="risk-box">
+            <div><label>引擎:</label> <span id="qmt-engine">--</span></div>
+            <div><label>执行/策略:</label> <span id="qmt-exec">--</span></div>
+            <div><label>持仓/上限:</label> <span id="qmt-pos">--</span></div>
+            <div><label>现金:</label> <span id="qmt-cash">--</span></div>
+            <div><label>回撤:</label> <span id="qmt-dd">--</span></div>
+          </div>
+        </div>
+      </div>
+      <div class="scroll h-180" style="margin-top:8px">
+        <table id="qmt-order-table">
+          <thead>
+            <tr><th>时间</th><th>代码</th><th>方向</th><th class="ta-r">数量</th><th class="ta-r">已成交</th><th>状态</th></tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div class="hint">
+        本面板只读内存状态与本地库，<b>不向 miniQMT 发任何请求</b>（避免看板把交易进程拖住）。
+        因此「行情源=mock」是最高优先级告警：该模式下全部买卖会被静默禁止。
+        刷新频率 5 秒；探活时间戳来自引擎自己的连接/重连动作。
+      </div>
+    </section>
+
     <!-- ③ 行情 + 明细 -->
     <section class="panel span-7" id="tick-panel">
       <h2>行情 <span class="muted" id="tick-count">0 ticks</span>
@@ -180,7 +234,7 @@
       <div class="scroll h-320">
         <table id="signal-table">
           <thead>
-            <tr><th>时间</th><th>代码</th><th>方向</th><th class="ta-r">评分</th><th class="ta-r">价</th><th>原因</th></tr>
+            <tr><th>时间</th><th>代码</th><th>方向</th><th>状态</th><th class="ta-r">评分</th><th class="ta-r">价</th><th>原因</th></tr>
           </thead>
           <tbody></tbody>
         </table>

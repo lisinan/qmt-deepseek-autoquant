@@ -16,6 +16,31 @@ header h1 { font-size: 16px; margin: 0; font-weight: 600; display: flex;
 .badge.bullish { background: #1d4f3a; color: #5fd99e; }
 .badge.bearish { background: #4f1d2e; color: #d95f5f; }
 .badge.neutral { background: #2a3441; color: #8898a6; }
+/* 【2026-10-29】信号「未成交 / 已执行」状态徽标。
+   未成交用暖橙（不是红色）—— 被闸门拦下是**策略按设计工作**，不是故障；
+   用红色会让人误以为出错了。 */
+.badge.blocked { background: #4f3a1d; color: #d99e5f; }
+.badge.passed { background: #1d4f3a; color: #5fd99e; }
+.badge.qmt-ok { background: #1d4f3a; color: #5fd99e; }
+.badge.qmt-warn { background: #4f3a1d; color: #d99e5f; }
+.badge.qmt-bad { background: #4f1d2e; color: #d95f5f; }
+
+/* 【2026-10-29】miniQMT 交互面板：三栏（采集 / 订单 / 引擎）+ 顶部问题条。
+   窄屏自动落为单栏，避免三列挤在一起看不清。 */
+.qmt-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 12px; }
+@media (max-width: 1100px) { .qmt-grid { grid-template-columns: 1fr; } }
+.qmt-block h3 { font-size: 12px; font-weight: 500; color: #8898a6;
+                margin: 2px 0 6px 0; letter-spacing: .5px; }
+.qmt-issues { margin: 4px 0 10px 0; }
+.qmt-issues .qmt-issue { padding: 5px 9px; border-radius: 5px; margin-bottom: 4px;
+                         font-size: 12px; line-height: 1.5; }
+.qmt-issues .qmt-issue.bad { background: #3a1a20; border-left: 3px solid #d95f5f;
+                             color: #f09595; }
+.qmt-issues .qmt-issue.warn { background: #3a2f1a; border-left: 3px solid #d99e5f;
+                              color: #f0c98f; }
+.qmt-issues .qmt-issue.ok { background: #16302a; border-left: 3px solid #5fd99e;
+                            color: #8fe0bd; }
 .actions { display: flex; align-items: center; flex: none; }
 .actions button { background: #2a3441; color: #e0e6ed; border: none; padding: 6px 12px;
   margin-left: 8px; border-radius: 4px; cursor: pointer; font-size: 12px; }

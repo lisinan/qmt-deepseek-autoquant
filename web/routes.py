@@ -176,6 +176,36 @@ def api_risk():
     return jsonify(_engine().risk.snapshot())
 
 
+@bp.route("/api/qmt_health")
+def api_qmt_health():
+    """【2026-10-29】miniQMT 交互健康快照（设置面板数据源）。
+
+    返回三大块：数据采集 / 交易订单 / 引擎运行 + status(ok|warn|bad) + issues。
+    契约：**永不 500**。``core.qmt_health.snapshot()`` 内部每段都降级捕获，
+    这里再兜一层 —— 看板挂了比没有看板更糟，会让「一切正常」和「查询失败」
+    长得一样。
+
+    刻意不做任何 xtdata / xttrader 调用（可能阻塞数十秒），只读内存状态与库，
+    因此引擎未运行时部分字段为空属预期行为，前端显示「未知」而非报错。
+    """
+    try:
+        from core.qmt_health import snapshot as _snap
+        try:
+            eng = _engine()
+        except Exception:
+            eng = None          # web 单独起、没有引擎时
+        try:
+            sto = _storage()
+        except Exception:
+            sto = None
+        return jsonify(_snap(engine=eng, storage=sto))
+    except Exception as e:      # noqa: BLE001 - 面板必须可降级
+        logger.warning("api_qmt_health 失败: %s", e)
+        return jsonify({"status": "bad", "ts": "",
+                        "issues": [{"level": "bad", "tag": "面板",
+                                    "msg": f"健康快照生成失败：{type(e).__name__}: {e}"}]}), 200
+
+
 @bp.route("/api/portfolio")
 def api_portfolio():
     e = _engine()

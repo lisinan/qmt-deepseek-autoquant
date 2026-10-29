@@ -348,12 +348,40 @@ class _XtdClient:
 class QMTClient:
     """对上层暴露的统一客户端。自动在 xtdata / mock 之间切换。"""
 
+    def _record_probe(self, ok: bool, err: str = "") -> None:
+        """记录一次探活结果（纯可观测性，不改变连接行为）。
+
+        ★ 不能写成 `self._probe_n += 1`：`QMTClient` 会被测试与诊断脚本用
+        `QMTClient.__new__` 直接构造（跳过 __init__，见
+        tests/test_mock_data_trading_guard.py），此时属性不存在，
+        读-改-写会抛 AttributeError 并让 reattach 直接失败 ——
+        一个纯展示字段绝不允许有能力打断重连。故一律 getattr 兜底。
+        """
+        self._probe_ok = bool(ok)
+        self._probe_ts = time.time()
+        self._probe_err = "" if ok else (err or "")
+        self._probe_n = int(getattr(self, "_probe_n", 0) or 0) + 1
+        if ok:
+            self._mode_since = time.time()
+
     def __init__(self):
         self._impl = None
         self._mode = "mock"
+        # 【2026-10-29】探活档案：供 Web「miniQMT 交互」面板展示。
+        # 只记录事实，不改变任何连接/降级行为（纯可观测性）。
+        #   _probe_ok   最近一次探活结果（None = 还没探过）
+        #   _probe_ts   最近一次探活时刻（含成功与失败）
+        #   _probe_err  最近一次失败原因（成功时清空）
+        #   _mode_since 当前模式自何时开始（秒级），用于显示「已 mock 多久」
+        self._probe_ok: Optional[bool] = None
+        self._probe_ts: float = 0.0
+        self._probe_err: str = ""
+        self._probe_n: int = 0
+        self._mode_since: float = time.time()
         try:
             self._impl = _XtdClient()
             self._mode = "xtdata"
+            self._record_probe(True)
             # 用 ASCII-safe 消息，避免 cp1252 编码失败
             logger.info("QMTClient: connected to miniQMT (xtdata)")
         except UnicodeError:
@@ -361,17 +389,46 @@ class QMTClient:
             try:
                 self._impl = _XtdClient()
                 self._mode = "xtdata"
+                self._record_probe(True)
                 logger.info("QMTClient: connected to miniQMT (xtdata)")
             except Exception as e:
+                self._record_probe(False, f"{type(e).__name__}: {e}")
                 logger.warning("QMTClient: xtdata unavailable, fallback to mock (%s: %s)",
                                type(e).__name__, e)
                 self._impl = _MockClient()
                 self._mode = "mock"
         except Exception as e:
+            self._record_probe(False, f"{type(e).__name__}: {e}")
             logger.warning("QMTClient: xtdata unavailable, fallback to mock (%s: %s)",
                            type(e).__name__, e)
             self._impl = _MockClient()
             self._mode = "mock"
+
+    def health(self) -> dict:
+        """探活与模式的自述快照（Web 面板用；绝不抛异常、绝不发起网络/IO）。
+
+        为什么单独给一个方法而不让 Web 直接读私有属性：属性语义会随重构变动，
+        把「面板要什么」收敛成一个显式契约，改内部结构时只需改这里。
+        全部用 getattr 兜底 —— `__new__` 构造出的实例也得能安全自述。
+        """
+        now = time.time()
+        impl = type(self._impl).__name__ if getattr(self, "_impl", None) is not None else "None"
+        try:
+            subscribed = len(getattr(getattr(self, "_impl", None), "subscribed", None) or ())
+        except Exception:
+            subscribed = -1
+        probe_ts = float(getattr(self, "_probe_ts", 0.0) or 0.0)
+        mode_since = float(getattr(self, "_mode_since", 0.0) or 0.0)
+        return {
+            "mode": getattr(self, "_mode", ""),
+            "impl": impl,
+            "subscribed": subscribed,
+            "probe_ok": getattr(self, "_probe_ok", None),
+            "probe_age_sec": (round(now - probe_ts, 1) if probe_ts else None),
+            "probe_err": getattr(self, "_probe_err", ""),
+            "probe_n": int(getattr(self, "_probe_n", 0) or 0),
+            "mode_age_sec": round(now - mode_since, 1) if mode_since else None,
+        }
 
     @property
     def mode(self) -> str:
@@ -398,6 +455,7 @@ class QMTClient:
         try:
             impl = _XtdClient()
         except Exception as e:  # noqa: BLE001 - 探活失败即保持 mock
+            self._record_probe(False, f"{type(e).__name__}: {e}")
             logger.info("行情源重连未成功，继续 mock: %s: %s",
                         type(e).__name__, e)
             return False
@@ -409,6 +467,8 @@ class QMTClient:
             pass
         self._impl = impl
         self._mode = "xtdata"
+        # 【2026-10-29】探活档案：成功即记录并清空历史失败原因
+        self._record_probe(True)
         logger.info("行情源已重连至 miniQMT(xtdata)，退出 mock 模式")
         return True
 

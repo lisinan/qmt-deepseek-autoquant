@@ -482,6 +482,13 @@ class EventEngine:
         # 拒单日志去重：code -> 上次记录过的拒绝原因 / 时间戳
         self._last_reject: Dict[str, str] = {}
         self._last_reject_ts: Dict[str, float] = {}
+        # 【2026-10-29】「最近一次拒绝」的**无节流**副本：code -> reason / ts。
+        # 为什么不能直接读上面两个：``_log_reject_once`` 有 60s 去重，同原因命中时
+        # 在赋值**之前**就 return ⇒ 60 秒内的第 2、3…轮时间戳不更新，
+        # 用「ts >= 本轮起点」判定会把那些轮的信号漏标成「已执行」。
+        # 这两份只用于回填 signals.blocked_by，不参与任何交易判断。
+        self._reject_latest: Dict[str, str] = {}
+        self._reject_latest_ts: Dict[str, float] = {}
         # tick.volume/amount 是「当日累计量」，不是本轮增量。实测（logs/
         # probe_livedata.json）三只样本盘后累计量 13.4万/45.9万/51.2万手，
         # 而原 _aggregate_bar 直接 `b.volume += tick.volume` 把累计量按轮叠加：
@@ -2209,18 +2216,26 @@ class EventEngine:
         except Exception as e:
             logger.debug("风控快照写入失败(继续): %s", e)
 
-    def _save_signal(self, sig: Signal) -> None:
-        """信号入库（HOLD 默认不入库）。
+    def _save_signal(self, sig: Signal) -> int:
+        """信号入库（HOLD 默认不入库）。返回 signals.id（未入库/失败返回 0）。
 
         原实现把每个候选股每 tick 的信号全部写库，含大量「HOLD / score<4.0」
         这类零信息量行：实测 signals 表 319 万行（单日最高 81.8 万），而同期
         fills 只有 301 行。HOLD 仍以 DEBUG 日志保留可诊断性。
         开关：config.settings.PERSIST_HOLD_SIGNALS。
+
+        【2026-10-29】改为返回自增 id：调用方据此在闸门拦下后补写
+        ``blocked_by``（信号入库早于闸门判定，见 _save_signal 的调用点）。
+        返回值变化对旧调用方无害（此前返回值被忽略）。
         """
         if sig.side == "HOLD" and not PERSIST_HOLD_SIGNALS:
             logger.debug("HOLD %s score=%.2f %s", sig.code, sig.score, sig.reason)
-            return
-        self.storage.save_signal(sig)
+            return 0
+        try:
+            return int(self.storage.save_signal(sig) or 0)
+        except Exception as e:                     # noqa: BLE001
+            logger.debug("_save_signal 失败(忽略): %s", e)
+            return 0
 
     # ----- single mode -----
 
@@ -2489,6 +2504,20 @@ class EventEngine:
 
         best = None   # 本轮最高分候选（可观测性用）
         pending_buys: List[tuple] = []
+        # 【2026-10-29】本轮已入库的 BUY 信号 → 其 signals.id。
+        # 信号在闸门**之前**入库，故未成交时只能事后补写 blocked_by；
+        # 这里记 id 是为了让「为什么没买」直接长在信号行上。
+        buy_sids: List[tuple] = []          # [(sid, code)]
+        _round_t0 = time.time()             # 本轮起点，用于判定拒绝原因是否属本轮
+        # 【2026-10-29】「为什么没买」的三个事实，全部由本函数自己数出来：
+        #   _buy_n  本轮产生了几只 BUY 信号（闸门之前，与 signals 表同义）
+        #   _ok_n   其中真正走到下单的有几只（= 没被 _reject_latest 记新拒绝的）
+        #   _stage  若全被拦，拦它的是哪一层（宽度确认 / 持仓已满 / 拒绝原因原样）
+        # 三者一起才能区分「分数不够」与「分数够了但被闸门挡住」——旧文案把
+        # 后者也说成「最高分仅 X」，是 2026-10-29 中芯国际那次误判的直接来源。
+        _buy_n = 0
+        _ok_n = 0
+        _stage = ""
         for code in candidate_codes:
             if code in held_codes:
                 continue
@@ -2501,36 +2530,81 @@ class EventEngine:
             # 【#E】日线决策：不再用 minute bars，用 DailyContext.features
             feat = self.daily.features(code) if self.daily else None
             sig = self.strategy.on_daily_features(code, code, feat)
-            self._save_signal(sig)
+            _sid = self._save_signal(sig)
             if best is None or sig.score > best[1]:
                 best = (code, sig.score, sig.reason or "")
             if sig.side != "BUY":
                 continue
+            _buy_n += 1
+            if _sid:
+                buy_sids.append((_sid, code))
             # 成交价用最新 tick（分钟线上的实时价）。若无 tick 则跳过（保护性）。
             tick = ticks.get(code)
             if tick is None:
+                sig.blocked_by = "no_tick(无实时tick，无法定价)"
+                if _sid:
+                    self.storage.mark_blocked([_sid], sig.blocked_by)
                 continue
-            pending_buys.append((sig, tick))
+            pending_buys.append((sig, tick, _sid))
 
         if _min_breadth > 0 and len(pending_buys) < _min_breadth:
             if pending_buys:
                 logger.info("[宽度确认] 本轮 BUY 信号仅 %d 只 < %d ⇒ 当日不开新仓"
                             "（%s）", len(pending_buys), _min_breadth,
-                            ",".join(s.code for s, _t in pending_buys[:5]))
+                            ",".join(s.code for s, _t, _i in pending_buys[:5]))
+                # 把「被宽度确认拦下」写回信号行（此前只存在于日志里，
+                # UI 与 DB 都是裸 BUY ⇒ 用户只能反推）。
+                _reason = (f"breadth_lt_{_min_breadth}"
+                           f"(本轮仅 {len(pending_buys)} 只 BUY < {_min_breadth})")
+                _stage = _reason
+                sids = [i for _s, _t, i in pending_buys if i]
+                if sids:
+                    self.storage.mark_blocked(sids, _reason)
+                for s, _t, _i in pending_buys:
+                    s.blocked_by = _reason
             pending_buys = []
 
-        for sig, tick in pending_buys:
+        for _idx, (sig, tick, _sid) in enumerate(pending_buys):
             # 与改造前同义：逐笔下单调优仓位上限（原循环内逐次判定）
             if len([p for p in self._positions.values()
                     if p.quantity > 0]) >= self.max_positions:
+                # 保持原 `break` 语义（后续不再尝试下单），但把**剩余全部**信号
+                # 标成「额度用尽」——否则它们会以裸 BUY 留在库里，看起来像是
+                # 「信号成立却没动静」，与本次修复要解决的现象同型。
+                _rest = pending_buys[_idx:]
+                _why = "max_positions(并发持仓已满)"
+                if not _stage:
+                    _stage = _why
+                _rest_ids = [i for _s, _t, i in _rest if i]
+                if _rest_ids:
+                    self.storage.mark_blocked(_rest_ids, _why)
+                for _s, _t, _i in _rest:
+                    _s.blocked_by = _why
                 break
             self._handle_buy(sig, tick, current_prices)
+            # 【2026-10-29】_handle_buy 内部有 8 个静默 return 分支（mock 闸门 /
+            # AI 否决 / position_scale=0 / 价格<=0 / 行情陈旧 / 熔断 / 现金不足 …）。
+            # 不逐个改签名（会动到下单主路径），而是读它已经写好的 ``_reject_latest``：
+            # 该表在 ``_log_reject_once`` 里**无节流**维护，天然覆盖全部拒绝分支
+            # 且含将来新增的。用时间戳 >= 本轮起点 过滤历史轮次的陈旧原因。
+            # 不依赖 _sid 也能判定：_reject_latest 是纯内存表，与入库成功与否无关。
+            _r = (self.__dict__.get("_reject_latest") or {}).get(sig.code)
+            _ts = (self.__dict__.get("_reject_latest_ts") or {}).get(sig.code, 0.0)
+            if _r and _ts >= _round_t0:
+                sig.blocked_by = _r
+                if _sid:
+                    self.storage.mark_blocked([_sid], _r)
+                if not _stage:
+                    _stage = _r
+            else:
+                _ok_n += 1      # 本轮没有新拒绝 ⇒ 这笔真的走到下单了
 
         # 【2026-09-21】可观测性：本轮没有任何 BUY 时，节流输出一次诊断。
         # HOLD 信号默认不入库（PERSIST_HOLD_SIGNALS=False）且只走 DEBUG，
         # 市场转弱时会表现为「连日零信号、页面无任何提示」，无法区分是
         # 候选池空 / 评分不足 / 日线闸门拦截。这里每 10 分钟最多一条 INFO。
-        self._maybe_log_no_signal(len(candidate_codes), best, regime_ok)
+        self._maybe_log_no_signal(len(candidate_codes), best, regime_ok,
+                                  n_buy=_buy_n, n_ok=_ok_n, stage=_stage)
 
     def _entry_funnel_stats(self, n_cand: int) -> dict:
         """全宇宙的「入场漏斗」分层统计（只读诊断，不影响任何决策）。
@@ -2591,11 +2665,36 @@ class EventEngine:
             out["best_code"], out["best_score"] = best[0], round(best[1], 2)
         return out
 
-    def _maybe_log_no_signal(self, n_cand: int, best, regime_ok: bool) -> None:
+    def _maybe_log_no_signal(self, n_cand: int, best, regime_ok: bool,
+                             n_buy: int = 0, n_ok: int = 0,
+                             stage: str = "") -> None:
+        """本轮「为什么没买」的唯一出口（同时写日志与 UI 的 no_entry_reason）。
+
+        ★【2026-10-29 谎报文案修复】改前这里对 ``n_cand > 0`` 恒输出
+        「候选 N 只、最高分 X **仅** X.XX（阈值 4.0）」——**不判断 X 是否已过阈值**。
+        实盘反例（2026-10-29 中芯国际 688981.SH）：
+            最高分 **4.78 > 阈值 4.0**，信号已是 BUY 且已入库 24 次，
+            真正拦它的是**下游的宽度确认**（min_passing_candidates=2，本轮仅 1 只）。
+        而日志说「最高分仅 4.78（阈值 4.0）」，读起来像「分数不够」⇒ 会把排查
+        引向 ``buy_score_threshold``（R40 已证全档无解），而真凶在别处。
+        ⇒ 现在先分清三件事，再决定播报什么：
+            ① ``n_ok > 0``     本轮真下过单 ⇒ 根本不是「无入场信号」，静默返回
+                               （也**不占用** 600s 节流额度，免得挤掉真正的告警）
+            ② ``n_buy > 0``    有 BUY 但无一成交 ⇒ 直接报拦截层 ``stage``
+            ③ ``n_buy == 0``   无 BUY ⇒ 按策略真实 reason 判卡在哪一层，
+                               只有确实低于阈值时才允许说「不足」
+        reason 词表见 ``TrendStrategy.on_daily_features``：
+            ``daily-gate:`` / ``ext-gate:`` / ``score<`` / ``sigs<`` / 其它
+        """
+        if n_ok > 0:
+            return
         if getattr(self, "_last_no_signal_log_ts", 0) and \
                 time.time() - self._last_no_signal_log_ts < 600:
             return
         self._last_no_signal_log_ts = time.time()
+        score_th = float(STRATEGY_PARAMS.get("buy_score_threshold", 4.0))
+        min_sig = int(STRATEGY_PARAMS.get("min_signals", 3) or 3)
+
         if n_cand == 0:
             st = self._entry_funnel_stats(n_cand)
             self._no_entry_reason = (
@@ -2610,16 +2709,46 @@ class EventEngine:
                 st["min_mom"] * 100, st["universe_n"], st["trend_up_n"],
                 st["min_daily_bias"], st["bias_ok_n"], st["score_th"],
                 st["min_sig"], st["score_ok_n"], st["best_code"])
-        elif best is None:
+            return
+        if not regime_ok:
+            self._no_entry_reason = "regime 门关闭（市场状态不佳）⇒ 本轮不评估候选"
+            logger.warning("无入场信号：%s", self._no_entry_reason)
+            return
+        if n_buy > 0:
+            # ★ 关键分流：信号已成立（且已入库），只是没成交。
+            # 此处**绝不使用任何评分口径的措辞**（不得暗示「分数不够」），
+            # 因为分数明明已过阈值——说成不够会把人引向已证伪的参数。
+            _why = stage or "未记录具体拦截层"
+            _bc, _bs = (best[0], best[1]) if best else ("-", 0.0)
+            self._no_entry_reason = f"BUY {n_buy} 只全部未成交：{_why}"
+            logger.warning(
+                "有 BUY 信号但全部未成交：本轮 %d 只，拦截层=%s"
+                "（与评分阈值 %.1f 无关；最高分 %s %.2f 已达标）",
+                n_buy, _why, score_th, _bc, _bs)
+            return
+        if best is None:
             self._no_entry_reason = f"候选 {n_cand} 只但全部无法评分"
             logger.warning("无入场信号：候选 %d 只但全部无法评分", n_cand)
+            return
+
+        # n_buy == 0：用策略真实 reason 前缀判层，只有确实低才说「不足」
+        _why = (best[2] or "")
+        if _why.startswith("daily-gate"):
+            _layer = f"日线闸门拦下（{_why}）⇒ 分数够，缺的是 trend_up"
+        elif _why.startswith("ext-gate"):
+            _layer = f"趋势延伸度闸门拦下（{_why}）"
+        elif _why.startswith("score<"):
+            _layer = f"评分不足（{_why[:40]}）"
+        elif _why.startswith("sigs<"):
+            _layer = f"分数够但正因子数不足（{_why[:40]}）"
+        elif _why.startswith("no-daily") or _why.startswith("bad-features"):
+            _layer = f"日线特征缺失（{_why[:40]}）"
         else:
-            self._no_entry_reason = f"候选 {n_cand} 只、最高分仅 {best[1]:.2f}"
-            logger.warning("无入场信号：候选 %d 只、最高分 %s 仅 %.2f"
-                           "（阈值 %.1f）原因=%s",
-                           n_cand, best[0], best[1],
-                           float(STRATEGY_PARAMS.get("buy_score_threshold", 4.0)),
-                           best[2][:60])
+            _layer = f"策略未给 BUY（reason={_why[:40] or '空'}）"
+        self._no_entry_reason = f"候选 {n_cand} 只、最高分 {best[1]:.2f} ⇒ {_layer}"
+        logger.warning(
+            "无入场信号：候选 %d 只、最高分 %s %.2f（阈值 %.1f 正因子>=%d）⇒ %s",
+            n_cand, best[0], best[1], score_th, min_sig, _layer)
 
     # ----- portfolio mode -----
 
@@ -2773,8 +2902,20 @@ class EventEngine:
 
         避免主循环把同一条拒绝理由每轮刷一遍（实盘曾刷出 63 万条同类日志），
         同时允许长期持续的同一拒绝以分钟级频率保留可见性，便于人工观察。
+
+        【2026-10-29】同时**无条件**写 ``_reject_latest``：节流只影响日志频率，
+        不能影响「本轮到底有没有被拒」这个事实，否则 signals.blocked_by 会漏标。
         """
         now = time.time()
+        # ★ 用 __dict__.setdefault 而非 self._reject_latest[...]：
+        #   本字段纯属可观测性，**绝不允许有能力抛异常**。测试与少数诊断脚本会用
+        #   `object.__new__` 拼一个「半成品引擎」（见 tests/test_mock_data_trading_guard
+        #   的 _bare_engine），不走 __init__ ⇒ 属性不存在。这里惰性补建，
+        #   保证任何构造方式下 _log_reject_once 都安全。
+        _latest = self.__dict__.setdefault("_reject_latest", {})
+        _latest_ts = self.__dict__.setdefault("_reject_latest_ts", {})
+        _latest[code] = reason
+        _latest_ts[code] = now
         if (self._last_reject.get(code) == reason
                 and now - self._last_reject_ts.get(code, 0.0) < 60.0):
             return
@@ -2944,9 +3085,13 @@ class EventEngine:
         disp_name = get_stock_name(sig.code)
         scale = self.risk.position_scale
         if scale <= 0:
+            # 【2026-10-29】原本是静默 return（连日志都没有）⇒ 信号会以裸 BUY
+            # 留在库里，界面显示「BUY」却查不到任何原因。补一条拒绝记录。
+            self._log_reject_once(sig.code, "position_scale=0(连亏降仓压到 0)")
             return
         price = float(getattr(tick, "price", 0) or 0)
         if price <= 0:
+            self._log_reject_once(sig.code, "price<=0(tick 无有效价)")
             return
         # 【2026-09-26 R9】行情陈旧阻断：价格若是 N 小时前的冻结快照（典型是
         # miniQMT 停止推送而 get_full_tick 反复返回同一份缓存），按它建仓等于

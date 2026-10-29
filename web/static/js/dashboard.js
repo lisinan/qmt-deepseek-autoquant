@@ -114,10 +114,19 @@
   }
   function signalRow(s) {
     const cls = s.side === 'BUY' ? 'up' : (s.side === 'SELL' ? 'down' : 'flat');
+    // 【2026-10-29】未成交状态：信号在闸门之前入库，故「BUY 却没买」必须靠
+    // blocked_by 说清原因，否则用户只能翻日志反推（实盘案例：688981 全天 24 轮
+    // BUY 零成交，真实原因是「宽度确认 <2 只」）。空值 = 一路走到下单，无阻断。
+    const why = s.blocked_by || '';
+    const statusCell = why
+      ? '<td><span class="badge blocked" title="' + esc(why) + '">未成交</span> ' +
+        '<span class="muted">' + esc(why.split('(')[0]) + '</span></td>'
+      : '<td><span class="badge passed">→ 执行</span></td>';
     return '<tr>' +
       '<td>' + esc(shortTs(s.ts)) + '</td>' +
       '<td>' + esc(s.code) + ' ' + esc(NAME(s.code)) + '</td>' +
       '<td class="' + cls + '">' + esc(s.side) + '</td>' +
+      statusCell +
       '<td class="num">' + fmt(s.score, 2) + '</td>' +
       '<td class="num">' + fmt(s.price, 3) + '</td>' +
       '<td title="' + esc(s.reason || '') + '">' +
@@ -1048,6 +1057,178 @@
 
   // ============================================================ 初始加载
   bindNoticeBar();
+  // ============================================================ miniQMT 交互面板
+  // 【2026-10-29】用户的顾虑是「miniQMT 到底还在不在正常响应」。以前这个答案只能靠
+  //   翻日志，且最容易漏掉的失败模式是「数据源静默降级为 mock」—— 它不报错、不熔断，
+  //   只是悄悄把全部买卖禁掉。这里把它变成页面上一眼可见的红条。
+  // 数据源：/api/qmt_health（只读内存 + 本地库，不对 miniQMT 发请求）。
+  var _qmtTimer = null;
+
+  function _qp(id, text, title) {
+    var el = document.getElementById(id);
+    if (!el) return;
+    el.innerHTML = text;
+    if (title) el.title = title; else el.removeAttribute('title');
+  }
+
+  function renderQmtHealth(d) {
+    var statusEl = document.getElementById('qmt-status');
+    var map = {
+      ok: ['正常', 'qmt-ok'],
+      warn: ['需留意', 'qmt-warn'],
+      bad: ['异常', 'qmt-bad']
+    };
+    var st = map[d.status] || ['未知', 'neutral'];
+    if (statusEl) {
+      statusEl.className = 'badge ' + st[1];
+      statusEl.textContent = st[0];
+    }
+    var s = d.session || {};
+    _qp('qmt-session',
+        '交易日=' + (s.is_trading_day ? '是' : '否') +
+        ' · 时段=' + (s.label || '--') +
+        ' · ' + (s.in_trading ? '交易中' : '非交易'));
+    _qp('qmt-ts', '快照 ' + (d.ts || '--') + ' · ' + fmt(d.elapsed_ms, 1) + 'ms');
+
+    // 问题条：没有问题时也要明确说「未发现异常」，
+    // 否则「空白」会被误读成「没查到」。
+    var box = document.getElementById('qmt-issues');
+    if (box) {
+      var issues = d.issues || [];
+      if (!issues.length) {
+        box.innerHTML = '<div class="qmt-issue ok">未发现异常：行情源、交易通道、' +
+          '风控闸门均处于正常状态。</div>';
+      } else {
+        box.innerHTML = issues.map(function (i) {
+          return '<div class="qmt-issue ' + esc(i.level || 'warn') + '">' +
+            '<b>[' + esc(i.tag || '提示') + ']</b> ' + esc(i.msg || '') + '</div>';
+        }).join('');
+      }
+    }
+
+    // ① 数据采集
+    var mk = d.market || {};
+    var cl = mk.client || {};
+    var mode = cl.mode || '';
+    if (mode === 'xtdata') {
+      _qp('qmt-mode', '<span class="badge live">xtdata</span> 实时行情');
+    } else if (mode) {
+      _qp('qmt-mode', '<span class="badge mock">' + esc(mode) + '</span> 合成行情（禁止成交）');
+    } else {
+      _qp('qmt-mode', '--');
+    }
+    if (cl.probe_ok === true) {
+      _qp('qmt-probe', '成功 · ' + fmt(cl.probe_age_sec, 0) + 's 前（累计 ' + (cl.probe_n || 0) + ' 次）');
+    } else if (cl.probe_ok === false) {
+      _qp('qmt-probe', '<span class="badge mock">失败</span> ' + esc(cl.probe_err || '未知原因'),
+          cl.probe_err || '');
+    } else {
+      _qp('qmt-probe', '--');
+    }
+    var b = mk.bars_1m || {};
+    _qp('qmt-sub', (cl.subscribed >= 0 ? cl.subscribed + ' 只' : '--') +
+        '（1m 缓冲 ' + (b.codes != null ? b.codes : '--') + ' 只 / 满 60 根 ' +
+        (b.ready_ge_60 != null ? b.ready_ge_60 : '--') + ' 只）');
+    var stl = mk.staleness || {};
+    if (stl.error) {
+      _qp('qmt-stale', '--', stl.error);
+    } else if (stl.stale) {
+      _qp('qmt-stale', '<span class="up">' + stl.stale_n + ' 只陈旧</span> · 最大 ' +
+          fmt(stl.max_age_sec, 0) + 's / 阈值 ' + fmt(stl.threshold_sec, 0) + 's',
+          '样本: ' + (stl.stale_sample || []).join(', '));
+    } else {
+      _qp('qmt-stale', '正常 · 最大 ' + fmt(stl.max_age_sec, 0) + 's / 阈值 ' +
+          fmt(stl.threshold_sec, 0) + 's');
+    }
+    _qp('qmt-bar', b.latest_bar_ts
+        ? ('末根 ' + esc(b.latest_bar_ts) + ' · 最早 ' + esc(b.oldest_bar_ts || '--'))
+        : '--');
+
+    // ② 交易订单
+    var tr = d.trading || {};
+    var br = tr.broker || {};
+    if (br.error) {
+      _qp('qmt-broker', '--', br.error);
+    } else if (br.connected) {
+      _qp('qmt-broker', '<span class="badge live">已连接</span> ' + esc(br.mode || ''));
+    } else {
+      var paperMode = (tr.exec_mode || '') === 'paper';
+      _qp('qmt-broker', '<span class="badge neutral">未连接</span> ' +
+          (paperMode ? '<span class="muted">paper 模式不需要</span>' : '<span class="up">live 需连接</span>'));
+    }
+    var od = tr.orders || {};
+    var fl = tr.fills || {};
+    _qp('qmt-orders', '委托 ' + fmt(od.today_orders, 0) + ' / 成交 ' +
+        fmt(fl.today_fills, 0) + ' 笔');
+    _qp('qmt-unmatched', fmt(od.today_unmatched, 0) + ' 笔');
+    var pd = tr.pending || {};
+    _qp('qmt-pending', '买 ' + fmt(pd.pending_buy, 0) + ' / 卖 ' + fmt(pd.pending_sell, 0),
+        (pd.pending_codes || []).join(', '));
+    var rj = (tr.rejects || {}).top || [];
+    if (rj.length) {
+      _qp('qmt-reject', esc(rj[0].why) + ' × ' + rj[0].n,
+          rj.map(function (x) { return x.why + ' × ' + x.n; }).join('\n'));
+    } else {
+      _qp('qmt-reject', '今日无未成交信号');
+    }
+
+    // ③ 引擎运行
+    var en = d.engine || {};
+    _qp('qmt-engine', en.running
+        ? '<span class="badge live">运行中</span> 数据源=' + esc(en.data_mode || '--')
+        : '<span class="badge neutral">未运行</span>');
+    _qp('qmt-exec', esc((en.exec_mode || '--') + ' / ' + (en.strategy || '--')));
+    _qp('qmt-pos', fmt(en.positions, 0) + ' / ' + fmt(en.max_positions, 0));
+    _qp('qmt-cash', '\u00a5 ' + fmt(en.cash, 2));
+    var sn = en.snapshot || {};
+    if (sn.drawdown_pct != null) {
+      _qp('qmt-dd', '<span class="' + colorClass(sn.drawdown_pct) + '">' +
+          fmt(sn.drawdown_pct * 100, 2) + '%</span> · 权益 ' + fmt(sn.total_asset, 0),
+          '快照时间 ' + (sn.ts || ''));
+    } else {
+      _qp('qmt-dd', '--');
+    }
+
+    // 最近委托
+    var body = document.querySelector('#qmt-order-table tbody');
+    if (body) {
+      var rows = (tr.orders || {}).recent || [];
+      body.innerHTML = rows.length ? rows.map(function (o) {
+        var cls = o.side === 'BUY' ? 'up' : 'down';
+        var stCls = o.state === '全部成交' ? 'badge passed'
+          : (o.state === '部分成交' ? 'badge blocked' : 'badge neutral');
+        return '<tr>' +
+          '<td>' + esc(shortTs(o.ts)) + '</td>' +
+          '<td>' + esc(o.code) + '</td>' +
+          '<td class="' + cls + '">' + esc(o.side) + '</td>' +
+          '<td class="num">' + fmt(o.quantity, 0) + '</td>' +
+          '<td class="num">' + fmt(o.filled_qty, 0) + '</td>' +
+          '<td><span class="' + stCls + '">' + esc(o.state) + '</span></td>' +
+          '</tr>';
+      }).join('') : '<tr><td colspan="6" class="muted">今日暂无委托</td></tr>';
+    }
+  }
+
+  function loadQmtHealth() {
+    return fetch('/api/qmt_health')
+      .then(function (r) { return r.json(); })
+      .then(renderQmtHealth)
+      .catch(function (e) {
+        // 请求失败本身就是要展示的信息：不能让面板停在上一帧的绿标上。
+        var statusEl = document.getElementById('qmt-status');
+        if (statusEl) {
+          statusEl.className = 'badge qmt-bad';
+          statusEl.textContent = '查询失败';
+        }
+        var box = document.getElementById('qmt-issues');
+        if (box) {
+          box.innerHTML = '<div class="qmt-issue bad"><b>[面板]</b> 无法获取健康快照：' +
+            esc(String(e && e.message ? e.message : e)) +
+            '（可能是 Flask 进程已退出）</div>';
+        }
+      });
+  }
+
   bindGateTimelineButtons();
   loadGate();
   loadGateTimeline(90);
@@ -1081,5 +1262,12 @@
     }).catch(function () {});
 
   // ============================================================ 启动 SSE
+  // miniQMT 交互面板：首帧立即拉，之后 5s 一次（与引擎主循环同量级）。
+  // 刻意不走 SSE：它要能反映「SSE 已断但 Flask 还活着」这种半死状态。
+  loadQmtHealth();
+  _qmtTimer = setInterval(loadQmtHealth, 5000);
+  window.addEventListener('beforeunload', function () {
+    if (_qmtTimer) clearInterval(_qmtTimer);
+  });
   connectSSE();
 })();
