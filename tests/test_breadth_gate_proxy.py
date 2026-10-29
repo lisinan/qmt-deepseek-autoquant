@@ -67,10 +67,13 @@ def test_off_keeps_legacy_behaviour():
     #   统一到共享确定性 tushare 面板（原走 xtdata，与另三个守卫不同源）：
     #   关闭态 ret +128.62%→**+286.98%**（2.869846）、Sh 1.83→**1.80**（1.804430）、
     #   MDD −7.61%→**−14.21%**、成交 172 笔。
-    assert abs(r_off["total_return"] - 2.869846) < 0.02, \
-        f"关闭态应复现基线 +286.98%，实际 {r_off['total_return']:.4f}"
-    assert abs(r_off["sharpe"] - 1.804430) < 0.05, \
-        f"关闭态应复现基线 Sh 1.80，实际 {r_off['sharpe']:.4f}"
+    # 【2026-10-29 R44】entry_max_ext_ma60 0→0.8 落盘后**第五次**重算：
+    #   关闭态 ret +286.98%→**+299.08%**（2.990828）、Sh 1.80→**1.87**（1.869023）、
+    #   MDD −14.21%→−14.21%（不变）、成交 172→**166**。
+    assert abs(r_off["total_return"] - 2.990828) < 0.02, \
+        f"关闭态应复现基线 +299.08%，实际 {r_off['total_return']:.4f}"
+    assert abs(r_off["sharpe"] - 1.869023) < 0.05, \
+        f"关闭态应复现基线 Sh 1.87，实际 {r_off['sharpe']:.4f}"
 
 
 def test_enabled_gate_really_changes_result():

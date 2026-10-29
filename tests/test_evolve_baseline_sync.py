@@ -50,6 +50,9 @@ MUST_MATCH = {
     "nb_stale_days": None,
     "nb_degenerate_days": None,
     "min_daily_bias": None,       # 2.0（bias 通道关闭，2026-09-22 落盘）
+    # 【2026-10-29 R44】趋势延伸度过滤（0.8，4 窗共识最差窗 dSh +0.159）。
+    #   必须逐字段相等：两侧任一漂移都会让「趋势尾段追入」的拦截集合分叉。
+    "entry_max_ext_ma60": None,   # 0.8（B1 宽信号 + 趋势尾段追入修复，R44 落盘）
     "regime_mode": None,          # "off"
     "regime_index": None,
     "regime_ma": None,

@@ -862,6 +862,18 @@ class BacktestConfig:
     #   当日不予开仓。默认 1.0（=+100%）⇒ 恒不成立 ⇒ **零行为变化**。
     # 实盘对应：engine 侧按同一语义过滤（当日 change_pct）。
     entry_max_day_gain_pct: float = 1.0
+    # ---- 趋势延伸度过滤（「趋势尾段追入」研究轴）【2026-10-29 AM-EVOLVE 第 44 轮】----
+    # 动机（R42 §9.5 指定的唯一合法子问题）：B1 段（20260423~20260721）是全样本
+    #   唯一「有票且真落后」的窗口（策略 −4.64% vs 宇宙 +8.10%，超额 −12.74pt），
+    #   特征 = 宽信号（91.1% 天数 ≥2 只过闸）+ 宇宙温和上涨 ⇒ 机理＝**趋势尾段
+    #   追入后反转**。注意与已闭合轴的区别：entry_max_day_gain_pct 是**单日**涨幅
+    #   （「不追高」，已证伪）；trend_breakout_near_high 是 20 日新高距离（已证伪）；
+    #   trend_up_relax 是闸门松紧（已证伪）。本轴量的是**中期趋势成熟度**：
+    #   close 相对 MA60 的延伸度（close/MA60−1），值越大＝趋势走得越晚。
+    # 语义：延伸度 > entry_max_ext_ma60 的标的当日不予开仓。
+    #   默认 0.0 = **关闭**（延伸度恒 ≥ 0，0 会拦掉全部 trend_up 票）⇒ 零行为变化。
+    # 实盘对应：strategy/trend_strategy.py 买入闸门热读 STRATEGY_PARAMS 同名键。
+    entry_max_ext_ma60: float = 0.0
     # ---- 动量排名加权仓位（横截面 alpha 杠杆，研究用）----
     # 选股仍用动量排名做闸门（只持前 N），但仓位不再等权：按动量大小对前 N
     # 名做 rank-weight（最强者更大、最弱者更小，均值=1），把资本集中于
@@ -1229,6 +1241,7 @@ def run_backtest(codes: List[str], cfg: BacktestConfig,
     # 仅在 recovery_fastpath=True 时填充；关闭时为空 dict，零开销、零行为变化。
     trend_up_noslope_arr: Dict[str, list] = {}
     bias_arr: Dict[str, list] = {}
+    ext60_arr: Dict[str, list] = {}
     atr_pct_arr: Dict[str, list] = {}
     score_arr: Dict[str, list] = {}
     # 量能突破确认（vol_confirm）预计算：放量比 + 是否贴近阶段高位。
@@ -1282,6 +1295,13 @@ def run_backtest(codes: List[str], cfg: BacktestConfig,
                 b += 0.30 * (1.0 if m20 > m60 else -1.0)
             _bi[i] = max(-1.0, min(1.0, b))
         bias_arr[code] = _bi
+        # 趋势延伸度序列（R44 entry_max_ext_ma60）：close/MA60−1；
+        # MA60 缺失/非正 ⇒ 记 9e9 使过滤器**永不拦截**（fail-open，与 warmup 语义一致）。
+        _ext = [9e9] * n_c
+        for i in range(n_c):
+            if _s60[i] and cl[i] > 0:
+                _ext[i] = cl[i] / _s60[i] - 1.0
+        ext60_arr[code] = _ext
         # ATR% 序列（与 atr_pct_at 等价）
         _atr = I.atr(hi, lo, cl, 14)
         _ap = [0.0] * n_c
@@ -2097,6 +2117,10 @@ def run_backtest(codes: List[str], cfg: BacktestConfig,
                 if (cfg.entry_max_day_gain_pct < 1.0 and i > 0
                         and c[i - 1] > 0
                         and (c[i] / c[i - 1] - 1.0) > cfg.entry_max_day_gain_pct):
+                    continue
+                # 趋势延伸度过滤（R44，默认 0.0=关闭 ⇒ 零行为变化）
+                if (cfg.entry_max_ext_ma60 > 0.0
+                        and ext60_arr[code][i] > cfg.entry_max_ext_ma60):
                     continue
                 # 量能突破确认（全新特征，研究用）：放量 + 贴近阶段高位
                 # 才视为有效突破，过滤无量假突破（whipsaw）。仅 factor 模式生效。

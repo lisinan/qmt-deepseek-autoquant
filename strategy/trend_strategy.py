@@ -64,6 +64,30 @@ class TrendStrategy(BaseStrategy):
 
     # ============================================================ 公共
 
+    @staticmethod
+    def _entry_ext_ok(features: "DailyFeatures") -> Tuple[bool, str]:
+        """【2026-10-29 AM-EVOLVE 第 44 轮】趋势延伸度过滤（实盘读取点）。
+
+        与回测 BacktestConfig.entry_max_ext_ma60 同源同语义：close/MA60−1
+        超过阈值则当日不予开仓（过滤「趋势尾段追入」）。热读
+        STRATEGY_PARAMS ⇒ 改值即时生效。默认 0.0 = 关闭（零行为变化）。
+        MA60 缺失/非正 ⇒ fail-open 放行（与回测 9e9 语义一致）。
+        """
+        try:
+            cap = float(STRATEGY_PARAMS.get("entry_max_ext_ma60", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            cap = 0.0
+        if cap <= 0.0 or features is None:
+            return True, ""
+        ma60 = getattr(features, "ma60", 0.0) or 0.0
+        close = getattr(features, "close", 0.0) or 0.0
+        if ma60 <= 0.0 or close <= 0.0:
+            return True, ""
+        ext = close / ma60 - 1.0
+        if ext > cap:
+            return False, f"ext_ma60={ext:.3f}>{cap}"
+        return True, ""
+
     def on_daily_features(self, code: str, name: str,
                          features: "DailyFeatures") -> Signal:
         """【2026-09-02 #E】日线决策路径。
@@ -94,6 +118,11 @@ class TrendStrategy(BaseStrategy):
         if not daily_ok:
             return self._hold(code, name, [], score=features.score,
                               reason=f"daily-gate:{daily_reason}")
+        # 趋势延伸度过滤（R44，默认关闭 ⇒ 零行为变化）
+        _ext_ok, _ext_reason = self._entry_ext_ok(features)
+        if not _ext_ok:
+            return self._hold(code, name, [], score=features.score,
+                              reason=f"ext-gate:{_ext_reason}")
 
         score = features.score
         factors = features.factors or {}
@@ -153,6 +182,13 @@ class TrendStrategy(BaseStrategy):
                 else:
                     daily_ok = False
                 daily_reason = (f"bias={f.bias:.2f} trend_up={f.trend_up}")
+
+        # ---- 趋势延伸度过滤（R44，默认 0.0=关闭 ⇒ 零行为变化）----
+        if daily_ok and f is not None:
+            _ext_ok, _ext_reason = self._entry_ext_ok(f)
+            if not _ext_ok:
+                daily_ok = False
+                daily_reason = f"ext-gate:{_ext_reason}"
 
         # ---- 指标缓存（执行效率优化，见 __init__ 说明）----
         # 键：序列长度 + 倒数第二根 bar 的时间戳。同一分钟内这两值不变

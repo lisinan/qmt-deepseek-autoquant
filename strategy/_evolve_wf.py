@@ -227,6 +227,12 @@ def base_cfg() -> BacktestConfig:
         #   意义同样在防潜伏陷阱：若日后有人收紧该阈值到 -0.03 量级，回测会继续
         #   「无此闸门」而实盘会真的强平，两侧静默分叉。
         daily_stop_flatten_pct=-0.06,
+        # 【2026-10-29 AM-EVOLVE 第 44 轮】0.0 → **0.8，与生产对齐**（第 14 次基线同步）。
+        #   生产落盘依据：4 窗共识最差窗 dSh +0.159（闸门② PASS）、IS +301→+313%、
+        #   MDD 不变。证据全文见 config/settings.py 的 entry_max_ext_ma60 注释与
+        #   scripts/_r44_ext_consensus.py。⇒ 自本轮起 P0 基线更新为：
+        #   IS **+313.12% / Sh 1.99 / MDD −12.97%**；四窗 OOS 均值 Sh **1.746**。
+        entry_max_ext_ma60=0.8,
         min_warmup=FIXED_WARMUP,
     )
 

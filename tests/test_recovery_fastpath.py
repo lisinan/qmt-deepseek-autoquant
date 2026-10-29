@@ -48,11 +48,12 @@ def test_default_is_false():
 def test_off_keeps_baseline_bitwise():
     """门锁 2：关闭时与改动前基线逐位相同（同一确定性面板）。"""
     r = _is_result(W.base_cfg())
-    # 改动前基线常量（全精度，来自 2026-10-22 实测 base_cfg + 确定性面板）
-    assert abs(r["total_return"] - 2.9574189864999996) < 1e-9
-    assert abs(r["sharpe"] - 1.8664562492341377) < 1e-9
+    # 改动前基线常量（全精度）。【2026-10-29 R44 第六次重钉】entry_max_ext_ma60
+    # 0→0.8 落盘 ⇒ P0 = +307.57% / Sh 1.93 / MDD −13.05%（不变）/ 成交 158。
+    assert abs(r["total_return"] - 3.0756905010000004) < 1e-9
+    assert abs(r["sharpe"] - 1.9312593072060833) < 1e-9
     assert abs(r["max_drawdown"] - (-0.13053128988441542)) < 1e-9
-    assert r["n_trades"] == 164
+    assert r["n_trades"] == 158
     # 显式 False 与默认值必须逐位相同
     off = _is_result(replace(W.base_cfg(), recovery_fastpath=False))
     for k in ("total_return", "sharpe", "max_drawdown", "n_trades",

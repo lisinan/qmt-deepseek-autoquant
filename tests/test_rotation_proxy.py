@@ -55,10 +55,12 @@ from strategy.backtest_daily import BacktestConfig, run_backtest  # noqa: E402
 #   max_order_amount 180000→**400000**，≈2.24×）而**第五次**重算：
 #   ret +131.93%→**+295.74%**、Sh 1.89→**1.87**、MDD −7.04%→**−13.05%**、
 #   成交 163→**164** 笔。
-BASE_IS_RET = 2.957419      # +295.74%（原 +131.93%）
-BASE_IS_SHARPE = 1.866456   # 1.87（原 1.89）
-BASE_IS_MDD = -0.130531     # -13.05%（原 -7.04%）
-BASE_TRADES = 164           # 已验证成交笔数（R29+L2 杠杆放大后 163→164）
+# 【2026-10-29 R44 第六次重钉】entry_max_ext_ma60 0→0.8 落盘 ⇒
+#   ret +295.74%→**+307.57%**、Sh 1.87→**1.93**、MDD −13.05%（不变）、成交 164→**158**。
+BASE_IS_RET = 3.0756905     # +307.57%（R44，tushare 确定源）
+BASE_IS_SHARPE = 1.9312593  # 1.93（R44）
+BASE_IS_MDD = -0.130531     # -13.05%（R29+L2 起不变）
+BASE_TRADES = 158           # 已验证成交笔数（R44 延伸度过滤 164→158）
 TOL_RET = 0.02
 TOL_SH = 0.05
 TOL_MDD = 0.01
@@ -103,14 +105,24 @@ def test_rotation_proxy_actually_changes_behavior():
     #   杠杆属尺度型改动，轮动的边际换手在更大仓位基数下被摊薄。
     #   三条阈值同步下调（1.15→1.12 / 0.02→0.004 / 0.005→0.0015），
     #   但**判别力不变**：若代理被断开成死代码 ⇒ 换手比 = 1.00、ΔSh = 0，均会红。
+    # 【2026-10-29 R44 第七次标定 · **方向翻转**】entry_max_ext_ma60 0→0.8 落盘后：
+    #   实测（确定性面板）Sh 1.9313→**2.0149（+0.0837）**、
+    #   ret +307.57%→**+342.43%（+34.9pt）**、MDD −13.05%→−13.32%（深 0.27pt）、
+    #   成交 158→181（+14.6%）。
+    #   ⇒ 机理：延伸度过滤拦掉「趋势尾段追入」后，轮动「弱换强」换手的
+    #     边际票质量上升，IS 上由纯磨损转为增益（R17 结论在新 P0 下不再成立）。
+    #   ★ 但 4 窗 OOS 共识（23×902 面板）dSh = +0.069/+0.084/+0.121/+0.226
+    #     ⇒ **最差窗 +0.069 < +0.10，闸门② FAIL**，且 IS MDD −12.97%→−15.45%
+    #     ⇒ **本轮 REJECTED，生产 enable_rotation 维持 False**。
+    #     未来重开此轴必须重过 4 窗共识最差窗 ≥ +0.10。
     base_r = _is_result(W.base_cfg())
     rot_r = _is_result(replace(W.base_cfg(), rotation_enabled=True))
     assert rot_r["n_trades"] > base_r["n_trades"] * 1.12, (
         f"开启轮动后换手应显著上升（实测 {base_r['n_trades']} → "
         f"{rot_r['n_trades']} 笔，+14.6%）；若几乎没变 ⇒ 代理已被断开（死代码）")
-    assert rot_r["sharpe"] < base_r["sharpe"] - 0.004, (
-        f"轮动应拖累 Sharpe（R29+L2 基线实测 {base_r['sharpe']:.4f} → "
-        f"{rot_r['sharpe']:.4f}，即 −0.0067）；若不再拖累，需重跑复核本轮结论")
+    assert rot_r["sharpe"] > base_r["sharpe"] + 0.04, (
+        f"R44 后轮动 IS 应为增益（实测 {base_r['sharpe']:.4f} → "
+        f"{rot_r['sharpe']:.4f}，即 +0.0837）；若符号再翻转，需重跑复核本轮结论")
     assert rot_r["max_drawdown"] < base_r["max_drawdown"] - 0.0015, (
         f"轮动应使 MDD 变深（实测 {base_r['max_drawdown']*100:.2f}% → "
         f"{rot_r['max_drawdown']*100:.2f}%，深 0.27pt）")

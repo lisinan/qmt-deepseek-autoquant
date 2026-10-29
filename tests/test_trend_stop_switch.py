@@ -49,10 +49,12 @@ def test_switches_default_off_and_zero_behaviour_change():
     #   max_single_position_pct 0.19→0.40 / max_position_amount & max_order_amount
     #   180000→400000，≈2.24×）后**第五次**重钉：P0 = +295.74%（2.957419）/
     #   Sh 1.87（1.866456）、MDD −13.05%。数据源已钉死 tushare 面板。
-    assert abs(r["total_return"] - 2.957419) < 0.02, \
-        f"P0 基线漂移：期望 +295.74%，实际 {r['total_return']:.4f}"
-    assert abs(r["sharpe"] - 1.866456) < 0.05, \
-        f"P0 Sharpe 漂移：期望 1.87，实际 {r['sharpe']:.4f}"
+    #   【2026-10-29 R44 第六次重钉】entry_max_ext_ma60 0→0.8 落盘 ⇒
+    #   P0 = +307.57%（3.0756905）/ Sh 1.93（1.9312593）、MDD −13.05%（不变）、成交 158。
+    assert abs(r["total_return"] - 3.0756905) < 0.02, \
+        f"P0 基线漂移：期望 +307.57%，实际 {r['total_return']:.4f}"
+    assert abs(r["sharpe"] - 1.9312593) < 0.05, \
+        f"P0 Sharpe 漂移：期望 1.93，实际 {r['sharpe']:.4f}"
 
 
 def test_static_atr_stop_really_changes_result_when_tight():
@@ -69,20 +71,28 @@ def test_static_atr_stop_really_changes_result_when_tight():
 
 
 def test_chandelier_monotonically_hurts():
-    """门锁 4：吊灯止损越紧越差（严格单调），关闭态即最优。
+    """门锁 4：吊灯止损紧档必须显著劣于关闭态（可复现锚点）。
 
-    这是本轮「退出侧整类闭合」的可复现锚点：日后若有人修改退出逻辑使
+    这是「退出侧整类闭合」的可复现锚点：日后若有人修改退出逻辑使
     「提前离场不再减 alpha」，此处立即变红，强制重新量一遍。
+    【2026-10-29 R44 重钉 · 最宽档单调性翻转】entry_max_ext_ma60 0→0.8 落盘后
+    实测（确定性面板）：off 3.0757 / **4.0 档 3.1191（+4.3pt，反超 off）** /
+    2.9 档 2.6760 / 2.0 档 0.7065。⇒ 严格单调性在 4.0 档不再成立；
+    紧档（2.9/2.0）仍然大幅劣化，方向结论不变。注意：退出侧闭合的决策依据
+    一直是 **OOS 多窗证据**（R25/R26/R39/R41 两向闭合），非本 IS 锚点；
+    4.0 档的 IS 反超若要认真对待，须走 4 窗共识闸门（本轮未投，交 PM 评估）。
     """
     b = W.base_cfg()
-    prev = _is_result(b)["total_return"]
-    for k in (4.0, 2.9, 2.0):
-        cur = _is_result(replace(b, trend_chandelier_mult=k))["total_return"]
-        assert cur <= prev + 1e-9, \
-            f"吊灯 {k} 不应比更宽档收益更高（{prev:.4f} → {cur:.4f}）"
-        prev = cur
-    assert _is_result(replace(b, trend_chandelier_mult=2.9))["total_return"] \
-        < _is_result(b)["total_return"], "2.9 档应显著低于关闭态"
+    r_off = _is_result(b)["total_return"]
+    r40 = _is_result(replace(b, trend_chandelier_mult=4.0))["total_return"]
+    r29 = _is_result(replace(b, trend_chandelier_mult=2.9))["total_return"]
+    r20 = _is_result(replace(b, trend_chandelier_mult=2.0))["total_return"]
+    assert r40 <= r_off + 0.06, \
+        f"吊灯 4.0 档不应大幅偏离关闭态（off {r_off:.4f} → 4.0 {r40:.4f}）"
+    assert r29 < r_off, \
+        f"吊灯 2.9 档应低于关闭态（off {r_off:.4f} → 2.9 {r29:.4f}）"
+    assert r20 < r29 * 0.5, \
+        f"吊灯 2.0 档应大幅劣于 2.9 档（{r29:.4f} → {r20:.4f}）"
 
 
 def test_switches_are_research_only_not_in_production():

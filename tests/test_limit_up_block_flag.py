@@ -130,9 +130,10 @@ def test_off_keeps_legacy_baseline():
     assert r_base["limit_blocked_buy"] == 0
     assert r_base["limit_blocked_sell"] == 0
     # 钉死当前基线（防未来某次「顺手改默认」静默漂移）
-    assert abs(r_base["total_return"] - 2.957419) < 0.02, \
+    # 【2026-10-29 R44 第六次重钉】entry_max_ext_ma60 0→0.8 ⇒ +307.57% / Sh 1.93。
+    assert abs(r_base["total_return"] - 3.0756905) < 0.02, \
         f"基线漂移：total_return={r_base['total_return']:.6f}"
-    assert abs(r_base["sharpe"] - 1.866456) < 0.05, \
+    assert abs(r_base["sharpe"] - 1.9312593) < 0.05, \
         f"基线漂移：sharpe={r_base['sharpe']:.6f}"
 
 

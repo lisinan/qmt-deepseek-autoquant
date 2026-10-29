@@ -43,10 +43,12 @@ def _is_result(cfg):
 def test_default_off_keeps_baseline_bitwise():
     """门锁 1：默认 off（= 现状）必须与 P0 基线逐位相同。"""
     r = _is_result(W.base_cfg())
-    assert abs(r["total_return"] - 2.957419) < 0.02, \
-        f"默认 off 应复现 L2 基线 +295.74%，实际 {r['total_return']:.4f}"
-    assert abs(r["sharpe"] - 1.866456) < 0.05, \
-        f"默认 off 应复现 L2 基线 Sh 1.87，实际 {r['sharpe']:.4f}"
+    # 【2026-10-29 R44 第六次重钉】entry_max_ext_ma60 0→0.8 落盘 ⇒
+    #   P0 = +307.57%（3.0756905）/ Sh 1.93 / MDD −13.05%（不变）、成交 158。
+    assert abs(r["total_return"] - 3.0756905) < 0.02, \
+        f"默认 off 应复现 R44 基线 +307.57%，实际 {r['total_return']:.4f}"
+    assert abs(r["sharpe"] - 1.9312593) < 0.05, \
+        f"默认 off 应复现 R44 基线 Sh 1.93，实际 {r['sharpe']:.4f}"
     assert abs(r["max_drawdown"] + 0.130531) < 0.02, \
         f"默认 off 应复现 L2 基线 MDD −13.05%，实际 {r['max_drawdown']:.4f}"
     off = _is_result(replace(W.base_cfg(), mom_rel_fallback=0.0))
