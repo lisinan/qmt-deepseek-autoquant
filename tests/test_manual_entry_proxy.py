@@ -138,11 +138,30 @@ def test_validator_reads_basket_from_production_settings():
 
 
 def test_every_production_basket_code_is_in_universe():
-    """门锁 4：篮子里的票必须在回测宇宙内，否则代理静默失效。"""
+    """门锁 4：篮子里的票必须在回测宇宙内，否则代理静默失效。
+
+    【2026-10-29 增补】唯一例外是**链路验证标的**（``VALIDATION_UNIVERSE``）：
+    它们刻意**不进**回测宇宙 —— 它们不是研究样本，而是 live 下单链路的探针
+    （固定小金额、不参与任何绩效评估）。例外必须**双向成立**，否则这道门锁
+    会从「防止代理静默失效」退化成「允许任何代码混进篮子」：
+      · 探针票  **不得**在回测宇宙里（否则它会参与排名/breadth/绩效）
+      · 非探针票 **仍必须**在回测宇宙里（R15 原意不变）
+    """
+    from config.settings import VALIDATION_UNIVERSE  # noqa: PLC0415
+
     universe = set(W.wide_universe())
-    missing = [c for c in W.PROD_MANUAL_ENTRY_CODES if c not in universe]
+    basket = list(W.PROD_MANUAL_ENTRY_CODES or ())
+    probe = set(VALIDATION_UNIVERSE)
+
+    research = [c for c in basket if c not in probe]
+    missing = [c for c in research if c not in universe]
     assert not missing, (
         f"以下观察篮标的不在回测宇宙内 ⇒ 建模时被静默跳过：{missing}")
+
+    leaked = [c for c in basket if c in probe and c in universe]
+    assert not leaked, (
+        f"链路验证标的出现在回测宇宙里 ⇒ 会参与动量排名/breadth/绩效评估：{leaked}\n"
+        "→ 探针只允许存在于 VALIDATION_UNIVERSE（仅订阅 + 观察篮）。")
 
 
 def test_production_basket_is_empty_after_r15():
@@ -152,10 +171,36 @@ def test_production_basket_is_empty_after_r15():
     日后很可能被重新启用。**一旦有人往生产塞回任何代码，本用例立即变红**，
     强制其先回测量一遍代价（实测 Sharpe -0.69 / 收益 -26pt / 回撤翻倍），
     而不是悄悄把这块从未验证过的仓位来源加回去。
+
+    【2026-10-29 增补「链路验证通道」】live 切换后 OWNER 要求用小额 ETF 验证下单
+    链路，这确实是「往篮子里放东西」，但与 R15 否决的那件事**性质不同**：
+      R15 否决的是「LLM 选股 × 5 槽 × 全程豁免趋势退出」—— 它**替代研究样本**；
+      探针是「1 只 × 固定 ≤2 万 × 非候选池标的」—— 它**不参与任何评估**。
+    故本守卫不再要求探针也走 consensus，而是把「探针」定义成**四条硬约束**，
+    任一条不满足即退回原棘轮（必须先跑 consensus 才能启用）：
+      ① 篮子 ⊆ VALIDATION_UNIVERSE（不得混入个股）
+      ② 只允许 1 只（多只 = 开始承担组合风险，不再是探针）
+      ③ manual_entry_amount > 0（否则会退回 40% 单仓 sizing，成为重仓建仓）
+      ④ manual_entry_amount ≤ 2 万（小额）
     """
-    assert tuple(W.PROD_MANUAL_ENTRY_CODES or ()) == (), (
-        f"生产观察篮非空：{W.PROD_MANUAL_ENTRY_CODES}。"
-        f"重新启用前请先跑："
-        f"python strategy/_evolve_wf.py --mode consensus --track defect "
-        f"--baseline N1_观察篮实盘现状_豁免，确认代价可接受后再启用，"
-        f"并同步更新本守卫与 docs/AUTOMATIONS.md 的铁律表")
+    from config.settings import STRATEGY_PARAMS, VALIDATION_UNIVERSE  # noqa: PLC0415
+
+    basket = tuple(W.PROD_MANUAL_ENTRY_CODES or ())
+    if not basket:
+        return  # R15 状态，合法
+
+    probe = set(VALIDATION_UNIVERSE)
+    amt = float(STRATEGY_PARAMS.get("manual_entry_amount", 0) or 0)
+    is_probe = (
+        set(basket) <= probe            # ①
+        and len(basket) <= 1            # ②
+        and amt > 0                     # ③
+        and amt <= 20_000.0             # ④
+    )
+    assert is_probe, (
+        f"生产观察篮非空且**不满足链路验证四条硬约束**：{basket}"
+        f"（amount={amt:,.0f}，probe={sorted(probe)}）。\n"
+        f"若是研究用途篮子，请先跑：\n"
+        f"  python strategy/_evolve_wf.py --mode consensus --track defect "
+        f"--baseline N1_观察篮实盘现状_豁免\n"
+        f"确认代价可接受后再启用，并同步更新本守卫与 docs/AUTOMATIONS.md 的铁律表。")

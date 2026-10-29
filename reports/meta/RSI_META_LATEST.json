@@ -1,14 +1,14 @@
 {
- "generated_at": "2026-10-28 23:10:55",
+ "generated_at": "2026-10-29 20:18:13",
  "search_space": {
-  "total": 76,
+  "total": 77,
   "by_class": {
    "仅实盘": 23,
    "死参数": 3,
-   "双向可验证": 49,
+   "双向可验证": 50,
    "别名可验证": 1
   },
-  "usable_ratio": 0.645,
+  "usable_ratio": 0.649,
   "rows": [
    {
     "param": "ma_short",
@@ -225,6 +225,21 @@
     "note": "同名读取，闸门可验证",
     "live_files": {
      "engine/event_engine.py": 1,
+     "strategy/trend_strategy.py": 1
+    },
+    "research_files": {
+     "strategy/_evolve_wf.py": 1,
+     "strategy/backtest_daily.py": 1
+    }
+   },
+   {
+    "param": "entry_max_ext_ma60",
+    "live": 1,
+    "research": 2,
+    "alias": [],
+    "class": "双向可验证",
+    "note": "同名读取，闸门可验证",
+    "live_files": {
      "strategy/trend_strategy.py": 1
     },
     "research_files": {
@@ -941,12 +956,13 @@
    },
    {
     "param": "max_positions",
-    "live": 9,
+    "live": 10,
     "research": 4,
     "alias": [],
     "class": "双向可验证",
     "note": "同名读取，闸门可验证",
     "live_files": {
+     "core/qmt_health.py": 1,
      "engine/event_engine.py": 1,
      "engine/observability.py": 1,
      "strategy/_opt_earnrev.py": 1,
@@ -1244,6 +1260,7 @@
    "_backup/scripts_archive_20261008/_probe_tvs.py",
    "_backup/scripts_archive_20261008/_r21_diag.py",
    "_backup/scripts_archive_20261008/_r21_verify.py",
+   "core/qmt_health.py",
    "diag_equity_bug.py",
    "engine/event_engine.py",
    "engine/observability.py",
@@ -1286,32 +1303,32 @@
   {
    "id": "ae0e2431",
    "name": "盘后复盘 OBSERVE",
-   "last_run": "2026-10-21 15:39",
-   "age_days": 7.3,
-   "stale": true,
-   "status": "⚠ 停摆"
+   "last_run": "2026-10-29 15:38",
+   "age_days": 0.2,
+   "stale": false,
+   "status": "✓ 运行中"
   },
   {
    "id": "98ffc7a2",
    "name": "盘前就绪 PRE-MARKET",
-   "last_run": "2026-10-20 09:14",
-   "age_days": 8.6,
-   "stale": true,
-   "status": "⚠ 停摆"
+   "last_run": "2026-10-29 09:31",
+   "age_days": 0.4,
+   "stale": false,
+   "status": "✓ 运行中"
   },
   {
    "id": "789d671e",
    "name": "上午自进化 AM-EVOLVE",
-   "last_run": "2026-10-21 11:55",
-   "age_days": 7.5,
-   "stale": true,
-   "status": "⚠ 停摆"
+   "last_run": "2026-10-29 12:29",
+   "age_days": 0.3,
+   "stale": false,
+   "status": "✓ 运行中"
   },
   {
    "id": "d8013e93",
    "name": "周中自进化 PM-EVOLVE",
    "last_run": "2026-10-21 18:31",
-   "age_days": 7.2,
+   "age_days": 8.1,
    "stale": true,
    "status": "⚠ 停摆"
   },
@@ -1319,14 +1336,14 @@
    "id": "f093d93b",
    "name": "周度深度 SYNTHESIZE",
    "last_run": "2026-10-10 22:23",
-   "age_days": 18.0,
+   "age_days": 18.9,
    "stale": true,
    "status": "⚠ 停摆"
   },
   {
    "id": "ebde5d30",
    "name": "守护兜底 GUARD",
-   "last_run": "2026-10-28 22:18",
+   "last_run": "2026-10-29 19:50",
    "age_days": 0.0,
    "stale": false,
    "status": "✓ 运行中"
@@ -1334,26 +1351,26 @@
   {
    "id": "2534a859",
    "name": "工程维护 17:00",
-   "last_run": "2026-10-21 17:05",
-   "age_days": 7.3,
-   "stale": true,
-   "status": "⚠ 停摆"
+   "last_run": "2026-10-29 17:06",
+   "age_days": 0.1,
+   "stale": false,
+   "status": "✓ 运行中"
   },
   {
    "id": "1c6e4605",
    "name": "开仓归因日报",
-   "last_run": null,
-   "age_days": null,
+   "last_run": "2026-10-29 15:43",
+   "age_days": 0.2,
    "stale": false,
-   "status": "待首跑（新增）"
+   "status": "✓ 运行中"
   },
   {
    "id": "6265093f",
    "name": "量测卫生守卫",
-   "last_run": null,
-   "age_days": null,
+   "last_run": "2026-10-29 16:14",
+   "age_days": 0.2,
    "stale": false,
-   "status": "待首跑（新增）"
+   "status": "✓ 运行中"
   },
   {
    "id": "4a425d4f",
@@ -1366,12 +1383,12 @@
  ],
  "ledger": {
   "exists": true,
-  "size_kb": 569.5,
-  "rounds": 58,
-  "rejected_mentions": 191,
-  "landed_mentions": 9,
-  "falsified_mentions": 172,
-  "lines": 8030
+  "size_kb": 586.8,
+  "rounds": 59,
+  "rejected_mentions": 198,
+  "landed_mentions": 12,
+  "falsified_mentions": 175,
+  "lines": 8227
  },
  "capability": [
   {
@@ -1406,7 +1423,7 @@
   }
  ],
  "baseline_drift": {
-  "checked": 52,
+  "checked": 53,
   "drift_n": 0,
   "unmapped_n": 75,
   "drift": [],
@@ -1957,10 +1974,10 @@
   {
    "pri": "P0",
    "target": "循环活性",
-   "action": "恢复 6 个停摆/未运行任务",
-   "detail": "盘后复盘 OBSERVE、盘前就绪 PRE-MARKET、上午自进化 AM-EVOLVE、周中自进化 PM-EVOLVE、周度深度 SYNTHESIZE、工程维护 17:00",
+   "action": "恢复 2 个停摆/未运行任务",
+   "detail": "周中自进化 PM-EVOLVE、周度深度 SYNTHESIZE",
    "why": "停摆期间没有任何观测与裁决 ⇒ 自进化链条断掉（10-22~10-28 已发生一次）"
   }
  ],
- "elapsed_sec": 1.42
+ "elapsed_sec": 2.62
 }

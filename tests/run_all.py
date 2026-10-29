@@ -84,6 +84,7 @@ def _collect_tests():
             "tests.test_market_staleness_guard",
             # 【2026-10-07 AM-EVOLVE R20】陈旧报价盯市冻结守卫（P0：伪快照虚增权益）
             "tests.test_stale_valuation_guard",
+            "tests.test_mark_price_fallback",
             # 【2026-10-07 PM R21】账本「陈旧盯市污染」守卫：AM 已修「不再产生
             # 新污染」，但已被污染的历史快照仍在库里 ⇒ 10-08 的 prev_asset 会
             # 取到虚高的 1,020,446.6，账本将记一笔 −4.4% 的假亏损（同型 R14）。
@@ -285,6 +286,13 @@ def _collect_tests():
             #   本模块钉死：字段默认空 / 旧库幂等迁移 / 补写不污染原始事实 /
             #   空入参不得抛错（该字段绝不允许影响交易路径）。
             "tests.test_signal_blocked_by",
+            # 【2026-10-29】ETF 小额链路验证配置守卫。
+            #   起因：OWNER 切 live 后要求「加一个小金额 ETF 验证系统功能」。
+            #   三个静默失败点：① 验证标的混进候选池（会按 40% 单仓被买 ≈7,900 元）
+            #   ② 订阅清单两份实现分叉（重启能收、重连收不到）③ 固定金额被手滑放大。
+            #   本模块钉死：验证标的必在 STOCK_CODES 之外 / 订阅单一事实源 /
+            #   fixed_amount 默认必须为 0（主路径零行为影响）。
+            "tests.test_etf_validation_probe",
             # 【2026-10-29】miniQMT 交互健康面板守卫。
             #   用户顾虑「miniQMT 是否还在正常响应」，而最危险的失败模式是
             #   **静默降级为 mock**：不报错、不熔断，只悄悄禁掉全部成交

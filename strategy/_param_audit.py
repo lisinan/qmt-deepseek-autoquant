@@ -154,6 +154,9 @@ CONTRACT_LIVE_ONLY: Dict[str, str] = {
     "rotation_cooldown_sec": "轮动冷却以交易日/秒两套口径，回测未建模秒级冷却",
     "momentum_scope": "动量统计范围（分钟/日线）回测固定日线",
     "require_daily_data": "实盘「无日线则拒绝入场」的保护，回测天然有日线",
+    # 链路验证专用（2026-10-29）：观察篮「单笔固定金额」只在实盘引擎读取，
+    #   回测 BacktestConfig 无此概念，且它对 P0 无任何读取点 ⇒ 不可回测验证。
+    "manual_entry_amount": "live-only 链路验证参数（回测无观察篮固定金额概念）",
 }
 
 # 死参数（全仓库生产代码无读点）→ 任何网格纯浪费

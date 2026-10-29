@@ -229,7 +229,7 @@ GUARD 存活兜底(每小时,含 paper 断言) ─┐
 - **解释器**：`C:\Users\lisinan\.conda\envs\qmt\python.exe`（其他解释器会缺 xtquant/sqlite3）
 - **PATH 前置**：`...\qmt\Library\bin` 与 `...\qmt\DLLs`（sqlite3 DLL 依赖）
 - **交易引擎**：`python main.py --web`（端口 5000），需在可达 xtdata 的**桌面持久会话**运行
-- **miniQMT**：`C:\pazq_qmt\bin.x64\XtItClient.exe`（用户手动启动 + 勾自动登录）
+- **miniQMT**：`C:\pazq_qmt\bin.x64\XtItClient.exe`（2026-10-29 起由 `scripts/startup_all.bat` 开机自动拉起，需以 `bin.x64` 为工作目录；须在客户端勾选自动登录，否则只停在登录界面）
 - **守护**：`scripts/guardian.py`（5min 轮询）+ `scripts/health_check.py`（存活检测/自启动）
 - **单实例锁**：`logs/engine.pid`；2026-09-16 修复 `main.py::_pid_alive` 致命 bug（原用 `OpenProcess` 单判据，会把强杀后句柄未回收的死进程误判存活 → 永久拒绝启动、守护反复拉起却起不来），现改用 `GetExitCodeProcess(STILL_ACTIVE=259)` 判定
 | `rotation_require_daily_gate` | **True（2026-09-23 21:20 OWNER 授权启用）** | 轮动建仓须通过与主信号路径同一日线闸门 `trend_up or bias>=min_daily_bias`。**背景（真实缺陷）**：`_maybe_rotate` 两条分支（event_engine.py 补强空槽 / 弱换强）只要 `is_breakout`（日内涨幅≥1.5%）就无视 `daily-gate` 的 HOLD 直接买入，绕过了 09-22 落盘的 `min_daily_bias`；而 `backtest_daily.py` **无任何 rotation 逻辑**（grep 零命中）⇒ 第二条「实盘有、回测无」口径背离。实盘铁证：2026-09-23 10:00:52 以 `bias=-0.30 trend_up=False` 买入 688008.SH，3 秒后即被「趋势破位离场」判定卖出（T+1 锁住）。**回测**：代理字段 `breakout_bypass_gate` 90×6 单调剂量反应 0.5 −0.208 / 1.0 −0.187 / **1.5 −0.164** / 2.5 −0.038 / 3.0 −0.046 / 99(关闭) 0.000；4 窗口共识 1.5 **全负**（−0.083/−0.063/−0.164/−0.038）。**★ 启用依据（缺陷修复通道）**：OWNER 授权增设 `--track defect` 后，以「实盘现状 G1」为**反向对照**重跑（`--baseline "G1_轮动绕闸门_1.5"`），修复收益 60×9 +0.083 / 75×7 +0.063 / 90×6 +0.164 / 120×4 +0.038 → 均值 **+0.087 ≥ 0**、最差 **+0.038 ≥ −0.05** ⇒ 闸门②「方向不劣化」PASS，①IS↑ PASS（ret 128.6→159.0%、Sh 1.10→1.25），③④⑤⑥⑦⑧ 全 PASS，tests 239/0/239 ⇒ **启用**。**不会空仓**：只拦 `trend_up=False 且 bias<2.0` 的弱候选，`trend_up=True` 仍放行。**热读参数**：无需重启，下一轮动评估周期（120s 节流）生效 ⇒ 次日开盘生效。可逆：置回 False |

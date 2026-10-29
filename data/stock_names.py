@@ -18,7 +18,7 @@ import threading
 import time
 from typing import Dict, Optional
 
-from config.settings import UNIVERSE, SECTOR_CONFIG
+from config.settings import UNIVERSE, SECTOR_CONFIG, VALIDATION_UNIVERSE
 
 logger = logging.getLogger(__name__)
 
@@ -31,11 +31,16 @@ _FULL_TTL = 3600  # 1 小时
 
 
 def _seed_static() -> Dict[str, str]:
-    """静态名称：UNIVERSE + 各产业链环节 + 常见指数。"""
+    """静态名称：UNIVERSE + 验证标的 + 各产业链环节 + 常见指数。"""
     m: Dict[str, str] = {}
     for code, name in UNIVERSE.items():
         if name:
             m[code] = name
+    # 验证标的（VALIDATION_UNIVERSE）只为**显示**服务：不进候选池，
+    # 但持仓/成交表里要能显示中文名。2026-10-29 新增。
+    for code, name in VALIDATION_UNIVERSE.items():
+        if name:
+            m.setdefault(code, name)
     for sec in SECTOR_CONFIG.get("sectors", {}).values():
         for code, name in sec.get("stocks", []):
             if name:

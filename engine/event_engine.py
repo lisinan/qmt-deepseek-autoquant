@@ -40,7 +40,7 @@ from config.settings import (
     PERSIST_HOLD_SIGNALS, PORTFOLIO_CONFIG, REFRESH_INTERVAL, RISK_PARAMS,
     RISK_SNAPSHOT_MIN_INTERVAL, SESSION_GUARD, SINGLETON_LOCK, STOCK_CODES,
     STRATEGY_MODE, STRATEGY_PARAMS, T1_RESTRICTION, ENTRY_PROTECT_MINUTES,
-    TRADE_COST_PCT, UNIVERSE,
+    TRADE_COST_PCT, UNIVERSE, VALIDATION_UNIVERSE,
 )
 from core.notices import system_notice, latest_notices
 from core.auto_reconnect import AutoReconnector
@@ -668,6 +668,25 @@ class EventEngine:
                 logger.debug("_daily_codes 取动态活跃池失败(忽略): %s", e)
         return list(dict.fromkeys(codes))
 
+    def _subscribe_codes(self) -> List[str]:
+        """行情订阅清单 = UNIVERSE + VALIDATION_UNIVERSE + 动态候选池活跃股。
+
+        【2026-10-29 抽出单一事实源】原来「启动订阅」(此处下方) 与「券商重连后
+        重发订阅」**各写一份** ``list(UNIVERSE.keys()) + dyn``。任何一边漏改，
+        就会出现「重启后能收行情、断线重连后收不到」的**静默分叉**——正是
+        R43 第 24 条「同一事实两份实现必然漂移」的同型缺陷。
+
+        ★ VALIDATION_UNIVERSE 为何只在这里进入：
+          订阅 ≠ 候选池。验证标的只需要 tick（供观察篮建仓），
+          绝不能进 candidate_codes / 日线上下文 / 基准 / 板块评分
+          （理由见 config/settings.py 的 VALIDATION_UNIVERSE 注释）。
+        回滚：把下面第一行的 ``+ list(VALIDATION_UNIVERSE.keys())`` 删掉即可。
+        """
+        codes = list(UNIVERSE.keys()) + list(VALIDATION_UNIVERSE.keys())
+        if self.dynamic_universe is not None:
+            codes += list(self.dynamic_universe.active_codes)
+        return list(dict.fromkeys(codes))
+
     def _refresh_universe_async(self) -> None:
         """后台刷新动态候选池（不阻塞 engine.run()）。
 
@@ -1194,14 +1213,14 @@ class EventEngine:
             daemon=True,
         ).start()
 
-        # 合并静态 UNIVERSE + 动态活跃池 → 订阅（优先用缓存的活跃池）
-        codes = list(UNIVERSE.keys())
+        # 合并静态 UNIVERSE + VALIDATION_UNIVERSE + 动态活跃池 → 订阅
+        # 【2026-10-29】改为调用单一事实源 _subscribe_codes()（见其 docstring）
         if self.dynamic_universe is not None:
             dynamic_codes = self.dynamic_universe.active_codes
-            codes = list(dict.fromkeys(codes + dynamic_codes))   # 保留顺序去重
             logger.info("动态候选池: %d 只活跃 (总动态 %d 只)",
                         len(dynamic_codes),
                         len(self.dynamic_universe.codes))
+        codes = self._subscribe_codes()
         qmt_client.subscribe(codes)
         # 外网自检（代理 / Tushare）——见 _probe_network_async 说明
         self._probe_network_async()
@@ -2390,6 +2409,15 @@ class EventEngine:
         codes = STRATEGY_PARAMS.get("manual_entry_codes") or []
         if not codes:
             return
+        # 【2026-10-29 live 链路验证】单笔固定金额（元）。0 = 旧行为（按风险预算
+        # sizing）。热读，改值不需重启；异常值一律降级为 0（不可让验证参数
+        # 把主路径搞崩）。
+        try:
+            _fixed_amount = float(STRATEGY_PARAMS.get("manual_entry_amount", 0) or 0)
+        except (TypeError, ValueError):
+            _fixed_amount = 0.0
+        if _fixed_amount < 0:
+            _fixed_amount = 0.0
 
         # 跨日清空「当日已卖」集合
         today = datetime.now().strftime("%Y-%m-%d")
@@ -2440,7 +2468,7 @@ class EventEngine:
             # 的成交不落库 → 引擎当天明明买了 7 笔，signals 表却连日 0 行，
             # 页面「实时信号」只能显示几天前的旧信号（看着像停摆）。
             self._save_signal(sig)
-            self._handle_buy(sig, tick, current_prices)
+            self._handle_buy(sig, tick, current_prices, fixed_amount=_fixed_amount)
             if code in {c for c, p in self._positions.items() if p.quantity > 0}:
                 self._manual_positions.add(code)
                 held.add(code)
@@ -3061,7 +3089,19 @@ class EventEngine:
             except Exception as e:
                 logger.warning("对账委托 %s 异常(忽略): %s", oid, e)
 
-    def _handle_buy(self, sig: Signal, tick, current_prices: Dict) -> None:
+    def _handle_buy(self, sig: Signal, tick, current_prices: Dict,
+                    fixed_amount: float = 0.0) -> None:
+        """买入执行（唯一落单口）。
+
+        ``fixed_amount``（元，默认 0 = 不生效）【2026-10-29 新增】：
+          仅由 ``_manual_entry_step`` 传入（观察篮固定金额建仓，用于 live 小额
+          链路验证）。>0 时用「金额 ÷ 现价，向下取整到 100 份」**替代**风险预算
+          sizing，但仍照旧乘连亏降仓系数 ``position_scale`` 并走现金夹紧/风控。
+          为什么不直接靠 sizing：sizing 是「总资产 40% 单仓 × 现金夹紧」，
+          现金 8,337 时会被买到 ≈7,900 元——那是重仓，不是小额验证。
+          ★ 主信号路径 / 轮动路径**不传**此参 ⇒ 对已验证策略零行为影响。
+          回滚：把默认值改回不可用（删掉本参 + 下面 fixed_qty 分支）即可。
+        """
         # 持仓名称解析为规范中文名（兜底回退代码），避免仪表板持仓只显示代码
         # 【2026-09-30 AM-EVOLVE R14】合成行情闸门（P0）：mock 价与真实市价可差
         # 1~6 倍，按它成交会凭空制造盈亏（2026-09-30 实盘铁证：假亏 −213,354.20
@@ -3093,6 +3133,16 @@ class EventEngine:
         if price <= 0:
             self._log_reject_once(sig.code, "price<=0(tick 无有效价)")
             return
+        # 【2026-10-29】观察篮固定金额建仓（小额链路验证）。默认 0 ⇒ 完全跳过。
+        _fixed_qty = 0
+        if fixed_amount and fixed_amount > 0:
+            _fixed_qty = int(fixed_amount / price / 100) * 100
+            if _fixed_qty <= 0:
+                self._log_reject_once(
+                    sig.code,
+                    f"fixed_amount={fixed_amount:.0f}元 不足一手"
+                    f"({price * 100:.0f}元/手) ⇒ 无法按小额验证建仓")
+                return
         # 【2026-09-26 R9】行情陈旧阻断：价格若是 N 小时前的冻结快照（典型是
         # miniQMT 停止推送而 get_full_tick 反复返回同一份缓存），按它建仓等于
         # 盲打——成交价可能偏离真实市价数个百分点。此分支在行情新鲜时永不进入。
@@ -3155,6 +3205,9 @@ class EventEngine:
             self._conv_log_date = date.today()
             logger.info("[信念仓位] AI 宽度达标 ⇒ 新开仓目标金额 ×%.2f", conv_mult)
         qty = int(raw_qty * scale * conv_mult)
+        if _fixed_qty > 0:
+            # 观察篮：金额说了算（只保留连亏降仓系数，不再叠加信念乘子）
+            qty = int(_fixed_qty * scale)
         # ---- 买入力（buying power）夹紧【P0 修正 2026-09-02】----
         # 原实现完全没有现金校验，paper 分支直接 ``self._cash -= qty*price``。
         # 配置上 max_single_position_pct(0.30) × max_positions(5) = 150%，本身就
@@ -3722,10 +3775,9 @@ class EventEngine:
         不同步。此处重发行情订阅 + 立即重同步真实持仓，使整条交易路径恢复一致。
         """
         try:
-            codes = list(UNIVERSE.keys())
-            if self.dynamic_universe is not None:
-                dyn = self.dynamic_universe.active_codes
-                codes = list(dict.fromkeys(codes + dyn))
+            # 【2026-10-29】原来此处自写一份 UNIVERSE+dyn（与启动订阅重复，
+            # 曾导致两处清单可能分叉）⇒ 改为单一事实源 _subscribe_codes()。
+            codes = self._subscribe_codes()
             qmt_client.subscribe(codes)
             if self.exec_mode == "live":
                 self._sync_broker_positions()
@@ -3736,6 +3788,51 @@ class EventEngine:
             logger.info("券商重连恢复：重订阅 %d 只行情", len(codes))
         except Exception as e:
             logger.warning("券商重连恢复钩子异常(忽略): %s", e)
+
+    def _mark_price_fallback(self, code: str, default: float) -> float:
+        """券商未给 ``market_value`` 时的盯市价兜底（2026-10-29 live 定向修复）。
+
+        【为什么需要】``_sync_broker_positions`` 原先在 ``mv`` 缺失时**直接回退
+        ``avg_cost``**。2026-10-29 live 首日实测：300308.SZ 因此被记成成本价
+        **194.757**（真实价 582.05）⇒ ``_total_asset()`` 算成 27,813，对
+        ``peak_asset`` 66,542.31 是 **−58.2%**；而 ``risk/manager.py`` 的
+        ``max_drawdown`` 判定（``on_asset_update``）**没有陈旧行情守卫**，
+        会立刻 ``_halt()`` 并冻结开仓 3 天。
+        ⇒ 一个「报价字段缺失」就能打出账户级熔断，这是量测输入污染风控的
+        同型缺陷（与 10-07 伪快照虚高、09-30 合成价同一根因）。
+
+        【取值顺序】全部读**已在内存/已缓存**的价，不新增任何网络调用：
+          ① 本轮 tick 快照 ``_last_ticks`` —— ``_run_once`` 在调用本函数
+             （2057 行）之前刚写完，就是最新一轮快照；
+          ② 日线上下文最新收盘 ``DailyFeatures.close``；
+          ③ 最后才回退 ``default``（= avg_cost，即旧行为）——保底不抛异常。
+
+        ★ **只在 mv 无效时进入** ⇒ 券商正常返回市值时**零行为变化**。
+        ★ 兜底价随后仍会被 ``_update_position_marks`` 用新鲜 tick 覆盖，二者
+          不冲突；本方法只避免「在拿到 tick 之前先按成本价熔断一次」。
+        ★ 这一层挡不住「券商返回了市值但市值本身是成本价口径」的脏数据
+          （那需要偏离度校验，属另一个改动，未在本轮引入）。
+
+        回滚：把 ``_sync_broker_positions`` 里的调用换回
+        ``(mv / qty) if qty > 0 and mv > 0 else (avg or 0.0)`` 即可，本方法
+        可一并删除（无其他调用点）。
+        """
+        try:
+            lt = (getattr(self, "_last_ticks", None) or {}).get(code) or {}
+            p = float(lt.get("price") or 0)
+            if p > 0:
+                return p
+        except (TypeError, ValueError, AttributeError):
+            pass
+        try:
+            if self.daily is not None and self.daily.has(code):
+                feat = self.daily.features(code)
+                c = float(getattr(feat, "close", 0) or 0)
+                if c > 0:
+                    return c
+        except Exception:
+            pass
+        return default
 
     def _sync_broker_positions(self) -> None:
         """live 模式：每轮以 broker 为权威源，把本地账本与真实持仓/资产对齐。
@@ -3776,7 +3873,16 @@ class EventEngine:
                 avg = float(p.get("avg_cost") or 0.0)
                 mv = float(p.get("market_value") or 0.0)
                 meta = self._pos_meta.get(code, {})
-                last = (mv / qty) if qty > 0 and mv > 0 else (avg or 0.0)
+                # 【2026-10-29 live 兜底】mv 缺失时**不再**回退 avg_cost：
+                # 那会把盯市价压成成本价（300308 实测 194.757 vs 真实 582.05），
+                # 总资产被低估 58% ⇒ 直接打出 max_drawdown 熔断并冻结开仓。
+                # 改走 _mark_price_fallback（tick 快照 → 日线收盘 → 才回退成本价）。
+                # 券商正常返回市值时仍走第一分支 ⇒ 对既有行为零影响。
+                # 回滚：换回 `last = (mv / qty) if qty > 0 and mv > 0 else (avg or 0.0)`。
+                if qty > 0 and mv > 0:
+                    last = mv / qty
+                else:
+                    last = self._mark_price_fallback(code, avg or 0.0)
                 # 【2026-10-21 C1】合并券商可用/可卖数量（WP-B 已加 Position.available）。
                 avail = int(p.get("available") or 0)
                 if code in self._positions:

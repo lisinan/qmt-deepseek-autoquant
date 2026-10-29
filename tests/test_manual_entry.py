@@ -45,8 +45,12 @@ def _make_engine(held, bought=None):
     # 注入 max_positions=5 使测试与生产解耦、保住原意（不放宽任何断言）。
     eng.max_positions = 5
     # 记录买入，并把代码放进持仓（模拟 _handle_buy 成功建仓）
-    def _buy(sig, tick, cp):
+    # 【2026-10-29】替身必须镜像真签名：_handle_buy 新增了 fixed_amount 关键字
+    #   （观察篮固定金额建仓）。替身少一个参数会让「观察篮传了固定金额」这件事
+    #   在测试里直接 TypeError —— 那不是「测到了新逻辑」，而是替身与真签名漂移。
+    def _buy(sig, tick, cp, fixed_amount=0.0):
         eng._buys.append(sig.code)
+        eng._last_fixed_amount = fixed_amount
         eng._positions[sig.code] = Position(
             code=sig.code, name=sig.name, quantity=100,
             avg_cost=sig.price, last_price=sig.price)
@@ -79,6 +83,21 @@ def _with_codes(codes, exempt=True):
         settings.STRATEGY_PARAMS["manual_entry_exit_exempt"] = old_ex
 
 
+@contextmanager
+def _with_amount(amount):
+    """临时改写观察篮「单笔固定金额」，用完恢复（含键缺失的情形）。"""
+    missing = "manual_entry_amount" not in settings.STRATEGY_PARAMS
+    old = settings.STRATEGY_PARAMS.get("manual_entry_amount")
+    settings.STRATEGY_PARAMS["manual_entry_amount"] = amount
+    try:
+        yield
+    finally:
+        if missing:
+            settings.STRATEGY_PARAMS.pop("manual_entry_amount", None)
+        else:
+            settings.STRATEGY_PARAMS["manual_entry_amount"] = old
+
+
 def test_manual_entry_buys_unheld_codes():
     eng = _make_engine(held=[])
     with _with_codes(CODES):
@@ -88,6 +107,45 @@ def test_manual_entry_buys_unheld_codes():
     # 2026-09-22：买入决策必须写入信号表，否则页面「实时信号」看不到真实成交
     assert sorted(s.code for s in eng._saved_signals) == sorted(CODES)
     assert all(s.side == "BUY" for s in eng._saved_signals)
+
+
+def test_manual_entry_passes_fixed_amount_from_settings():
+    """【2026-10-29】观察篮必须把 ``manual_entry_amount`` 透传给 ``_handle_buy``。
+
+    为什么必须钉：live 切换后 OWNER 要求「小额 ETF 验证系统功能」。若这里漏传，
+    ``_handle_buy`` 会退回风险预算 sizing（单仓 40% × 现金夹紧），8,337 现金
+    会被买到 ≈7,900 元 —— 那是重仓建仓，不是小额验证，而且**不会报错**：
+    日志只会显示「建仓成功」，人要等到看持仓市值才发现买多了。
+    """
+    eng = _make_engine(held=[])
+    with _with_amount(1500.0):
+        with _with_codes(["510050.SH"]):
+            EventEngine._manual_entry_step(eng, _ticks(["510050.SH"]), {})
+    assert eng._buys == ["510050.SH"], eng._buys
+    assert float(eng._last_fixed_amount) == 1500.0, (
+        f"固定金额未透传（收到 {eng._last_fixed_amount!r}）⇒ 会按 40% 单仓建仓")
+
+
+def test_manual_entry_amount_zero_keeps_legacy_sizing():
+    """金额为 0 = 旧行为：透传 0，让 ``_handle_buy`` 走原风险预算 sizing。"""
+    eng = _make_engine(held=[])
+    with _with_amount(0.0):
+        with _with_codes(["300502.SZ"]):
+            EventEngine._manual_entry_step(eng, _ticks(["300502.SZ"]), {})
+    assert eng._buys == ["300502.SZ"]
+    assert float(eng._last_fixed_amount) == 0.0, (
+        "0 必须原样透传 —— 任何非 0 都会静默改变主 sizing 口径")
+
+
+def test_manual_entry_amount_bad_value_degrades_to_zero():
+    """配置写坏（非数值/负数）必须降级为 0，绝不能把买入路径搞崩。"""
+    for bad in ("abc", None, -500.0):
+        eng = _make_engine(held=[])
+        with _with_amount(bad):
+            with _with_codes(["300502.SZ"]):
+                EventEngine._manual_entry_step(eng, _ticks(["300502.SZ"]), {})
+        assert eng._buys == ["300502.SZ"], f"amount={bad!r} 时不应阻断建仓"
+        assert float(eng._last_fixed_amount) == 0.0, f"amount={bad!r} 应降级为 0"
 
 
 def test_manual_entry_skips_already_held():
