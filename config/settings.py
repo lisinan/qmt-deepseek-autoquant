@@ -808,7 +808,13 @@ REFRESH_INTERVAL = 3        # 行情轮询间隔（秒）
 SESSION_GUARD = True             # 非交易时段跳过行情/策略/下单
 IDLE_REFRESH_INTERVAL = 60       # 非交易时段轮询间隔（秒），按 5s 分片可及时响应停止
 SINGLETON_LOCK = True            # 单实例互斥（防重复启动引擎堆积成僵尸进程）
-EXECUTION_MODE = "paper"    # "paper" 模拟 / "live" 真实下单
+# 【2026-10-29 15:02 用户明确指令切换】paper → live（真实资金）。
+# 为什么改这个"单一事实源"而不是只加 --mode live：守护进程
+# scripts/health_check.py:288 拉起引擎用的是 `python main.py --web`（不带参数），
+# 若此处仍是 paper，则 live 引擎一旦异常退出，守护会把它**静默重启成 paper**
+# —— 人以为还在盯实盘，实际已是模拟盘。这是本文件必须同步的原因。
+# 回滚：改回 "paper" 并重启引擎（真实持仓不会因此变动，只是不再下新单）。
+EXECUTION_MODE = "live"     # "paper" 模拟 / "live" 真实下单
 STRATEGY_MODE = "single"    # "single" 单标的 / "portfolio" 组合（Top-N）
 INITIAL_CASH = 1_000_000.0  # paper 模式初始资金
 DATA_SOURCE = "auto"        # "auto" 优先 xtdata，失败回退 mock；或强制 "mock"
