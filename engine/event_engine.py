@@ -451,6 +451,8 @@ class EventEngine:
         # 断链时归零 ⇒ 自动回落到本地拼装口径。回滚：删除本行与两处赋值即可。
         self._broker_total_asset: float = 0.0
         self._broker_total_ts: float = 0.0
+        # 盯市价兜底第三档的日线收盘缓存：(code, 交易日) -> (取值时刻, close)
+        self._mark_close_cache: Dict[tuple, tuple] = {}
         self._pending_ai: Dict[str, threading.Thread] = {}
 
         self._stop_flag = threading.Event()
@@ -691,6 +693,18 @@ class EventEngine:
         codes = list(UNIVERSE.keys()) + list(VALIDATION_UNIVERSE.keys())
         if self.dynamic_universe is not None:
             codes += list(self.dynamic_universe.active_codes)
+        # 【2026-10-30 P1】**持仓必须订阅** —— 上面三项都是「候选/验证」语义，
+        # 而持仓里完全可能有三者之外的代码：OWNER 手工建仓、观察篮补买、
+        # 策略卖出后又买回的仓位。这类代码收不到 tick ⇒
+        #   _update_position_marks 永不写 last_price ⇒ 只能走
+        #   _mark_price_fallback 第 ③ 档 = avg_cost ⇒ _total_asset() 用成本价
+        #   拼装（实测 300308 被记成 194.246，总资产 27,812.98 vs 真实 65,748，
+        #   **−57.7%**）。券商总资产在 120s 内新鲜时被 _total_asset() 优先使用，
+        #   所以这个缺口平时只污染面板；一旦券商查询连续失败/断连超过 120s，
+        #   拼装口径立刻接管 ⇒ 一个「没订阅」就打出 max_drawdown 熔断。
+        # 放在最后追加（dict.fromkeys 保留首次出现顺序），不改变既有订阅顺序。
+        codes += [c for c, p in (getattr(self, "_positions", None) or {}).items()
+                  if getattr(p, "quantity", 0) > 0]
         return list(dict.fromkeys(codes))
 
     def _refresh_universe_async(self) -> None:
@@ -3830,11 +3844,13 @@ class EventEngine:
         ⇒ 一个「报价字段缺失」就能打出账户级熔断，这是量测输入污染风控的
         同型缺陷（与 10-07 伪快照虚高、09-30 合成价同一根因）。
 
-        【取值顺序】全部读**已在内存/已缓存**的价，不新增任何网络调用：
+        【取值顺序】全部读**已在内存/已缓存**的价（第 ③ 档为一次性网络取数+当日缓存）：
           ① 本轮 tick 快照 ``_last_ticks`` —— ``_run_once`` 在调用本函数
              （2057 行）之前刚写完，就是最新一轮快照；
-          ② 日线上下文最新收盘 ``DailyFeatures.close``；
-          ③ 最后才回退 ``default``（= avg_cost，即旧行为）——保底不抛异常。
+          ② 日线上下文最新收盘 ``DailyFeatures.close``（仅候选池）；
+          ③ 行情源最近一根日线收盘 ``qmt_client.get_history`` ——【2026-10-30
+             新增】专补 ② 覆盖不到的池外持仓（OWNER 手工建仓 / 观察篮补买）；
+          ④ 最后才回退 ``default``（= avg_cost，即旧行为）——保底不抛异常。
 
         ★ **只在 mv 无效时进入** ⇒ 券商正常返回市值时**零行为变化**。
         ★ 兜底价随后仍会被 ``_update_position_marks`` 用新鲜 tick 覆盖，二者
@@ -3859,6 +3875,37 @@ class EventEngine:
                 c = float(getattr(feat, "close", 0) or 0)
                 if c > 0:
                     return c
+        except Exception:
+            pass
+        # ③ 日线上下文覆盖不到的代码，直接向行情源取最近一根日线收盘。
+        # 【2026-10-30 P1】上面第 ② 档只对**候选池**有效（DailyContext 只刷新
+        # UNIVERSE + 动态池），而持仓里完全可能有池外代码（OWNER 手工建仓 /
+        # 观察篮补买 / 策略卖出后又买回）。实测 300308 因此掉到第 ④ 档 =
+        # 成本价 194.246 ⇒ 总资产 27,812.98 对真实 65,748（−57.7%）。
+        # 缓存策略：取到正数缓存一整天；取不到也缓存 300s 再重试（否则
+        # mv 恒缺失时每轮同步都要打一次网络）。
+        try:
+            from datetime import date as _date
+            _today = _date.today().isoformat()
+            _key = (code, _today)
+            _cache = getattr(self, "_mark_close_cache", None)
+            if _cache is None:
+                _cache = self._mark_close_cache = {}
+            _hit = _cache.get(_key)
+            if _hit is not None:
+                _ts, _c = _hit
+                if _c > 0:
+                    return _c
+                if (time.time() - _ts) < 300:
+                    # 负缓存命中：本窗口内不再打网络，直接回退 default
+                    return default
+            _hist = qmt_client.get_history(code, "1d", count=2)
+            _close = 0.0
+            if _hist:
+                _close = float((_hist[-1] or {}).get("close") or 0)
+            _cache[_key] = (time.time(), _close)
+            if _close > 0:
+                return _close
         except Exception:
             pass
         return default
@@ -3951,6 +3998,15 @@ class EventEngine:
             for code in list(self._positions.keys()):
                 if code not in held:
                     self._positions[code].quantity = 0
+            # 【2026-10-30 P1】持仓出现后补订阅（自愈）。
+            # 启动订阅发生在 broker 连接之前（见 _run_forever 的 subscribe 调用），
+            # 那时持仓尚未拉取；盘中 OWNER 手工建仓 / 观察篮补买同样会引入池外
+            # 代码。qmt_client.subscribe 内部按 self.subscribed 去重且无新增时
+            # 直接返回 ⇒ 每轮调用是纯内存开销，不会重复下发。
+            try:
+                qmt_client.subscribe(self._subscribe_codes())
+            except Exception as _sub_err:
+                logger.debug("持仓补订阅失败(忽略): %s", _sub_err)
         except Exception as e:
             logger.debug("broker 持仓同步失败(继续): %s", e)
 

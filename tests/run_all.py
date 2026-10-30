@@ -88,6 +88,9 @@ def _collect_tests():
             "tests.test_live_order_price_type",
             "tests.test_total_asset_broker_authority",
             "tests.test_exit_exempt_declared",
+            # 【2026-10-30 P1】持仓订阅 + 盯市价兜底：池外持仓（OWNER 手工建仓 /
+            # 观察篮补买）原来收不到 tick，盯市价退回成本价 ⇒ 总资产低估 57.7%。
+            "tests.test_position_subscription_mark",
             # 【2026-10-07 PM R21】账本「陈旧盯市污染」守卫：AM 已修「不再产生
             # 新污染」，但已被污染的历史快照仍在库里 ⇒ 10-08 的 prev_asset 会
             # 取到虚高的 1,020,446.6，账本将记一笔 −4.4% 的假亏损（同型 R14）。

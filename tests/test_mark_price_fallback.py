@@ -19,10 +19,13 @@
   ``_halt()``，冻结开仓 ``dd_recover_days=3`` 天。
 
   本轮修复后：mv 缺失时依次用「本轮 tick 快照 → 日线收盘 → 成本价」兜底。
+  【2026-10-30 补充第三档】日线上下文只覆盖**候选池**，持仓里可能有池外代码
+  （OWNER 手工建仓 / 观察篮补买）⇒ 增加「直接向行情源取日线收盘」一档，
+  顺序变为：tick → DailyContext 收盘 → 行情源日线收盘 → 成本价。
 
 本文件锁死四件事：
   ① 券商正常返回市值时**逐位不变**（零回归，不能被兜底逻辑污染）；
-  ② 三级兜底各自的优先级；
+  ② 四级兜底各自的优先级；
   ③ 端到端：mv 缺失时不会打出假回撤熔断；
   ④ **正向对照**：若仍回退成本价则必然熔断 —— 防止「检测器退化成恒绿」
      （R43 第 16 条「合谋式假绿」）。
@@ -93,6 +96,8 @@ def _bare_engine(last_ticks=None, daily=None, positions=None):
     eng.daily = daily
     eng._sync_fail_count = 0
     eng._sync_fail_notice_day = None
+    eng.dynamic_universe = None          # 订阅清单不引入动态池噪声
+    eng._mark_close_cache = {}           # 第三档日线收盘缓存
     return eng
 
 
@@ -118,8 +123,44 @@ def _patched_broker(fake):
         EE.qmt_broker = old
 
 
-def _sync(eng, mv=0.0):
-    with _patched_broker(_FakeBroker([_broker_row(mv)])):
+class _FakeQuoteClient:
+    """行情客户端桩：只实现兜底会用到的 get_history / subscribe。"""
+
+    def __init__(self, close=None):
+        self._close = close
+        self.history_calls = 0
+
+    def get_history(self, code, period="1d", count=100):
+        self.history_calls += 1
+        if self._close is None:
+            return None
+        return [{"code": code, "close": self._close}]
+
+    def subscribe(self, codes):
+        return None
+
+
+@contextmanager
+def _patched_quotes(client=None):
+    """替换模块级 qmt_client。
+
+    【2026-10-30】兜底新增第三档「行情源最近一根日线收盘」——它**会真的发网络
+    请求**。本文件的用例都是在验证「哪些源拿不到」的优先级，若不桩掉行情源，
+    第三档就会把真实收盘价拿回来，用例前提静默失效（实测：应回退成本价的用例
+    变成了 553.0）。默认桩返回 None ⇒ 等价于「行情源也没有」。
+    """
+    old = getattr(EE, "qmt_client", None)
+    EE.qmt_client = client or _FakeQuoteClient(None)
+    try:
+        yield EE.qmt_client
+    finally:
+        EE.qmt_client = old
+
+
+def _sync(eng, mv=0.0, hist_close=None):
+    """跑一轮持仓同步；行情源默认「也拿不到」（hist_close=None）。"""
+    with _patched_broker(_FakeBroker([_broker_row(mv)])), \
+            _patched_quotes(_FakeQuoteClient(hist_close)):
         eng._sync_broker_positions()
     return eng._positions[CODE]
 
@@ -141,7 +182,7 @@ def test_valid_market_value_wins_over_ticks():
         f"有市值时应取 mv/qty={TRUE_PX}，实际 {pos.last_price}")
 
 
-# ---------------------------------------------------------------- ② 三级兜底
+# ---------------------------------------------------------------- ② 四级兜底
 
 def test_missing_mv_uses_live_tick():
     """mv 缺失 → 用本轮 tick 快照（第一优先）。"""
@@ -163,12 +204,25 @@ def test_missing_mv_and_tick_uses_daily_close():
 
 
 def test_all_sources_missing_falls_back_to_cost():
-    """三源全无 → 才回退成本价（旧行为，保底不抛异常）。"""
+    """四源全无（tick / 日线上下文 / 行情源 / 市值）→ 才回退成本价，保底不抛异常。"""
     eng = _bare_engine(last_ticks={}, daily=None)
-    pos = _sync(eng, mv=0.0)
+    pos = _sync(eng, mv=0.0, hist_close=None)
 
     assert abs(pos.last_price - AVG) < 1e-6, (
         f"全无数据时应回退 avg_cost={AVG}，实际 {pos.last_price}")
+
+
+def test_daily_context_missing_uses_quote_history_close():
+    """池外持仓（DailyContext 没有它）→ 第三档直接向行情源取日线收盘。
+
+    事故场景：300308.SZ 被策略卖出后不在候选池，重启后 DailyContext 不含它，
+    旧实现直接掉到成本价 194.246 ⇒ 总资产 27,812.98（真实 65,748）。
+    """
+    eng = _bare_engine(last_ticks={}, daily=None)
+    pos = _sync(eng, mv=0.0, hist_close=573.43)
+
+    assert abs(pos.last_price - 573.43) < 1e-6, (
+        f"池外持仓应取行情源日线收盘 573.43，实际 {pos.last_price}")
 
 
 def test_tick_with_zero_price_is_ignored():
