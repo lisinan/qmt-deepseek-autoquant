@@ -8731,3 +8731,39 @@ self._positions[code] = Position(..., last_price=float(p.get("avg_cost") or 0), 
 
 **守卫终态**：`tests/test_position_subscription_mark.py` 9 条（含 2 条启动初始化回归）；
 全量 `tests/run_all.py` **707/707 PASS（91.85s）**。
+
+---
+
+## R46-b（2026-10-30 21:00，OWNER 授权）live 日内盈亏切权益口径
+
+**授权**：OWNER「2、按你建议调整」（第 1 项 T+1 报单风暴明确「暂时不动」）。
+
+### 改动
+| 文件 | 内容 |
+|---|---|
+| `risk/manager.py` | 新增 `_equity_daily_pnl` 开关 + `set_daily_pnl_equity_mode()`；`on_asset_update` 末位加 `equity_daily_pnl: Optional[bool]`，为 True 时 `_daily_pnl = 总资产 − 当日开盘资产`（锁内、在 daily_stop 判定之前算好）；`on_fill` 在该模式下**不再累加**已实现盈亏（防双计） |
+| `engine/event_engine.py` | `on_asset_update` 调用点传 `equity_daily_pnl=(exec_mode=="live")`；`_restore_engine_state` 中 live **不再恢复**历史 `daily_pnl`（固定 0.0，首轮重算），paper 照旧恢复 |
+
+### 为什么是「权益口径」而不是「修好已实现口径」
+已实现口径在 live 上不可修：它依赖 `avg_cost`，而券商给的 `avg_cost` 是**摊薄成本**
+（含历史已实现盈亏，300308 为 194.246）。只要用成交价减摊薄成本，就会把
+200 元/股以上的历史浮盈算进「当日」，与当日真实盈亏无关。要修只能改成权益差。
+
+### 行为变化（live 才有）
+- 日内亏损熔断 `daily_loss_limit_abs=5,000` / `daily_loss_limit_pct=-3%` 从「事实失效」
+  变为**真实生效**（按 `max(5000, 3%×权益)` 取宽松者，`can_open` 内判定）；
+- 熔断粒度变细：现在会把**未实现**浮亏计入日内亏损（这正是「日内」应有的语义）；
+- 与 `daily_stop_flatten_pct=-6%` 的关系不变：−6% 仍先触发强平。
+
+### 守卫（`tests/test_daily_pnl_equity_live.py`，7 条）
+- 权益口径 = 权益差（涨/跌两向）；★ 对照组**复现缺陷**：旧口径把摊薄成本记成
+  +37,499 后，同样亏 6,000 仍可开仓；★ 权益口径下同一路径必须 halt（证明前一条非恒绿）；
+- `on_fill` 不得双计；残留值必须被首轮重算覆盖；paper 默认仍走已实现口径（回归锁）；
+- 源码契约：调用点必须按 `exec_mode` 传参、live 恢复路径必须清零（跨层接线，漏了会静默回退）。
+
+### 契约更新
+`tests/test_optimization_20261021.py::test_restore_engine_state_live_restores_risk_only`
+原断言「live 恢复 daily_pnl = −1234」是**旧口径契约**，已改为「live 必须为 0.0」，
+并在 paper 对照用例里补上「daily_pnl 仍恢复」的正向断言。
+
+全量 `tests/run_all.py`：**714/714 PASS（91.46s）**。

@@ -2096,7 +2096,15 @@ class EventEngine:
         #   已逼近 -6% 触发线的一半以上；行情再差一点就会把真仓位打掉。
         #   行情新鲜前保持 None ⇒ on_asset_update 收到 (total, total)，
         #   日内盈亏恒为 0（保守：既不误强平，也不放行新仓——建仓本就被 R9 拦着）。
-        self.risk.on_asset_update(total_asset, self._day_open_baseline(total_asset))
+        #   【2026-10-30】第三个实参：live 走**权益口径**。
+        #   券商回报的 avg_cost 是摊薄成本（含历史已实现盈亏），旧口径把它算成
+        #   「当日已实现盈亏」⇒ 实测 daily_pnl=+37,448.30（真实当日约 −140 元），
+        #   daily_loss_limit_abs=5000 的日内亏损熔断**事实上失效**。
+        #   live 改「总资产 − 当日开盘资产」逐轮重算；paper / 回测传 False
+        #   ⇒ 逐位保持旧口径（P0 不变性）。回滚：把实参改成 False。
+        self.risk.on_asset_update(
+            total_asset, self._day_open_baseline(total_asset),
+            equity_daily_pnl=(getattr(self, "exec_mode", "paper") == "live"))
 
         # 4.4) 日内硬止损强平（2026-09-16 新增）：risk 判定当日亏损达
         #   daily_stop_flatten_pct 后置 flatten_requested，这里平掉全部可卖持仓。
@@ -3668,7 +3676,14 @@ class EventEngine:
             if not row:
                 return
             self._daily_trade_count = int(row.get("daily_trade_count") or 0)
-            self.risk._daily_pnl = float(row.get("daily_pnl") or 0.0)
+            # 【2026-10-30】live 不恢复历史 daily_pnl：权益口径下它由
+            # 「总资产 − 当日开盘资产」在每轮 on_asset_update 重算，恢复旧值只会在
+            # 首轮之前留下一个**跨日残留**（实测 +37,448.30 会短暂掩盖日内亏损）。
+            # paper 仍按原样恢复（回测/模拟盘账本语义不变）。
+            if restore_ledger:
+                self.risk._daily_pnl = float(row.get("daily_pnl") or 0.0)
+            else:
+                self.risk._daily_pnl = 0.0
             self.risk._consec_loss = int(row.get("consec_loss") or 0)
             self.risk._peak_asset = float(row.get("peak_asset") or 0.0)
             self._trade_date = (date.fromisoformat(row["trade_date"])

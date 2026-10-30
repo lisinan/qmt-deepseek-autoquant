@@ -88,6 +88,9 @@ def _collect_tests():
             "tests.test_live_order_price_type",
             "tests.test_total_asset_broker_authority",
             "tests.test_exit_exempt_declared",
+            # 【2026-10-30 P1】live 日内盈亏口径：券商摊薄成本把终身浮盈记成
+            # 当日盈利（+37,448 vs 真实 −140），使 daily_loss_limit_abs 事实失效。
+            "tests.test_daily_pnl_equity_live",
             # 【2026-10-30 P1】持仓订阅 + 盯市价兜底：池外持仓（OWNER 手工建仓 /
             # 观察篮补买）原来收不到 tick，盯市价退回成本价 ⇒ 总资产低估 57.7%。
             "tests.test_position_subscription_mark",

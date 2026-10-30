@@ -314,7 +314,13 @@ def test_restore_engine_state_live_restores_risk_only():
     # 风险字段被恢复
     assert abs(eng.risk._peak_asset - 1_234_567.0) < 1e-6, eng.risk._peak_asset
     assert eng.risk._consec_loss == 3
-    assert abs(eng.risk._daily_pnl - (-1234.0)) < 1e-6
+    # 【2026-10-30 契约更新】live **不再**恢复 daily_pnl，固定 0.0。
+    # 原因：live 已切换为「权益口径」(_daily_pnl = 总资产 − 当日开盘资产，逐轮重算)，
+    # 恢复 DB 里的历史值只会在首轮 on_asset_update 之前留下跨日残留 —— 实测
+    # +37,448.30 会短暂掩盖日内亏损，使 daily_loss_limit_abs 失效。
+    # 旧断言 abs(... - (-1234.0)) 对应的是「已实现口径 + 跨重启续计」的旧契约。
+    assert abs(eng.risk._daily_pnl) < 1e-6, (
+        f"live 不应恢复历史 daily_pnl（权益口径会逐轮重算），实际 {eng.risk._daily_pnl}")
     # 账本字段未被覆盖
     assert eng._cash == 42.0, f"live 不应恢复 DB 里的 cash，实际 {eng._cash}"
     assert eng._positions == {}, "live 不应恢复 DB 里的 positions（以 broker 为权威源）"
@@ -334,6 +340,9 @@ def test_restore_engine_state_paper_restores_ledger():
     assert "300308.SZ" in eng._positions
     assert eng._positions["300308.SZ"].quantity == 100
     assert abs(eng.risk._peak_asset - 1_234_567.0) < 1e-6
+    # 对照组：paper 仍恢复 daily_pnl（已实现口径的账本语义不变）
+    assert abs(eng.risk._daily_pnl - (-1234.0)) < 1e-6, (
+        f"paper 必须仍恢复 daily_pnl，实际 {eng.risk._daily_pnl}")
 
 
 def test_save_engine_state_called_in_all_modes():

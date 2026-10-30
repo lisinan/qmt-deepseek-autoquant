@@ -56,6 +56,17 @@ class RiskManager:
         self._today: date = date.today()
         self._daily_pnl: float = 0.0
         self._consec_loss: int = 0
+        # 【2026-10-30】日内盈亏口径开关。
+        # False（默认，paper/回测）= 旧口径：只累计**已实现**盈亏（SELL 时 += pnl）。
+        # True（live）= 权益口径：_daily_pnl = 当前总资产 − 当日开盘资产，
+        #   每轮 ``on_asset_update`` 重算，``on_fill`` **不再**累加。
+        # 为什么 live 要换：券商回报的 avg_cost 是**摊薄成本**（含历史已实现盈亏），
+        #   用它算「当日已实现盈亏」会把终身浮盈记成当日盈利 —— 实测 2026-10-30
+        #   daily_pnl=+37,448.30（真实当日约 −140 元），使
+        #   daily_loss_limit_abs=5,000 的日内亏损熔断**事实上失效**；
+        #   反向也会因「相对摊薄成本亏损卖出」一次性触发假熔断。
+        # 回滚：``risk.set_daily_pnl_equity_mode(False)`` 或删掉 engine 调用点的实参。
+        self._equity_daily_pnl: bool = False
         self._halted: bool = False
         self._halt_reason: str = ""
         self._peak_asset: float = 0.0
@@ -89,9 +100,19 @@ class RiskManager:
     # ---------- 资金 ----------
 
     def on_asset_update(self, total_asset: float,
-                        day_open_asset: float = 0.0) -> None:
+                        day_open_asset: float = 0.0,
+                        equity_daily_pnl: Optional[bool] = None) -> None:
+        """每轮资产更新。``equity_daily_pnl`` 决定日内盈亏口径（None=沿用当前）。
+
+        【2026-10-30】live 传 True ⇒ ``_daily_pnl`` 改为「当前总资产 − 当日开盘
+        资产」的权益口径，逐轮重算。原因见 ``_equity_daily_pnl`` 的注释：
+        券商摊薄成本会让「已实现盈亏」把终身浮盈记成当日盈利。
+        paper/回测传 None（默认）⇒ 逐位保持旧口径，P0 不变性不受影响。
+        """
         if total_asset <= 0:
             return
+        if equity_daily_pnl is not None:
+            self._equity_daily_pnl = bool(equity_daily_pnl)
         # 【2026-09-21 P0 修复】日切重置原先只挂在 on_fill() 上：账户一旦被冻结
         # （零成交）就再也不会触发，导致 _daily_pnl 把 09-16 的 -188,766 元
         # 一直背到 09-21（实测值），日内亏损口径失真。改为每轮资产更新都校准日切。
@@ -101,6 +122,11 @@ class RiskManager:
             self._day_open_asset = day_open_asset
         today = date.today()
         with self._lock:
+            # 【2026-10-30】权益口径：日内盈亏 = 当前总资产 − 当日开盘资产。
+            # 必须在锁内、且在下面 daily_stop 判定之前算好 —— daily_loss_abs /
+            # daily_loss_pct 两条熔断读的就是 _daily_pnl。
+            if self._equity_daily_pnl and self._day_open_asset > 0:
+                self._daily_pnl = total_asset - self._day_open_asset
             # 全部 halt 的「冷却自动恢复」（2026-08-30 统一断路器修正）：
             # 原实现仅 max_drawdown 类可恢复；consec_loss / daily_loss_abs 类在 _halt()
             # 后**永久停牌**——本趋势策略难免连亏，会触发 consec_loss=5 后停止开仓，
@@ -134,8 +160,16 @@ class RiskManager:
                 self._halt(reason=f"max_drawdown {dd*100:.2f}%")
                 return
 
-    # ---------- 持仓 ----------
+    def set_daily_pnl_equity_mode(self, enabled: bool) -> None:
+        """切换日内盈亏口径。
 
+        True  = 权益口径（live）：``_daily_pnl = 总资产 − 当日开盘资产``，逐轮重算；
+        False = 已实现口径（paper / 回测，默认）：沿用 SELL 时累加的历史行为。
+        一键回滚入口：``risk.set_daily_pnl_equity_mode(False)``。
+        """
+        self._equity_daily_pnl = bool(enabled)
+
+    # ---------- 持仓 ----------
     def account_block_reason(self, daily_trade_count: int) -> str:
         """账户级硬阻断原因（与具体订单无关）。无阻断返回 ""。
 
@@ -227,7 +261,10 @@ class RiskManager:
                 return
             if fill.side == "SELL":
                 pnl = (fill.price - avg_cost) * fill.quantity
-                self._daily_pnl += pnl
+                # 【2026-10-30】权益口径下不得再累加已实现盈亏：当日权益变化
+                # 已由 on_asset_update 逐轮全量重算，这里再加一次就是**双计**。
+                if not self._equity_daily_pnl:
+                    self._daily_pnl += pnl
                 if pnl < 0:
                     if self._consec_loss == 0:
                         self._consec_loss_date = date.today()   # 连亏起算日
