@@ -85,6 +85,7 @@ def _engine(codes_held=(OWNER_CODE,), qty=100, last_ticks=None, daily=None):
 def _fake_broker(positions, cash=6953.42, total=65748.42):
     return SimpleNamespace(
         is_connected=True,
+        connect=lambda: True,
         get_asset=lambda acct: {"cash": cash, "total_asset": total},
         get_positions=lambda acct: positions,
     )
@@ -203,3 +204,70 @@ def test_negative_cache_expires_after_300s():
     finally:
         EE.qmt_client = orig
     assert client.history_calls == 2, "负缓存过期后没有重试"
+
+
+# ------------------------------------------------ 启动初始化（同一事实两份实现）
+
+def test_startup_init_marks_at_close_not_cost():
+    """★ 事故直击：`_init_positions_from_broker` 曾把 last_price 直接写成 avg_cost。
+
+    这是本轮**真正的复现点** —— 前两处修好后重启仍是 194.246，因为启动初始化
+    自带一份「broker 持仓 → Position」逻辑，绕过了四档兜底。修复方式是删除副本、
+    委托 `_sync_broker_positions`。
+    """
+    eng = _engine(codes_held=())
+    eng._cash = 0.0
+    eng._broker_total_asset = 0.0
+    eng._broker_total_ts = 0.0
+    eng._sync_fail_count = 0
+    eng._pos_meta = {}
+    client = _FakeClient(history=[{"close": CLOSE}])
+
+    orig_broker, orig_client = EE.qmt_broker, EE.qmt_client
+    EE.qmt_broker = _fake_broker([{"code": POOL_EXTERNAL, "quantity": 100,
+                                   "avg_cost": COST, "market_value": 0.0}])
+    EE.qmt_client = client
+    try:
+        eng._init_positions_from_broker()
+    finally:
+        EE.qmt_broker, EE.qmt_client = orig_broker, orig_client
+
+    pos = eng._positions[POOL_EXTERNAL]
+    assert abs(pos.last_price - CLOSE) < 1e-6, (
+        f"启动初始化把盯市价写成了 {pos.last_price}（成本价 {COST}）⇒ "
+        f"总资产会被低估 {(1 - COST / CLOSE) * 100:.1f}%")
+
+
+def test_startup_init_preserves_restored_metadata():
+    """启动初始化不得覆盖 engine_state 恢复出来的 peak/stop/open_date。
+
+    原实现 `self._positions[code] = Position(...)` 直接重建对象 ⇒ 移动止损元数据
+    每次重启清零（止损退回 −18% 宽幅默认、峰值重置为当前价）。
+    """
+    from datetime import datetime
+    eng = _engine(codes_held=())
+    eng._cash = 0.0
+    eng._broker_total_asset = 0.0
+    eng._broker_total_ts = 0.0
+    eng._sync_fail_count = 0
+    eng._pos_meta = {}
+    # 模拟 _restore_state 已恢复的账本
+    eng._positions = {POOL_EXTERNAL: EE.Position(
+        code=POOL_EXTERNAL, name="x", quantity=100, available=100,
+        avg_cost=COST, last_price=CLOSE, open_date=datetime(2026, 10, 8),
+        peak_price=600.0, stop_price=500.0)}
+    client = _FakeClient(history=[{"close": CLOSE}])
+
+    orig_broker, orig_client = EE.qmt_broker, EE.qmt_client
+    EE.qmt_broker = _fake_broker([{"code": POOL_EXTERNAL, "quantity": 100,
+                                   "avg_cost": COST, "market_value": 0.0}])
+    EE.qmt_client = client
+    try:
+        eng._init_positions_from_broker()
+    finally:
+        EE.qmt_broker, EE.qmt_client = orig_broker, orig_client
+
+    pos = eng._positions[POOL_EXTERNAL]
+    assert abs(pos.stop_price - 500.0) < 1e-6, f"止损价被重置为 {pos.stop_price}"
+    assert abs(pos.peak_price - 600.0) < 1e-6, f"峰值价被重置为 {pos.peak_price}"
+    assert pos.open_date is not None, "建仓日期被清空"

@@ -4021,25 +4021,32 @@ class EventEngine:
             f"券商持仓查询连续失败 {self._sync_fail_count} 次，本地账本未更新")
 
     def _init_positions_from_broker(self) -> None:
-        """从 broker 拉真实持仓初始化 ledger（live 模式启动时）。"""
+        """从 broker 拉真实持仓初始化 ledger（live 模式启动时）。
+
+        【2026-10-30 P1】改为**委托** ``_sync_broker_positions()``，删掉自带的
+        那份「broker 持仓 → Position」构建逻辑。
+
+        为什么要改（本轮第三次复现「同一事实两份实现必然漂移」，R43 第 24 条）：
+        原实现自己写了一份循环，且 ``last_price=float(p.get("avg_cost") or 0)``
+        ⇒ 启动瞬间盯市价 **= 成本价**，完全绕过 ``_mark_price_fallback`` 的四档
+        兜底。10-29 修的是 ``_sync_broker_positions`` 那一份，启动这一份从未被
+        修，所以每次重启都会**原地复现**：300308 实测 last_price=194.246
+        （真实收盘 553.0）⇒ total_asset 27,812.98 对真实 65,748（−57.7%）。
+
+        附带修复：原实现 ``self._positions[code] = Position(...)`` 会**覆盖**
+        ``_restore_state`` 刚从 ``engine_state`` 恢复出来的 peak_price /
+        stop_price / open_date ⇒ 每次重启丢掉全部移动止损元数据（止损价退回
+        −18% 宽幅默认值、峰值价重置为当前价）。委托后由 sync 的「已在账本则
+        只更新券商字段」分支合并，元数据得以保留。
+
+        回滚：恢复原来的独立实现（但需重新引入 last_price=avg_cost 与元数据覆盖
+        两个缺陷，不建议）。
+        """
         try:
             if not qmt_broker.connect():
                 logger.warning("无法连接 broker，跳过持仓初始化")
                 return
-            asset = qmt_broker.get_asset("cash") or {}
-            self._cash = float(asset.get("cash") or 0)
-            for p in qmt_broker.get_positions("cash"):
-                code = p.get("code")
-                if not code:
-                    continue
-                self._positions[code] = Position(
-                    code=code,
-                    name=UNIVERSE.get(code, code),
-                    quantity=int(p.get("quantity") or 0),
-                    avg_cost=float(p.get("avg_cost") or 0),
-                    last_price=float(p.get("avg_cost") or 0),
-                    open_date=None,
-                )
+            self._sync_broker_positions()
             logger.info("持仓初始化: %d 只, cash=%.2f",
                         sum(1 for p in self._positions.values() if p.quantity > 0),
                         self._cash)
