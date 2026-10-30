@@ -85,6 +85,8 @@ def _collect_tests():
             # 【2026-10-07 AM-EVOLVE R20】陈旧报价盯市冻结守卫（P0：伪快照虚增权益）
             "tests.test_stale_valuation_guard",
             "tests.test_mark_price_fallback",
+            "tests.test_live_order_price_type",
+            "tests.test_total_asset_broker_authority",
             # 【2026-10-07 PM R21】账本「陈旧盯市污染」守卫：AM 已修「不再产生
             # 新污染」，但已被污染的历史快照仍在库里 ⇒ 10-08 的 prev_asset 会
             # 取到虚高的 1,020,446.6，账本将记一笔 −4.4% 的假亏损（同型 R14）。

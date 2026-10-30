@@ -60,6 +60,26 @@ class XtQuantTrader:
 _xt.XtQuantTrader = XtQuantTrader
 _xt.XtQuantTraderCallback = XtQuantTraderCallback
 _fake.xttrader = _xt
+
+# 【2026-10-30 修复】常量模块**不打桩**，透传真实 xtquant.xtconstant。
+#
+# 原实现只注册了 `xtquant` 与 `xtquant.xttrader`，于是整个 run_all 会话里
+# `from xtquant.xtconstant import FIX_PRICE` 都会炸
+#   ModuleNotFoundError: No module named 'xtquant.xtconstant';
+#   'xtquant' is not a package
+# 因为此处把 sys.modules["xtquant"] 换成了一个没有 __path__ 的普通模块。
+# 实测后果：tests.test_live_order_price_type 的 8 条用例全红，
+# 而单跑该文件（pytest）却是全绿 —— 典型的「测试之间互相污染」。
+#
+# xtconstant 是纯常量表（无 IO、不连券商），透传不改变本文件的隔离意图。
+# 回滚：删除本段 _real_xtconst 相关三行。
+try:
+    import xtquant.xtconstant as _real_xtconst          # noqa: E402
+    _fake.xtconstant = _real_xtconst
+    sys.modules["xtquant.xtconstant"] = _real_xtconst
+except Exception:                                       # 未装 xtquant 的环境
+    pass
+
 sys.modules["xtquant"] = _fake
 sys.modules["xtquant.xttrader"] = _xt
 

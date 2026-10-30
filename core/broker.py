@@ -79,7 +79,25 @@ class _BrokerDisconnectCallback:
         pass
 
     def on_order_error(self, order_error):
-        pass
+        """委托被拒回调。
+
+        【2026-10-30 修复】原实现是 ``pass``，于是 ``order_stock`` 只返回 -1，
+        而**真正的原因（errmsg）被这里吞掉**。实盘首日 523 笔全败，日志里只有
+        ``order_stock rc=-1``，必须去翻 miniQMT 自己的 log 才能看到
+        ``invalid price type [0]`` —— 排查成本被凭空放大。
+        现把 order_id / error_id / error_msg 原样落日志，下次同类问题一眼可见。
+
+        回滚：把本方法体换回 ``pass``。
+        """
+        try:
+            logger.error(
+                "[BROKER] 委托被拒 order_id=%s error_id=%s msg=%s",
+                getattr(order_error, "order_id", "?"),
+                getattr(order_error, "error_id", "?"),
+                getattr(order_error, "error_msg", ""),
+            )
+        except Exception:
+            logger.error("[BROKER] 委托被拒（回调解析失败）: %r", order_error)
 
     def on_cancel_error(self, cancel_error):
         pass
@@ -245,6 +263,25 @@ class QMTBroker:
         self._subscribed[key] = obj
         return obj
 
+    @staticmethod
+    def _round_to_tick(code: str, price: float) -> float:
+        """把委托价夹到标的最小变动单位：ETF/LOF 0.001，股票 0.01。
+
+        为什么需要：引擎侧的价来自 tick，浮点运算后常带噪声
+        （实盘日志里出现过 ``560.3000000000001``、``548.5600000000001``）。
+        QMT 对超出最小变动单位的价会判「价格非法」拒单，与本次
+        ``invalid price type`` 同属「参数格式」类静默失败。零成本、无副作用。
+
+        回滚：删除本方法并把 ``self._round_to_tick(code, price)`` 换回 ``price``。
+        """
+        try:
+            head = str(code).split(".")[0]
+            # 5xxxxx 沪市基金 / 1[5-6]xxxx 深市基金 / 58xxxx 科创板基金
+            is_fund = head.startswith(("51", "50", "58", "15", "16", "18"))
+            return round(float(price), 3 if is_fund else 2)
+        except Exception:
+            return price
+
     def place_order(self, code: str, side: str, quantity: int,
                     price: float = 0.0, account: str = "cash") -> Dict:
         """
@@ -262,11 +299,30 @@ class QMTBroker:
                 order_type = CREDIT_BUY if side == "BUY" else CREDIT_SELL
             else:
                 order_type = STOCK_BUY if side == "BUY" else STOCK_SELL
-            # 限价单（LIMIT_PRICE=0）；market 用最新价
-            from xtquant.xtconstant import LATEST_PRICE
+            # ★【2026-10-30 P0 修复】限价单价格类型必须用 FIX_PRICE(=11)。
+            #
+            # 原实现写死字面量 ``0`` 并注释成「限价单（LIMIT_PRICE=0）」——但
+            # xtquant **没有** ``LIMIT_PRICE`` 这个常量，``0`` 也不是任何合法价格类型。
+            # miniQMT 收到后直接判非法并在本地拒单（不进交易所）：
+            #   [orderservice] [quant] order failed, invalid price type [0]
+            #   onOrderResponse ... orderid:-1, errmsg:invalid price type [0]
+            # ⇒ ``order_stock`` 返回 -1，``place_order`` 报 ``order_stock rc=-1``。
+            #
+            # 实证：2026-10-30 是 live（10-29 15:05 切换）后第一个真正开盘日，
+            # 全天下单 523 笔（300308 卖出重试 522 + 510050 探针买入 1）**0 成交**。
+            # paper 模式从不调用本函数，所以这条路径此前从未被执行过 —— 典型的
+            # 「实盘有、回测无」口径背离，不是参数问题。
+            #
+            # 价格同时夹到最小变动单位：股票 0.01 / ETF·LOF 0.001。实测 tick 价
+            # 会带浮点噪声（如 560.3000000000001），券商侧可能判「价格非法」。
+            #
+            # 回滚：把 ``FIX_PRICE`` 改回字面量 ``0``（恢复旧的错误行为），
+            # 或整段恢复为 ``LATEST_PRICE if price <= 0 else 0``。
+            from xtquant.xtconstant import LATEST_PRICE, FIX_PRICE
+            _px = self._round_to_tick(code, price) if price > 0 else 0
             order_id = self._trader.order_stock(
-                acc, code, order_type, quantity, LATEST_PRICE if price <= 0 else 0,
-                price if price > 0 else 0,
+                acc, code, order_type, quantity,
+                LATEST_PRICE if price <= 0 else FIX_PRICE, _px,
             )
             if isinstance(order_id, int) and order_id < 0:
                 return {"ok": False, "order_id": None, "reason": f"order_stock rc={order_id}"}

@@ -64,8 +64,15 @@ class _FakeEngine:
         self._bars = bars or {}
         self._pending_orders = {"300308.SZ": {}}
         self._pending_sells = {}
-        self.risk = SimpleNamespace(halted=halted, halt_reason="测试" if halted else "",
-                                    consec_loss=0, position_scale=scale,
+        # 【2026-10-30 修复】字段名必须与 RiskManager 的**真实**成员一致：
+        # is_halted(property) / _halt_reason / _consec_loss。
+        # 原桩写成 halted / halt_reason / consec_loss —— 三个都不存在，
+        # 于是这条测试一直在验证一个「面板读错属性」的实现，把
+        # 2026-10-30 11:24:53 的真实 daily_stop 熔断藏成 halted=false。
+        # 断言钉契约，不钉副产品：桩必须照抄生产属性名。
+        self.risk = SimpleNamespace(is_halted=halted,
+                                    _halt_reason="测试" if halted else "",
+                                    _consec_loss=0, position_scale=scale,
                                     _daily_pnl=0.0)
 
 

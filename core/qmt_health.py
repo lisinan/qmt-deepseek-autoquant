@@ -219,9 +219,14 @@ def _trading_section(engine, storage) -> Dict[str, Any]:
         r = getattr(engine, "risk", None)
         if r is None:
             return {}
-        return {"halted": bool(getattr(r, "halted", False)),
-                "halt_reason": str(getattr(r, "halt_reason", "") or ""),
-                "consec_loss": int(getattr(r, "consec_loss", 0) or 0),
+        # 【2026-10-30 修复】RiskManager 的真实成员是 `is_halted`（property）、
+        # `_halt_reason`、`_consec_loss`。原实现读的是 `halted` / `halt_reason` /
+        # `consec_loss` —— **三个都不存在**，getattr 全部走默认值 ⇒ 面板恒报
+        # 「未熔断 / 连亏 0」。实盘铁证：当日 11:24:53 已 `daily_stop` 熔断且
+        # position_scale=0，面板仍显示 halted=false，把这条最关键的告警藏掉了。
+        return {"halted": bool(getattr(r, "is_halted", False)),
+                "halt_reason": str(getattr(r, "_halt_reason", "") or ""),
+                "consec_loss": int(getattr(r, "_consec_loss", 0) or 0),
                 "position_scale": float(getattr(r, "position_scale", 1.0) or 0.0),
                 "daily_pnl": round(float(getattr(r, "_daily_pnl", 0.0) or 0.0), 2),
                 "daily_trades": int(getattr(engine, "_daily_trade_count", 0) or 0)}

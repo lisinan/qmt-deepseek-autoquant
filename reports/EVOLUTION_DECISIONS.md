@@ -8443,3 +8443,182 @@ mtime 为 **12:03:24**、`core/qmt_health.py` 为 **12:06:29**，且 `web/app.py
    及 `run_all.py` 的注册行。
 - ★ 生效需重启：全仓库无 `importlib.reload`，改 `.py` 必须重启才重新 import。
   本次改动在当前运行进程（22:18 启动）中**尚未生效**。
+
+---
+
+## 2026-10-30 live 委托价格类型 P0 | order_stock 传 0 导致全天 643 笔委托 0 成交
+
+**审计发现（真实数字）**
+- 2026-10-30 是切 live（10-29 15:05）后**第一个真正开盘日**。截至 10:03 停机，
+  当日下单 **643 笔、成交 0 笔**：300308.SZ 趋势破位卖出重试 **642 次**（每轮 ~3s），
+  510050.SH 观察篮探针买入 **1 次**，全部 `order_stock rc=-1`。
+- 根因不在引擎而在 miniQMT 侧，`/c/pazq_qmt/userdata_mini/log/XtMiniQmt_20261030.log`：
+  `[orderservice] [quant] order failed, invalid price type [0]`
+  `onOrderResponse ... orderid:-1, errmsg:invalid price type [0]`
+- 对应 `core/broker.py::place_order` 原实现：`LATEST_PRICE if price <= 0 else 0`
+  + 注释「限价单（LIMIT_PRICE=0）」。**xtquant 没有 LIMIT_PRICE 常量**，
+  限价是 `FIX_PRICE = 11`，`0` 不是任何合法价格类型 ⇒ 本地拒单（不进交易所）。
+- 为何潜伏至今：paper 分支不调用 `place_order`，该路径**从未被执行**。
+  典型「实盘有、回测无」口径背离（本项目已第 19 例）。
+- 两个放大缺陷：
+  ① `_daily_trade_count += 1` 写在 ok 判断**之外** ⇒ 失败委托同样吃额度，
+     642 次失败把计数刷到 **643**（>max_daily_trades=10），此后所有 BUY 被
+     `daily_trades>10` 拒绝 —— **真实根因被次生错误掩盖**，日志首屏看到的是症状。
+  ② `_BrokerDisconnectCallback.on_order_error` 是 `pass` ⇒ errmsg 被吞，
+     `place_order` 只拿得到 `rc=-1`，排查必须去翻 miniQMT 自己的日志。
+
+**本轮改动（最小可逆，文件:行）**
+- `core/broker.py`：`place_order` 价格类型由字面量 `0` 改为 `FIX_PRICE`（=11），
+  市价仍用 `LATEST_PRICE`（=5）；新增 `_round_to_tick()` 把委托价夹到最小变动
+  （ETF/LOF 0.001、股票 0.01），消除 `560.3000000000001` 这类浮点噪声。
+- `core/broker.py::on_order_error`：由 `pass` 改为记录 order_id / error_id / error_msg。
+- `engine/event_engine.py`（买入侧 ~3245、卖出侧 ~3446）：`_daily_trade_count += 1`
+  移入 `if res.get("ok"):` 分支，失败委托不再消耗日内额度。
+- `tests/test_live_order_price_type.py`（新增 8 例）+ `run_all.py` 注册。
+- `tests/test_broker_reconnect.py`：透传真实 `xtquant.xtconstant`
+  （原实现把 `sys.modules["xtquant"]` 换成无 `__path__` 的假模块，导致整个
+  run_all 会话里任何 `from xtquant.xtconstant import ...` 都抛
+  `'xtquant' is not a package` —— 单跑 pytest 全绿、跑全量全红，测试互相污染）。
+- 数据修正：`engine_state.daily_trade_count` 643 → **0**（今日真实成交 0 笔，
+  643 全是失败委托的伪计数）。备份 `storage/qmt_pre_pxtype_20261030_100319.db`。
+
+**是否改变策略行为**
+- 不改任何策略参数、风控阈值、仓位尺度。改动等价于「让原本就该发出的限价委托
+  变成合法委托」——恢复设计意图，不新增任何人为开关（未对 300308 卖出做任何干预）。
+
+**验证方式与结果**
+- 全量 `tests/run_all.py` → **PASSED 688 / FAILED 0（101.80s）**（原 680，+8）。
+- 含正向对照 `test_successful_order_consumes_daily_budget`：断言成功委托**必须**计数，
+  防止「恒不计数」的退化实现让「失败不计数」三条一起变绿（R43 第 16 条）。
+- 实盘闭环验证（10:07:37 重启后）：
+  - `510050.SH BUY ×500 @2.86` → order_id 1082183428 → **成交 500 股 / 1,430.00 元**
+    （miniQMT 侧 `m_nVolumeTraded: 500, stat: 56 全部成交`，sysid 0165587007）
+  - `300308.SZ SELL ×100 @569.24` → order_id 1082183556 → **成交 100 股 / 56,924.00 元**
+    （miniQMT 侧 `m_nVolumeTraded: 100/100`，sysid 0115728009）
+  - `fills` 表今日 2 笔 mode=live；`/api/qmt_health` → `today_fills=2`、
+    `daily_trades=2`（仅成功计数，符合预期）、cash 63,790.11、positions 1。
+  - 10:07 之后「委托被拒」计数 = **0**。
+
+**预期如何让后续轮次更可能做对**
+- 交易接口从「从未成功过一次」变成「已验证可下单可成交」，此后任何
+  实盘/回测口径分歧都能被真实成交暴露，而不是被 rc=-1 静默吞掉。
+- `on_order_error` 落日志后，同类「参数格式类」拒单（价格类型/价格精度/数量单位）
+  会直接给出券商原文，不必再逐层翻 miniQMT 日志。
+- 「失败不吃额度」消除了一个会把**根因掩盖成症状**的放大器：以后
+  `daily_trades>N` 只会真的代表成交笔数。
+
+**回滚方式**
+1. `core/broker.py`：`FIX_PRICE` 改回字面量 `0`；删除 `_round_to_tick` 及调用。
+2. 两处 `_daily_trade_count += 1` 移回 `if res.get("ok"):` 之外。
+3. `on_order_error` 方法体改回 `pass`。
+4. 删除 `tests/test_live_order_price_type.py` 与 `run_all.py` 注册行。
+- ★ 生效需重启（仓库无 `importlib.reload`）。本次已于 10:07:37 由 guardian 重启生效。
+
+---
+
+## 2026-10-30 总资产口径 P0 | 券商「资金已扣、持仓未刷新」把账户算成 −86.58%，误强平+熔断
+
+**审计发现（真实数字）**
+- 11:24:53 OWNER 手动买回 300308.SZ 100 股（56,829 元，均价 568.29）后，引擎下一轮：
+  `query_stock_asset` 已返回扣款后 cash=**6,953.42**，而 `query_stock_positions`
+  尚未刷新出该持仓（只有 ETF 500 份 1,434）⇒ 本地拼装 total = **8,387**，
+  对当日开盘 62,411.28 为 **−86.58%**。
+- `risk/manager.py` 的 `daily_stop_flatten_pct(-6%)` 与 `max_drawdown_pct(-20%)`
+  同时命中 ⇒ 置 `flatten_requested` + `halted`，`halt_reason="daily_stop -86.58%"`，
+  账户被冻结、当日禁止开仓；11:24:53~11:25 之间持续尝试强平。
+- 券商侧同一时刻真实 total = **65,187**（自身口径一致，不存在该缺口）。
+- 强平未造成损失：300308 因 T+1（当日买入）被拦，510050 同样 T+1 被拦；
+  券商实盘成交仅 2 笔（ETF 买入 + 300308 卖出），无额外卖出。
+- 放大器：**健康接口把熔断藏了**。`core/qmt_health.py` 读 `getattr(r,"halted")`/
+  `getattr(r,"halt_reason")`/`getattr(r,"consec_loss")` —— 这三个成员在
+  `RiskManager` 里**都不存在**（真实是 `is_halted` property / `_halt_reason` /
+  `_consec_loss`）⇒ 面板恒报「未熔断 / 连亏 0」。同源缺陷：`tests/test_qmt_health.py`
+  的桩也用错名字，于是测试一直在验证一个读错属性的实现（断言钉了副产品，不是契约）。
+
+**本轮改动（最小可逆）**
+- `engine/event_engine.py`：新增 `_broker_total_asset` / `_broker_total_ts`，
+  `_sync_broker_positions` 每轮记录券商 `total_asset`；`_total_asset()` 在 live 且
+  该值新鲜（≤120s）时**直接返回券商口径**，否则回落本地拼装（断链不长期主导风控）。
+  `getattr(self,"exec_mode","paper")` 兜底，保证既有桩对象行为不变。
+- `core/qmt_health.py`：`halted`/`halt_reason`/`consec_loss` 改读真实成员。
+- `tests/test_total_asset_broker_authority.py`（新增 4 例）+ `run_all.py` 注册；
+  `tests/test_qmt_health.py` 的桩改用真实属性名（把测试从「钉副产品」改成「钉契约」）。
+- 数据修正：`engine_state.risk_state.halted` true→false、`halt_reason` 清空；
+  `daily_trade_count` 13→**2**（真实成交 2 笔，其余 11 笔是假熔断下被券商异步
+  拒绝的伪计数）。
+
+**是否改变策略行为**
+- 不改任何策略参数、风控阈值、仓位尺度。改的是**估值输入的口径**：
+  从「本地自行拼装」改为「券商权威值」，只会让风控看到更准的数。
+- paper 模式完全不走该分支（`test_paper_ignores_broker_total` 钉死），
+  回测/模拟盘口径不受影响。
+
+**验证方式与结果**
+- 全量 `tests/run_all.py` → **PASSED 692 / FAILED 0（101.16s）**（原 688，+4）。
+- 含**正向对照** `test_incident_numbers_would_halt_but_broker_total_does_not`：
+  先用事故数字喂风控，断言**必须**熔断；再喂券商口径，断言不熔断且 scale=1.0。
+  防止「阈值被改松」后整组测试假绿。
+- 重启实测（11:35:30）：`恢复风控状态: peak=66,542.31 consec_loss=0 halted=False
+  daily_trade_count=2`；`持仓初始化: 2 只, cash=6,953.42`；
+  `/api/qmt_health` → `halted=false`、`position_scale=1.0`、`issues=[]`、`status=ok`。
+
+**预期如何让后续轮次更可能做对**
+- 消除了「券商两次查询的时间差」污染风控这一类缺陷：任何由**外部**（OWNER 手动、
+  券商侧公司行为、人工平仓）造成的持仓变动，都不会再被读成账户级亏损。
+- 健康接口修好后，`halted` 才真正可信 —— 此前它是恒 false 的死字段，
+  等于把最关键的告警通道关掉；后续轮次排查「为什么不开仓」时不会再被误导。
+
+**回滚方式**
+1. `_total_asset()` 删掉 live 分支的 4 行（回落本地拼装）；
+2. `_sync_broker_positions` 删掉 `_broker_total_asset/_ts` 两行赋值；
+3. `qmt_health._risk()` 三个字段改回 `halted/halt_reason/consec_loss`；
+4. 删除 `tests/test_total_asset_broker_authority.py` 与 `run_all.py` 注册行。
+- ★ 生效需重启，本次已于 11:35:30 由 guardian 重启并验证。
+
+---
+
+## 2026-10-30 R45 · AM-EVOLVE（午休）｜★ 硬约束否决：EXECUTION_MODE=live ⇒ 本轮零落盘，转为 live P0 诊断
+
+**模式裁决（开工第一件事）**
+- `config/settings.py:869` = `"live"`（2026-10-29 15:02 用户明确指令切换，属合法生产态）。
+- AM-EVOLVE 硬约束「若不是 paper 则立即停止落盘并显著告警」⇒ **参数 0 改动、生产代码 0 改动、未 commit、未 kill 引擎**。
+- ⇒ 本轮**不做参数网格/共识扫描**（跑了也只能产出不能落盘的结论）；**无「13:00 生效」项**。
+
+**半日度量（真实 live）**
+- 开盘 62,411.28（300308 低开 −7.10%）→ 11:29:43 **65,748.42**；vs 10-29 基线 66,542.31 = **−1.19%**；日内 +5.35%。
+- 现金 6,953.42；持仓 300308×100（摊薄成本 194.17）+ 510050×500。今日券商真实成交 **2 笔**。
+- 今日引擎委托 **656 笔**（SELL 300308 ×654、BUY 510050 ×2），拒单/提交失败 **654 笔（99.7%）**。
+
+**★ 候选 A（P0 工程，未落盘）：T+1/可用量守卫缺口 ⇒ 卖出报单风暴（13:00 会继续）**
+- 根因三环：① `event_engine.py:3887` 持仓同步用 `quantity>0` 而非 `available>0`；
+  ② 券商同步仓 `open_date=None` ⇒ `:3396` 的 T+1 单点拦截恒放行；
+  ③ `:3425-3432` 对 `available≤0` 显式「按整仓提交（券商侧可能拒单）」⇒ 必被 306050 拒，
+  且 `_pending_sells` 在异步拒单后清空 ⇒ 主循环 3s 无限重报。
+- 实测：09:30–10:07 有 643 笔 `order_stock rc=-1`（会话未就绪）；10:08 后 11 笔 306050（T+1 当日买入不可卖）。
+- 补丁草案（仅 live 分支，paper/回测零影响）+ open_date 兜底 + 同码拒单熔断，见
+  `reports/R45_AM_LIVE_T1_ORDER_STORM_20261030.md` §四 A。**待 OWNER 授权**（需重启生效）。
+
+**★ 候选 B（P1 结构，下一轮做）：`external_hold_codes` 底仓白名单**
+- 今日 300308（用户永久底仓）被「趋势破位离场」卖出（10:08），OWNER 11:24 手工买回 568.29
+  ⇒ 策略意图与持有意图直接冲突（引擎无「底仓」概念）。
+- 语义建议：白名单持仓**不进退出逻辑且不占 max_positions 槽位**，市值仍计入 total_asset。
+  与 R15 否决的「占槽位+豁免退出」观察篮不同（R15 价签 Sh 1.02 vs 1.71），
+  但**仍须回测 4 窗共识**（建模为「固定底仓不参与交易」对照 P0）后再议。
+
+**★ 量测口径缺陷（新，第 19 例「口径背离」）**
+- `engine_state.daily_pnl = 37,448.30` = 「成交价 − 券商摊薄成本(194.17)」× 100
+  ⇒ 把 300308 的**终身浮盈记成当日盈利**；当日真实盈亏约 **−140 元**。
+- 后果：`daily_loss_limit_abs=5000` 的日内亏损熔断被 +37k 掩盖 ⇒ **live 下日内亏损熔断事实失效**；
+  反向：相对摊薄成本亏损卖出会一次性触发假熔断。
+- 修法（待办）：live 的 daily_pnl 改「当日开盘权益 − 当前权益」，附反向对照测试。
+
+**KPI（口径：R44 基线，本轮未重跑）**
+- #1 折均值 **1.746**（差 −0.254；拼接 2.143 达标待 D4）｜#2 **21/26**（D9）｜#3 **PASS**（最差折 −9.97%）｜
+  #4 **不可得**（live 仅 1 日；`EVOLUTION_LEDGER.md` 缺 10-29/10-30 live 行，**live 日度账本未建立**）。
+
+**工程与环境**
+- `tests/run_all.py` **692/692 通过（96.03s）**（本轮实测，工作树含今日 live 修复）。
+- 今日上午的「−86.58% 假熔断」P0 修复（`_total_asset` 采用券商权威口径）已于 11:35:30 重启生效，本轮**复核确认**。
+
+**模板勘误建议**：AM-EVOLVE 的「EXECUTION_MODE 必须 paper」与 10-29 的 live 切换冲突，
+建议改为「必须与用户最近一次明确指令一致；落盘前复核」，否则每个交易日首周期都会空转。

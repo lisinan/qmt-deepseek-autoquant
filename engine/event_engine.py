@@ -445,6 +445,12 @@ class EventEngine:
             lambda: deque(maxlen=STRATEGY_PARAMS["ma_long"] * 6))
         self._positions: Dict[str, Position] = {}
         self._cash: float = INITIAL_CASH
+        # 【2026-10-30 P0】券商权威总资产（live 专用）。每轮 _sync_broker_positions
+        # 刷新；live 下 _total_asset() 优先返回它，避免「资金已扣、持仓未刷新」
+        # 的亚秒级不一致把总资产算少一个持仓（实测 −86.58% 假亏 → 误强平+熔断）。
+        # 断链时归零 ⇒ 自动回落到本地拼装口径。回滚：删除本行与两处赋值即可。
+        self._broker_total_asset: float = 0.0
+        self._broker_total_ts: float = 0.0
         self._pending_ai: Dict[str, threading.Thread] = {}
 
         self._stop_flag = threading.Event()
@@ -3242,8 +3248,13 @@ class EventEngine:
                                      mode=self.exec_mode)
             # 日内交易计数：live 与 paper 一致地计入（原实现漏计 → 实盘
             # max_daily_trades 闸值永不触发）。
-            self._daily_trade_count += 1
+            # ★【2026-10-30 修复】只在**委托成功**时计数。原实现写在 ok 判断之外，
+            #   于是失败委托同样吃掉日内额度：实盘首日 522 笔失败卖单把计数刷到
+            #   497 (>max_daily_trades=10)，从此所有 BUY 被 `daily_trades>10` 拒绝
+            #   —— 真实根因（invalid price type）被这层次生错误掩盖。
+            #   回滚：把本行移回 if 之外即可。
             if res.get("ok"):
+                self._daily_trade_count += 1
                 # live 同样维护本地账本（原实现只在 paper 分支维护，导致实盘
                 # 退出逻辑/持仓上限/总资产追踪全失效）。下单即乐观建仓，成交后
                 # 由 _sync_broker_positions 以 broker 为权威源校正。
@@ -3437,8 +3448,11 @@ class EventEngine:
             self.storage.save_order(order, res.get("order_id"),
                                      mode=self.exec_mode)
             # 日内交易计数：live 与 paper 一致地计入。
-            self._daily_trade_count += 1
+            # ★【2026-10-30 修复】只在委托成功时计数（与买入侧同因）：
+            #   失败卖单会无限重试，原实现每 3 秒吃掉一个额度 ⇒ 一上午就刷穿
+            #   max_daily_trades，把买入端全部锁死。回滚：移回 if 之外。
             if res.get("ok"):
+                self._daily_trade_count += 1
                 # 【2026-10-21 B1】卖出委托已提交但**尚未成交**：本地数量不归零、
                 # 槽位不释放（返回 False 调用方据此不补位）。成交由
                 # _reconcile_pending_orders 落实后再扣减数量并 _mark_sold_today。
@@ -3851,6 +3865,14 @@ class EventEngine:
             asset = qmt_broker.get_asset("cash")
             if asset:
                 self._cash = float(asset.get("cash") or 0.0)
+                # 【2026-10-30 P0】券商权威总资产，供 _total_asset() 直接使用。
+                # 为什么必须用它：cash 与 positions 是两次独立查询，买入成交后的
+                # 亚秒级窗口里资金已扣、持仓未刷新 ⇒ 本地拼装会凭空少一个持仓，
+                # 实测把总资产算成 8,387（真实 65,187）⇒ 误触发 −6% 日内强平。
+                # 见 _total_asset() 的完整说明。回滚：删本行（_total_asset 会自动
+                # 回落到本地拼装口径）。
+                self._broker_total_asset = float(asset.get("total_asset") or 0.0)
+                self._broker_total_ts = time.time()
             # 【2026-10-21 C4】区分「未知」(None) 与「空仓」([])：None=查询失败，
             # 本轮不改动本地账本；[]=确认无持仓，照常清空。连续 3 次失败按日告警。
             raw = qmt_broker.get_positions("cash")
@@ -4170,6 +4192,31 @@ class EventEngine:
     # ============================================================ 辅助
 
     def _total_asset(self) -> float:
+        """总资产（风控与仓位计算的输入）。
+
+        ★【2026-10-30 P0 修复】live 模式优先用**券商返回的** total_asset。
+        原实现恒用「本地 cash + Σ 本地持仓市值」自行拼装，而 cash 与持仓来自
+        **两次独立的券商查询**（`query_stock_asset` / `query_stock_positions`），
+        二者存在亚秒级的**最终一致性窗口**：买入成交后，资金端已扣款、持仓端
+        尚未刷新 ⇒ 拼出来的总资产凭空少一个持仓。
+
+        实盘铁证（2026-10-30 11:24:53）：OWNER 手动买回 300308 100 股（5.68 万）
+        后，第一轮同步拿到 cash=6,953 但持仓仍只有 ETF ⇒ 本地拼装 total=8,387，
+        对当日开盘 62,411.28 为 **−86.58%** ⇒ 误触发 `daily_stop_flatten_pct`
+        （−6%）强平 + `max_drawdown` 熔断，账户被错误冻结、当日禁止开仓。
+        券商侧同时刻的真实 total 是 65,187（自身口径一致，不会出现这种缺口）。
+
+        回滚：删掉下面 `if self.exec_mode == "live"` 整段即可恢复原拼装口径。
+        """
+        # getattr 兜底：既有测试用 SimpleNamespace / __new__ 桩冒充引擎，无此属性时
+        # 按 paper 处理（即不使用券商口径），保证桩行为不变。
+        if getattr(self, "exec_mode", "paper") == "live":
+            bt = getattr(self, "_broker_total_asset", 0.0) or 0.0
+            ts = getattr(self, "_broker_total_ts", 0.0) or 0.0
+            # 只认「刚刷新过」的券商口径：断链/查询失败时自动回落到本地拼装，
+            # 避免一个陈旧的总资产长期主导风控。
+            if bt > 0 and (time.time() - ts) <= 120:
+                return bt
         v = self._cash
         for p in self._positions.values():
             v += p.market_value
