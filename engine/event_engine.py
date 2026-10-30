@@ -2389,14 +2389,29 @@ class EventEngine:
         return True
 
     def _is_manual_exempt(self, code: str) -> bool:
-        """该持仓是否属于「观察篮且豁免趋势类退出」。
+        """该持仓是否豁免「趋势破位 / 超时 / 单日暴跌」等策略退出。
 
-        只有同时满足两点才豁免：① 确实由观察篮建仓且仍持有；
-        ② STRATEGY_PARAMS.manual_entry_exit_exempt 为 True（可随时关回）。
-        关闭豁免或清空观察篮清单，退出逻辑即完全回到已验证的原行为。
+        判据（满足其一即可，但总开关必须先开）：
+          ① `code in self._manual_positions` —— 确实由观察篮建仓且仍持有；
+          ② `code in STRATEGY_PARAMS["exit_exempt_codes"]` —— OWNER 声明式豁免。
+
+        【2026-10-30 新增 ②】原实现只有 ①，而 `_manual_positions` 仅在观察篮
+        **真的买过**时登记 ⇒ 对「OWNER 手工买回 / 自有原始仓位」完全无效。
+        实盘场景：2026-10-30 OWNER 在策略卖出 300308 后手工买回并要求长期持有，
+        若只把代码塞进 `manual_entry_codes`，① 仍不成立（持仓不是篮子买的），
+        而且一旦被卖出还会触发观察篮自动补买。故拆出独立清单。
+
+        总开关 `manual_entry_exit_exempt=False` 时 ①② 一起失效 —— 保留这条
+        一键回滚路径，退出逻辑即完全回到已验证的原行为（实测关掉豁免更差 −0.156）。
         """
-        return (code in self._manual_positions
-                and bool(STRATEGY_PARAMS.get("manual_entry_exit_exempt", True)))
+        if not bool(STRATEGY_PARAMS.get("manual_entry_exit_exempt", True)):
+            return False
+        if code in self._manual_positions:
+            return True
+        try:
+            return code in (STRATEGY_PARAMS.get("exit_exempt_codes") or [])
+        except (TypeError, AttributeError):
+            return False
 
     def _manual_entry_step(self, ticks: Dict[str, Tick],
                            current_prices: Dict[str, float]) -> None:

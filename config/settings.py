@@ -633,6 +633,22 @@ STRATEGY_PARAMS = {
     #   若篮子日后重新启用，本字段应维持 True。
     "manual_entry_exit_exempt": True,
 
+    # ---- 声明式退出豁免清单（2026-10-30 OWNER 指令）----
+    # 这些代码只要**持有**就豁免「趋势破位 / 超时 / 单日暴跌」等策略退出，
+    # 仅保留 hard_stop_pct（-18%）灾难止损。
+    #
+    # 为什么需要独立字段，而不是把它们塞进 manual_entry_codes：
+    #   `_is_manual_exempt` 原本只认 `_manual_positions`，而该集合仅在
+    #   **观察篮真的买过**时才登记 ⇒ 对「OWNER 手工买回/自有仓位」完全无效。
+    #   塞进 manual_entry_codes 又有副作用：一旦该票被卖出、变成不持有，
+    #   观察篮会在下一轮自动补买（按 manual_entry_amount 或风险预算）。
+    #   本字段只表达「不要自动卖」，不产生任何买入动作。
+    #
+    # 现状：300308.SZ 中际旭创 = OWNER 原始持仓，2026-10-30 手工买回后要求长期持有。
+    # 热读 STRATEGY_PARAMS ⇒ 增删代码无需重启；置空 [] 或把
+    #   manual_entry_exit_exempt 设 False 即完全恢复「策略全权管理退出」。
+    "exit_exempt_codes": ["300308.SZ"],
+
     # ---- 市场环境过滤（regime filter）----
     # 【2026-08-29 重大修正，已落地】原以为闸门是「唯一稳健结构性改进」，但 2026-08-29C
     # 用 25 个连续滚动窗（2024-01→2026-06）+ 7 折 walk-forward 交叉验证（count=750）
