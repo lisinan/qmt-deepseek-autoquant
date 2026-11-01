@@ -1,7 +1,12 @@
 # 定时任务清单（自进化闭环）
 
+> ⚠️ **2026-11-01 已被 `docs/AUTOMATION_CONTRACT.md` 取代（以下内容为历史留档）。**
+> 本文中「执行模式：paper」「始终使用 paper 测试收益」等表述**已作废**：账户自
+> 2026-10-29 15:05 起为 `live`（真实资金）。现行门禁、指标口径、发现路由、时段安排
+> 一律以 `docs/AUTOMATION_CONTRACT.md` 为准。
+>
 > 最后更新：2026-09-17（**升级为双周期自进化**）
-> 项目：qmtIDE-deepseek ｜ 执行模式：`paper`
+> 项目：qmtIDE-deepseek ｜ 执行模式：~~`paper`~~ → 现为 `live`（2026-10-29 起）
 > 所有自动化统一使用 `C:\Users\lisinan\.conda\envs\qmt\python.exe`，运行前需 `export PATH=/c/Users/lisinan/.conda/envs/qmt/Library/bin:/c/Users/lisinan/.conda/envs/qmt/DLLs:$PATH`（否则 sqlite3 报 DLL 缺失），并 `export PYTHONPATH=.`。
 
 ## 〇、用户硬要求（2026-09-17 明确）

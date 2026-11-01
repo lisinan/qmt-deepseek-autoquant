@@ -64,6 +64,43 @@ DB_PATH = ROOT / "storage" / "qmt.db"
 # 可用环境变量覆盖，便于测试。
 RANGE_BASE = float(os.environ.get("QMT_RANGE_BASE", "1000000"))
 
+# ---------------------------------------------------------------------------
+# 【2026-11-01】★ 模式断点（mode boundary）—— 账本不得跨 paper/live 链接
+#
+# 缺陷（P0，量测层，会让整条自进化链读到假崩盘）：
+#   2026-10-29 15:05 账户由 paper（初始 1,000,000，EOD 972,533.60）切换为
+#   **live 真实资金**（券商总资产 66,542.31）。账本原先只按「最近一个有快照
+#   的交易日」取 prev_asset，完全不认识模式切换 ⇒ live 首日会被记成
+#       63,684 / 972,533.60 − 1 = **−93.5%**
+#   而 EVOLVE 的全部「当前 vs 目标差距」都以账本为唯一事实来源 ⇒ 会得出
+#   「账户已崩、需要降杠杆/停手」的结论，与真实情况（+1,273 元当日盈利）
+#   完全相反。这属于本项目第 19 类缺陷「口径背离」的量测版本。
+#
+# 处置：显式登记模式断点；断点日及其之后
+#   ① prev_asset 不再跨断点链接 —— 上一快照日早于断点则用断点基线；
+#   ② range_pct 以断点基线为分母（不再用 paper 的 1,000,000）；
+#   ③ 行内新增 mode / baseline 字段，供 KPI#4「live 日度账本」按模式过滤。
+# 新增断点时**只追加**，不改写历史行。
+MODE_BREAKS = {
+    "2026-10-29": {"mode": "live", "baseline": 66542.31},
+}
+
+
+def _mode_break_for(day: str):
+    """返回该日适用的 (断点日, mode, baseline)；无断点返回 None。"""
+    if not day:
+        return None
+    cands = [d for d in MODE_BREAKS if d <= day]
+    if not cands:
+        return None
+    d = max(cands)
+    spec = MODE_BREAKS[d]
+    try:
+        base = float(spec["baseline"])
+    except (TypeError, ValueError):
+        return None
+    return d, str(spec["mode"]), base
+
 _MD_HEADER = """# EVOLUTION_LEDGER — 自进化账本（真实收益反馈）
 
 > 本文件由 `strategy/record_ledger.py` **仅追加**写入，历史一律不改写。
@@ -117,7 +154,7 @@ def build_row(rep: dict) -> dict:
         except (TypeError, ValueError):
             return None
 
-    return {
+    return apply_mode_boundary({
         "date": rep.get("date") or _latest_review_date(),
         # 跨日真实口径（含隔夜重估）——账户表现的唯一基准
         "prev_asset": _num(acct.get("prev_asset")),
@@ -136,7 +173,7 @@ def build_row(rep: dict) -> dict:
         "max_consec_loss": risk.get("max_consecutive_losses"),
         "fills_n": pnl.get("fills_n"),
         "eod_positions_n": len(eod_pos) if isinstance(eod_pos, dict) else None,
-    }
+    })
 
 
 # ---------------------------------------------------------------------------
@@ -348,6 +385,47 @@ def prev_snapshot_day(day: str, path=None) -> str | None:
     return days[-1] if days else None
 
 
+def apply_mode_boundary(row: dict, path=None) -> dict:
+    """模式断点后处理（**单一实现**，两条构造路径共用，防口径分叉）。
+
+    paper 时期行：原样返回，只补 ``mode="paper"``（历史行语义不变）。
+    live 时期行：重算 prev_asset / daily_pnl / daily_ret_pct / range_pct，
+    使断点日从基线起算、其后在 live 内部正常逐日链接。数据取不到时保持原值。
+    """
+    day = row.get("date") or ""
+    brk = _mode_break_for(day)
+    if brk is None:
+        row.setdefault("mode", "paper")
+        return row
+    bday, mode, base = brk
+    row["mode"] = mode
+    row["baseline"] = round(base, 2)
+    eod = row.get("eod_asset")
+    if eod is None:
+        return row
+    try:
+        eod = float(eod)
+    except (TypeError, ValueError):
+        return row
+    pd = prev_snapshot_day(day, path)
+    if pd and pd >= bday:
+        prev = eod_asset(pd, path)
+        try:
+            prev = float(prev) if prev is not None else None
+        except (TypeError, ValueError):
+            prev = None
+    else:
+        prev = base          # 断点日：不跨模式链接，从基线起算
+    if not prev or prev <= 0:
+        return row
+    row["prev_asset"] = round(prev, 2)
+    row["daily_pnl"] = round(eod - prev, 2)
+    row["daily_ret_pct"] = round((eod / prev - 1) * 100.0, 2)
+    if base > 0:
+        row["range_pct"] = round((eod / base - 1) * 100.0, 2)
+    return row
+
+
 def day_fills_n(day: str, path=None) -> int | None:
     if not Path(path or DB_PATH).exists():
         return None
@@ -417,7 +495,8 @@ def build_row_from_db(target: str, path=None, note: str = "") -> dict | None:
                    f"改用最近可信交易日 EOD {eod:,.2f}"
                    if contaminated else ""),
     }
-    return row
+    # 【2026-11-01】live 时期行必须在断点处重置基线，见 MODE_BREAKS 注释。
+    return apply_mode_boundary(row, path)
 
 
 def missing_days(path=None, ledger_rows=None, limit: int = 40,
