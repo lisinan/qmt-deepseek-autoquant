@@ -94,6 +94,7 @@ def _collect_tests():
             # 【2026-11-01】账本模式断点：paper(972,533.60) → live(66,542.31)
             # 若不认模式，live 首日会被记成 −93.5% 假崩盘，毒化整条进化链。
             "tests.test_ledger_mode_boundary",
+            "tests.test_ledger_eod_freshness",
             # 【2026-10-30 P1】持仓订阅 + 盯市价兜底：池外持仓（OWNER 手工建仓 /
             # 观察篮补买）原来收不到 tick，盯市价退回成本价 ⇒ 总资产低估 57.7%。
             "tests.test_position_subscription_mark",

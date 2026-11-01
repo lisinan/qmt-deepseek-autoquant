@@ -154,7 +154,7 @@ def build_row(rep: dict) -> dict:
         except (TypeError, ValueError):
             return None
 
-    return apply_mode_boundary({
+    return annotate_eod_freshness(apply_mode_boundary({
         "date": rep.get("date") or _latest_review_date(),
         # 跨日真实口径（含隔夜重估）——账户表现的唯一基准
         "prev_asset": _num(acct.get("prev_asset")),
@@ -173,7 +173,7 @@ def build_row(rep: dict) -> dict:
         "max_consec_loss": risk.get("max_consecutive_losses"),
         "fills_n": pnl.get("fills_n"),
         "eod_positions_n": len(eod_pos) if isinstance(eod_pos, dict) else None,
-    })
+    }), None)
 
 
 # ---------------------------------------------------------------------------
@@ -379,6 +379,65 @@ def eod_asset_raw(day: str, path=None) -> float | None:
     return None if r is None or r["total_asset"] is None else float(r["total_asset"])
 
 
+# 收盘快照判定线（HHMM）。A 股 15:00 收盘，快照落在 15:00 及之后才算收盘价。
+EOD_CLOSE_HHMM = 1500
+
+
+def eod_snapshot_ts(day: str, path=None) -> str | None:
+    """该日最后一条权益快照的时间戳（ISO 字符串）。
+
+    为什么需要：``eod_asset_raw`` 取的是「当日最后一条快照」，它**不保证是收盘价**。
+    引擎若在收盘前退出/休眠（2026-10-30 11:29 后即无快照），这个值就是盘中价，
+    直接当 EOD 会系统性低估当日跌幅（实测 −4.29% 被记成 −1.19%，差 3.1pt）。
+    """
+    if not Path(path or DB_PATH).exists():
+        return None
+    with _conn(path) as con:
+        r = con.execute(
+            "SELECT ts FROM equity_snapshots "
+            "WHERE substr(ts,1,10)=? ORDER BY ts DESC, id DESC LIMIT 1", (day,)
+        ).fetchone()
+    return None if r is None or r["ts"] is None else str(r["ts"])
+
+
+def annotate_eod_freshness(row: dict, path=None) -> dict:
+    """给账本行补 ``eod_ts`` / ``eod_is_close``，让「EOD 是否真是收盘值」可被消费方看见。
+
+    ★ 缺陷背景（2026-11-01 复核）
+        账本的 ``eod_asset`` 取自当日**最后一条快照**。2026-10-30 引擎 11:29 后休眠
+        （13:00–15:00 零快照，属整机休眠，见 ``docs/AUTOMATION_CONTRACT.md`` §4.3），
+        于是把 11:29 的盘中资产 65,748.42 当成收盘值，当日收益记 −1.19%，
+        真实 −4.29%。**数字看着合理、方向也对，所以没有任何环节报警。**
+        这类「静默低估」比明显错误更危险：KPI#4 直接建立在它上面。
+
+    ★ 本函数只增字段、不改任何既有数值语义（可逆：删掉调用即恢复）。
+        - ``eod_ts``：最后一根快照时间；取不到 → None（不猜）。
+        - ``eod_is_close``：True=快照在 15:00 后，可信作收盘价；
+          False=盘中快照，**不可与其它交易日的 EOD 直接比较**；
+          None=无快照可判。
+        为 False 时在 ``note`` 追加提示，避免消费方（EVOLVE / KPI#4）误用。
+    """
+    day = row.get("date") or ""
+    ts = eod_snapshot_ts(day, path) if day else None
+    row["eod_ts"] = ts
+    if not ts:
+        row["eod_is_close"] = None
+        return row
+    try:
+        hhmm = int(ts[11:13]) * 100 + int(ts[14:16])
+    except (ValueError, IndexError):
+        row["eod_is_close"] = None
+        return row
+    is_close = hhmm >= EOD_CLOSE_HHMM
+    row["eod_is_close"] = is_close
+    if not is_close:
+        tag = f"[EOD 非收盘] 最后一根快照 {ts[11:16]} 早于 15:00，该 eod_asset 为盘中值"
+        note = row.get("note") or ""
+        if tag not in note:
+            row["note"] = (note + " " + tag).strip()
+    return row
+
+
 def prev_snapshot_day(day: str, path=None) -> str | None:
     """该日之前最近一个有快照的交易日（跨日口径的 prev_asset 来源）。"""
     days = [d for d in snapshot_days(path) if d < day]
@@ -496,7 +555,8 @@ def build_row_from_db(target: str, path=None, note: str = "") -> dict | None:
                    if contaminated else ""),
     }
     # 【2026-11-01】live 时期行必须在断点处重置基线，见 MODE_BREAKS 注释。
-    return apply_mode_boundary(row, path)
+    # 同时补 EOD 时间戳/收盘判定，防止「盘中快照冒充收盘」再次静默发生。
+    return annotate_eod_freshness(apply_mode_boundary(row, path), path)
 
 
 def missing_days(path=None, ledger_rows=None, limit: int = 40,

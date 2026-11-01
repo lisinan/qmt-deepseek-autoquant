@@ -18,6 +18,9 @@
 
 ## OPEN（按优先级）
 
+- [P0] [SAFE] [已修 2026-11-01] 账本 2026-10-30 EOD 用 **11:29 盘中快照**冒充收盘价（引擎 11:29 后休眠、当日无收盘快照）⇒ 记 −1.19%，真实 **−4.29%**，低估 3.1pt；已按收盘价重算为 63,684.42 并双源核对（券商读数 63,684.34）。**根因未修**：`eod_asset_raw` 仍取「当日最后一条快照」，故新增 `eod_ts`/`eod_is_close` 字段供消费方识别 — `strategy/record_ledger.py::annotate_eod_freshness` + `tests/test_ledger_eod_freshness.py` 6 条 — 发现于盘前准备 2026-11-01
+- [P1] [SAFE] [待 OWNER] `_pos_meta`（建仓日 / ATR 止损价 / 目标价 / 峰值）**只在内存、从不持久化** ⇒ 每次重启后 `open_date=null`、ATR 止损退化为 `avg×(1-18%)` 宽幅兜底。实测 510050 真实 ATR 止损应为 2.174，现为 2.353（**放宽 8%**）；300308 由 457→159.281（因 `exit_exempt_codes` 豁免，仅剩 −18% 灾难止损，影响可接受）。修法=把 `_pos_meta` 写入 `engine_state`，需重启生效 — `engine/event_engine.py:512/3298/3974` — 发现于盘前准备 2026-11-01
+- [P1] [INFO] [跟踪中] 北向资金缓存已陈旧 **68 天**（末端 20260825），引擎每轮 `fail-open` 并打 ERROR ⇒ 闸门 `northbound_mode="gate"` 名义开启、实际从不拦截（与 09-28 结论「死闸门」一致）。属噪声而非资金风险；改动需 re-baseline（牵连 test_northbound/_evolve_wf/opt_harness），不在盘前动 — `data/northbound_cache.py` — 发现于盘前准备 2026-11-01
 - [P0] [FORBIDDEN] [跟踪中] T+1 卖出后同标的立即回买触发 `306050` 报单风暴（11:26–11:30 每 30s 一单全被拒，同时 `BUY 拒绝: pending_sell`）— `reports/R45_AM_LIVE_T1_ORDER_STORM_20261030.md` — 发现于 AM-EVOLVE 2026-10-30；OWNER 2026-10-30 裁定「暂时不动」，现由 `exit_exempt_codes` 抑制 300308 空转，通用修法未做
 - [P0] [FORBIDDEN] [已修 10fbfc1] live 日内盈亏曾走「已实现」口径，而券商 `avg_cost` 是摊薄成本（300308=194.246）⇒ 亏 6,000 仍可开仓，日内亏损熔断事实失效；已改权益口径 `_daily_pnl = 总资产 − 当日开盘资产` — `risk/manager.py::on_asset_update` / `engine/event_engine.py` 调用点 — 发现于 R46-b 2026-10-30
 - [P0] [SAFE] [已修 010ff14] 启动持仓初始化自带副本 `last_price=avg_cost`，绕过四档兜底并覆盖 `peak/stop/open_date` ⇒ 总资产低估 57.7%（27,812.98 vs 63,684.42）— `engine/event_engine.py::_init_positions_from_broker` → 已改为委托 `_sync_broker_positions()` — 发现于 R46 2026-10-30

@@ -47,3 +47,6 @@ logs/gate_timeline.jsonl
 storage/qmt.db.bak-*
 # guardian 降级告警的按天去重标记（运行时产物）
 logs/.guardian_alert_last
+
+# 一次性数据修正前的备份（本地保留，不进版本库）
+logs/*.bak-*
