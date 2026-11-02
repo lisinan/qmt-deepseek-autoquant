@@ -47,14 +47,19 @@ def main() -> None:
     payload = {"params": {"score_th": SCORE_TH, "min_sig": MIN_SIG,
                           "min_mom": MIN_MOM, "mom_n": MOM_N,
                           "top_n": TOP_N}, "dates": {}}
-    for asof, drop in (("20261027", 1), ("20261028", 0)):
+    for drop in (1, 0):
         rows = []
+        asof = None
         for c in codes:
             raw = qmt_client.get_history(c, period="1d", count=200) or []
             if len(raw) < MOM_N + TAIL // 2:
                 continue
             if drop:
                 raw = raw[:-drop]
+            # 标签取实际末根日期（time[:8]），逐次拉取而非硬编码，
+            # 否则数据已是当日、标签却停在旧日期（2026-11-02 已发现）
+            if asof is None and raw:
+                asof = str(raw[-1]["time"])[:8]
             cl = [b["close"] for b in raw]
             o = [b["open"] for b in raw]
             h = [b["high"] for b in raw]

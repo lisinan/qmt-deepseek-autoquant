@@ -138,7 +138,7 @@ def load_review(target: str) -> dict:
     return json.loads(p.read_text(encoding="utf-8"))
 
 
-def build_row(rep: dict) -> dict:
+def build_row(rep: dict, ledger_rows=None) -> dict:
     """从复盘 JSON 抽取「账户真实表现」行。缺字段降级 None。"""
     acct = rep.get("account_daily") or {}
     rng = rep.get("account_range") or {}
@@ -173,7 +173,7 @@ def build_row(rep: dict) -> dict:
         "max_consec_loss": risk.get("max_consecutive_losses"),
         "fills_n": pnl.get("fills_n"),
         "eod_positions_n": len(eod_pos) if isinstance(eod_pos, dict) else None,
-    }), None)
+    }, None, ledger_rows), None)
 
 
 # ---------------------------------------------------------------------------
@@ -444,7 +444,38 @@ def prev_snapshot_day(day: str, path=None) -> str | None:
     return days[-1] if days else None
 
 
-def apply_mode_boundary(row: dict, path=None) -> dict:
+def prev_eod_from_ledger(day: str, ledger_rows=None, path=None) -> float | None:
+    """跨日链接的 prev_asset 优先取**上一交易日账本行**的 eod_asset（已修正的单一事实源），
+    DB 原始快照仅作兜底。
+
+    【2026-11-02 工程维护·穿透缺陷】``eod_asset(prev_day)`` 只查 ``equity_snapshots``，
+    而 10-30 的修正（65,748.42→63,684.42，fix=ledger_eod_1030_close_recalc）只写在账本
+    行里 ⇒ 11-02 的 prev 又取回未修正的盘中快照，记出 −3.86% 的假亏损（正确应为 −0.75%）。
+    账本行本身已是修正后的值，故**上一交易日**的账本行应被继承，而非回 DB 原始快照。
+
+    必须先按 ``prev_snapshot_day(day)`` 定位「上一交易日」再查账本，**不能**取「最近的账本
+    行 < day」——后者会跨过缺失的 live 日（如 10-29 无账本行）误链到 paper 的
+    972,533.60（已实测：上策错误地回退到 paper 行）。
+
+    ``ledger_rows`` 为 None 时读全局账本（生产默认）；测试传 ``[]`` 可强制走 DB 兜底，
+    保持测试隔离。回滚：删本函数、把两处调用换回 ``eod_asset(prev_day, path)``。
+    """
+    pd = prev_snapshot_day(day, path)
+    if not pd:
+        return None
+    if ledger_rows is None:
+        ledger_rows = read_ledger()
+    for r in ledger_rows:
+        if r.get("date") == pd and r.get("eod_asset") is not None:
+            try:
+                return float(r["eod_asset"])
+            except (TypeError, ValueError):
+                break
+    v = eod_asset(pd, path)
+    return float(v) if v is not None else None
+
+
+def apply_mode_boundary(row: dict, path=None, ledger_rows=None) -> dict:
     """模式断点后处理（**单一实现**，两条构造路径共用，防口径分叉）。
 
     paper 时期行：原样返回，只补 ``mode="paper"``（历史行语义不变）。
@@ -468,7 +499,8 @@ def apply_mode_boundary(row: dict, path=None) -> dict:
         return row
     pd = prev_snapshot_day(day, path)
     if pd and pd >= bday:
-        prev = eod_asset(pd, path)
+        # 【2026-11-02】prev 优先继承上一行账本的修正值，DB 原始快照仅兜底
+        prev = prev_eod_from_ledger(day, ledger_rows, path)
         try:
             prev = float(prev) if prev is not None else None
         except (TypeError, ValueError):
@@ -506,7 +538,7 @@ def day_eod_positions_n(day: str, path=None) -> int | None:
     return None if r is None or r["positions_count"] is None else int(r["positions_count"])
 
 
-def build_row_from_db(target: str, path=None, note: str = "") -> dict | None:
+def build_row_from_db(target: str, path=None, note: str = "", ledger_rows=None) -> dict | None:
     """不依赖 review JSON，直接从 DB 构造账本行。
 
     只填 DB 能确证的核心字段（跨日真实收益 / 盈亏 / EOD 权益 / 区间），
@@ -519,8 +551,8 @@ def build_row_from_db(target: str, path=None, note: str = "") -> dict | None:
     # 否则审计时无法区分「真的没波动」与「脏数据被中和」。
     raw_eod = eod_asset_raw(target, path)
     contaminated = (raw_eod is not None and abs(raw_eod - eod) > 1e-6)
-    prev_day = prev_snapshot_day(target, path)
-    prev = eod_asset(prev_day, path) if prev_day else None
+    # 【2026-11-02】prev 优先继承上一行账本的修正值（穿透缺陷修复），DB 兜底
+    prev = prev_eod_from_ledger(target, ledger_rows, path)
 
     def _n(v):
         try:
@@ -556,7 +588,9 @@ def build_row_from_db(target: str, path=None, note: str = "") -> dict | None:
     }
     # 【2026-11-01】live 时期行必须在断点处重置基线，见 MODE_BREAKS 注释。
     # 同时补 EOD 时间戳/收盘判定，防止「盘中快照冒充收盘」再次静默发生。
-    return annotate_eod_freshness(apply_mode_boundary(row, path), path)
+    # 【2026-11-02】ledger_rows 透传给 apply_mode_boundary，避免其用默认 None 读全局账本
+    # 覆盖本函数已算好的 prev（否则测试态 ledger_rows=[] 与生产线 ledger 行为不一致）。
+    return annotate_eod_freshness(apply_mode_boundary(row, path, ledger_rows), path)
 
 
 def missing_days(path=None, ledger_rows=None, limit: int = 40,

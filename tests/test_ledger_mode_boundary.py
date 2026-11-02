@@ -70,7 +70,8 @@ def _mkdb() -> Path:
 
 
 def _row(day: str, db: Path) -> dict:
-    r = RL.build_row_from_db(day, db)
+    # ledger_rows=[] 强制走 DB 兜底，保持本文件既有断言（DB 派生 prev）的隔离性
+    r = RL.build_row_from_db(day, db, ledger_rows=[])
     assert r is not None, f"{day} 未构造出账本行"
     return r
 
@@ -130,3 +131,34 @@ def test_rows_carry_mode_for_kpi4():
     paper = _row("2026-10-28", db)
     assert live["mode"] == "live" and paper["mode"] == "paper"
     assert live.get("baseline") == LIVE_BASE
+
+
+# ---------------------------------------------------------------- ⑥ 穿透缺陷
+
+def test_prev_prefers_corrected_ledger_row_over_db_raw():
+    """【2026-11-02 穿透缺陷】prev_asset 必须继承上一行账本的修正值，
+    而不是回 DB 的原始盘中快照（否则 11-02 会取到 10-30 未修正的 65,748.42）。"""
+    tmp = Path(tempfile.mkdtemp(prefix="qmt_ledger_pen_")) / "ledger.db"
+    con = sqlite3.connect(tmp)
+    con.execute(
+        "CREATE TABLE equity_snapshots ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT, total_asset REAL, "
+        "cash REAL, positions_count INTEGER)")
+    con.execute("CREATE TABLE fills (id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT)")
+    con.executemany(
+        "INSERT INTO equity_snapshots (ts,total_asset,cash,positions_count) "
+        "VALUES (?,?,?,?)", [
+            ("2026-10-30T15:00:00", 65748.42, 6953.42, 2),   # DB 原始（未修正）
+            ("2026-11-02T15:00:00", 63207.98, 63207.98, 0),  # 今日 EOD
+        ])
+    con.commit()
+    con.close()
+    # 账本里 10-30 已修正为 63,684.42（与线上 fix=ledger_eod_1030_close_recalc 同）
+    ledger = [{"date": "2026-10-30", "eod_asset": 63684.42}]
+    r = RL.build_row_from_db("2026-11-02", tmp, ledger_rows=ledger)
+    assert r is not None
+    assert r["prev_asset"] == 63684.42, r["prev_asset"]   # 继承账本修正值
+    assert abs(r["daily_ret_pct"] - -0.75) < 0.02, r["daily_ret_pct"]
+    # 反向对照：ledger_rows=[] 时必须回退到 DB 原始 65,748.42（旧行为不变）
+    r2 = RL.build_row_from_db("2026-11-02", tmp, ledger_rows=[])
+    assert r2["prev_asset"] == 65748.42, r2["prev_asset"]
