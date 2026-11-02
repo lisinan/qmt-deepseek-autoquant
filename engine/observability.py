@@ -52,6 +52,13 @@ class Observability:
         o = self._owner
         ee = self._ee()
         total_asset = round(o._total_asset(), 2)
+        # 展示口径与风控口径保持一致：券商值可信时，面板的「总资产」也用风控
+        # 实际吃进去的那个数（否则会出现「面板 6,953 / 风控按 63,344 判定」的分裂，
+        # 用户永远看不懂熔断是怎么来的）。
+        if getattr(o, "_risk_asset_basis", "") == "broker":
+            _ra = float(getattr(o, "_risk_asset_last", 0.0) or 0.0)
+            if _ra > 0:
+                total_asset = round(_ra, 2)
         snap = {
             "tick": o._tick_count,
             # 【2026-09-22】行情与主循环新鲜度：页面据此显示「行情滞后 N 秒」，
@@ -133,6 +140,18 @@ class Observability:
         """
         o = self._owner
         snap = o.risk.snapshot()
+        # ★【2026-11-02 P0】把「这条熔断是按什么口径算的」明明白白摆到面板上。
+        #   2026-11-02 10:34 面板显示「熔断 daily_stop −89.25%」，而真实日内只有
+        #   −2.28%（券商口径 63,344 vs 开盘 64,683）—— 用户只能看到结论、看不到
+        #   依据，无法判断这是真亏损还是数据毛刺。现在三态可见：
+        #     broker    = 券商权威值（可信，熔断据此判定）
+        #     local     = paper/回测本地拼装（正常路径）
+        #     untrusted = 券商不可用 ⇒ 本轮**跳过**熔断判定（不是"没熔断"）
+        snap["asset_basis"] = getattr(o, "_risk_asset_basis", "") or "local"
+        snap["asset_trusted"] = snap["asset_basis"] != "untrusted"
+        snap["asset_untrusted_n"] = int(getattr(o, "_asset_untrusted_n", 0) or 0)
+        snap["risk_asset_used"] = round(
+            float(getattr(o, "_risk_asset_last", 0.0) or 0.0), 2)
         open_asset = o._day_open_asset
         if open_asset and open_asset > 0:
             intraday = total_asset - open_asset

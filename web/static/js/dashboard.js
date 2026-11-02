@@ -182,10 +182,17 @@
     });
 
     var r = snap.risk || {};
-    $('risk-halted').textContent = r.halted ? ('熔断 (' + r.halt_reason + ')') : '正常';
+    // 熔断状态 + **判定依据**（2026-11-02 P0）：面板必须能回答「这条熔断是按谁算的」。
+    // 事故背景：10:34 显示「熔断 daily_stop −89.25%」，而真实日内只有 −2.28%
+    // （券商口径），用户只能看到结论、看不到依据，无法分辨「真亏损」与「数据毛刺」。
+    var _basis = r.asset_basis || 'local';
+    var _basisTag = (_basis === 'broker') ? '（券商真实口径）'
+      : (_basis === 'untrusted' ? '（资产数据不可信·本轮暂停判定）' : '');
+    $('risk-halted').textContent = (r.halted ? ('熔断 (' + r.halt_reason + ')') : '正常') + _basisTag;
     $('risk-halted').className = r.halted ? 'halted' : 'ok';
-    // 风控卡片整体状态色：熔断红框 / 正常绿框
-    $('risk-box').className = 'risk-box ' + (r.halted ? 'alert' : 'safe');
+    // 风控卡片整体状态色：熔断红框 / 正常绿框；资产不可信时用警示框
+    $('risk-box').className = 'risk-box ' + (r.halted ? 'alert'
+      : (r.asset_trusted === false ? 'warn' : 'safe'));
     // 日内盈亏：优先显示真实日内总盈亏（已实现 + 当日浮动），无基线时回退已实现 daily_pnl
     var ip = (r.intraday_pnl != null) ? r.intraday_pnl : (r.daily_pnl || 0);
     var ipc = (r.intraday_pnl_pct != null) ? r.intraday_pnl_pct : null;

@@ -1,14 +1,14 @@
 {
- "generated_at": "2026-10-29 20:18:13",
+ "generated_at": "2026-11-01 21:08:49",
  "search_space": {
-  "total": 77,
+  "total": 79,
   "by_class": {
-   "仅实盘": 23,
+   "仅实盘": 25,
    "死参数": 3,
    "双向可验证": 50,
    "别名可验证": 1
   },
-  "usable_ratio": 0.649,
+  "usable_ratio": 0.633,
   "rows": [
    {
     "param": "ma_short",
@@ -773,6 +773,18 @@
     }
    },
    {
+    "param": "manual_entry_amount",
+    "live": 1,
+    "research": 0,
+    "alias": [],
+    "class": "仅实盘",
+    "note": "回测器不读该键 → A/B 测的是另一个策略，结论只能记「未验证」",
+    "live_files": {
+     "engine/event_engine.py": 1
+    },
+    "research_files": {}
+   },
+   {
     "param": "manual_entry_exit_exempt",
     "live": 1,
     "research": 2,
@@ -786,6 +798,18 @@
      "strategy/_evolve_wf.py": 1,
      "strategy/backtest_daily.py": 1
     }
+   },
+   {
+    "param": "exit_exempt_codes",
+    "live": 1,
+    "research": 0,
+    "alias": [],
+    "class": "仅实盘",
+    "note": "回测器不读该键 → A/B 测的是另一个策略，结论只能记「未验证」",
+    "live_files": {
+     "engine/event_engine.py": 1
+    },
+    "research_files": {}
    },
    {
     "param": "regime_mode",
@@ -1301,94 +1325,323 @@
  },
  "loop_activity": [
   {
-   "id": "ae0e2431",
-   "name": "盘后复盘 OBSERVE",
-   "last_run": "2026-10-29 15:38",
-   "age_days": 0.2,
-   "stale": false,
-   "status": "✓ 运行中"
-  },
-  {
    "id": "98ffc7a2",
    "name": "盘前就绪 PRE-MARKET",
+   "cadence": "daily",
    "last_run": "2026-10-29 09:31",
-   "age_days": 0.4,
-   "stale": false,
-   "status": "✓ 运行中"
+   "age_days": 3.5,
+   "slot": "2026-10-30 09:05",
+   "state": "missed",
+   "state_label": "③ 完全未运行",
+   "verdict": "awake_no_artifact",
+   "verdict_label": "醒着但零留痕（任务自身/宿主未触发）",
+   "evidence": "槽位 10-30 09:05 后无 memory、无产物；窗口内 17 条心跳，最大空档 6 分钟 ⇒ 机器醒着却零留痕，问题在任务自身",
+   "halt_markers": [],
+   "product": null,
+   "notes": [],
+   "missed_slots": 1,
+   "slot_awake": true,
+   "max_gap_min": 5.6,
+   "stale": true
   },
   {
    "id": "789d671e",
    "name": "上午自进化 AM-EVOLVE",
-   "last_run": "2026-10-29 12:29",
-   "age_days": 0.3,
-   "stale": false,
-   "status": "✓ 运行中"
+   "cadence": "daily",
+   "last_run": "2026-10-30 11:47",
+   "age_days": 2.4,
+   "slot": "2026-10-30 11:40",
+   "state": "normal",
+   "state_label": "① 正常产出",
+   "verdict": "",
+   "verdict_label": "—",
+   "evidence": "槽位 10-30 11:40 已跑，产物 reports\\R45_AM_LIVE_T1_ORDER_STORM_20261030.md（10-30 11:47）",
+   "halt_markers": [],
+   "product": "reports\\R45_AM_LIVE_T1_ORDER_STORM_20261030.md（10-30 11:47）",
+   "notes": [],
+   "missed_slots": 0,
+   "slot_awake": null,
+   "max_gap_min": null,
+   "stale": false
   },
   {
-   "id": "d8013e93",
-   "name": "周中自进化 PM-EVOLVE",
-   "last_run": "2026-10-21 18:31",
-   "age_days": 8.1,
-   "stale": true,
-   "status": "⚠ 停摆"
+   "id": "ae0e2431",
+   "name": "盘后复盘 OBSERVE",
+   "cadence": "daily",
+   "last_run": "2026-10-30 17:27",
+   "age_days": 2.2,
+   "slot": "2026-10-30 15:35",
+   "state": "halted",
+   "state_label": "② 运行但自我停机",
+   "verdict": "prompt_gate",
+   "verdict_label": "prompt 门禁自停",
+   "evidence": "末条含停机标记 不执行 Step/整体停机/硬闸门/闸门未通过，且 10-30 15:35 起窗口内无产物；槽位窗口机器休眠（整窗口无心跳）",
+   "halt_markers": [
+    "不执行 Step",
+    "整体停机",
+    "硬闸门",
+    "闸门未通过"
+   ],
+   "product": null,
+   "notes": [],
+   "missed_slots": 0,
+   "slot_awake": false,
+   "max_gap_min": null,
+   "stale": true
   },
   {
-   "id": "f093d93b",
-   "name": "周度深度 SYNTHESIZE",
-   "last_run": "2026-10-10 22:23",
-   "age_days": 18.9,
-   "stale": true,
-   "status": "⚠ 停摆"
+   "id": "1c6e4605",
+   "name": "开仓归因 WHY-NO-ENTRY",
+   "cadence": "daily",
+   "last_run": "2026-10-30 17:30",
+   "age_days": 2.2,
+   "slot": "2026-10-30 15:55",
+   "state": "normal",
+   "state_label": "① 正常产出",
+   "verdict": "",
+   "verdict_label": "—",
+   "evidence": "槽位 10-30 15:55 已跑，产物 reports\\why_no_entry\\DAILY_20261030.md（10-30 17:30）（末条含门禁字样但有产物）",
+   "halt_markers": [
+    "只读 + 顶部告警"
+   ],
+   "product": "reports\\why_no_entry\\DAILY_20261030.md（10-30 17:30）",
+   "notes": [],
+   "missed_slots": 0,
+   "slot_awake": null,
+   "max_gap_min": null,
+   "stale": false
   },
   {
-   "id": "ebde5d30",
-   "name": "守护兜底 GUARD",
-   "last_run": "2026-10-29 19:50",
-   "age_days": 0.0,
-   "stale": false,
-   "status": "✓ 运行中"
+   "id": "6265093f",
+   "name": "量测卫生 METRIC-HYGIENE",
+   "cadence": "daily",
+   "last_run": "2026-10-30 17:36",
+   "age_days": 2.1,
+   "slot": "2026-10-30 16:20",
+   "state": "normal",
+   "state_label": "① 正常产出",
+   "verdict": "",
+   "verdict_label": "—",
+   "evidence": "槽位 10-30 16:20 已跑，产物 reports\\measure_hygiene\\HYGIENE_20261030.md（10-30 17:36）",
+   "halt_markers": [],
+   "product": "reports\\measure_hygiene\\HYGIENE_20261030.md（10-30 17:36）",
+   "notes": [],
+   "missed_slots": 0,
+   "slot_awake": null,
+   "max_gap_min": null,
+   "stale": false
   },
   {
    "id": "2534a859",
    "name": "工程维护 17:00",
-   "last_run": "2026-10-29 17:06",
-   "age_days": 0.1,
-   "stale": false,
-   "status": "✓ 运行中"
+   "cadence": "daily",
+   "last_run": "2026-10-30 17:42",
+   "age_days": 2.1,
+   "slot": "2026-10-30 17:00",
+   "state": "halted",
+   "state_label": "② 运行但自我停机",
+   "verdict": "prompt_gate",
+   "verdict_label": "prompt 门禁自停",
+   "evidence": "末条含停机标记 停止一切落盘，且 10-30 17:00 起窗口内无产物；槽位窗口机器休眠（最大心跳空档 36.9 分钟）",
+   "halt_markers": [
+    "停止一切落盘"
+   ],
+   "product": null,
+   "notes": [],
+   "missed_slots": 0,
+   "slot_awake": false,
+   "max_gap_min": 36.9,
+   "stale": true
   },
   {
-   "id": "1c6e4605",
-   "name": "开仓归因日报",
-   "last_run": "2026-10-29 15:43",
-   "age_days": 0.2,
-   "stale": false,
-   "status": "✓ 运行中"
+   "id": "ebde5d30",
+   "name": "守护兜底 GUARD",
+   "cadence": "hourly",
+   "last_run": "2026-10-30 22:32",
+   "age_days": 1.9,
+   "slot": "2026-10-30 16:00",
+   "state": "normal",
+   "state_label": "① 正常产出",
+   "verdict": "",
+   "verdict_label": "—",
+   "evidence": "槽位 10-30 16:00 已跑",
+   "halt_markers": [],
+   "product": null,
+   "notes": [
+    "含 [GUARDIAN-ALERT]（已判定为假告警，不计入停机）"
+   ],
+   "missed_slots": 0,
+   "slot_awake": null,
+   "max_gap_min": null,
+   "stale": false
   },
   {
-   "id": "6265093f",
-   "name": "量测卫生守卫",
-   "last_run": "2026-10-29 16:14",
-   "age_days": 0.2,
-   "stale": false,
-   "status": "✓ 运行中"
+   "id": "d8013e93",
+   "name": "周中自进化 PM-EVOLVE",
+   "cadence": "weekly",
+   "last_run": "2026-10-21 18:31",
+   "age_days": 11.1,
+   "slot": "2026-10-28 18:00",
+   "state": "missed",
+   "state_label": "③ 完全未运行",
+   "verdict": "awake_no_artifact",
+   "verdict_label": "醒着但零留痕（任务自身/宿主未触发）",
+   "evidence": "槽位 10-28 18:00 后无 memory、无产物；窗口内 16 条心跳，最大空档 5 分钟 ⇒ 机器醒着却零留痕，问题在任务自身",
+   "halt_markers": [],
+   "product": null,
+   "notes": [],
+   "missed_slots": 1,
+   "slot_awake": true,
+   "max_gap_min": 5.1,
+   "stale": true
+  },
+  {
+   "id": "f093d93b",
+   "name": "周度深度 SYNTHESIZE",
+   "cadence": "weekly",
+   "last_run": "2026-11-01 20:20",
+   "age_days": 0.0,
+   "slot": "2026-10-25 20:00",
+   "state": "normal",
+   "state_label": "① 正常产出",
+   "verdict": "",
+   "verdict_label": "—",
+   "evidence": "槽位 10-25 20:00 已跑",
+   "halt_markers": [],
+   "product": null,
+   "notes": [],
+   "missed_slots": 0,
+   "slot_awake": null,
+   "max_gap_min": null,
+   "stale": false
   },
   {
    "id": "4a425d4f",
-   "name": "递归自进化",
-   "last_run": null,
-   "age_days": null,
-   "stale": false,
-   "status": "待首跑（新增）"
+   "name": "递归自进化 RSI",
+   "cadence": "weekly",
+   "last_run": "2026-10-29 20:19",
+   "age_days": 3.0,
+   "slot": "2026-10-25 21:00",
+   "state": "normal",
+   "state_label": "① 正常产出",
+   "verdict": "",
+   "verdict_label": "—",
+   "evidence": "槽位 10-25 21:00 已跑",
+   "halt_markers": [],
+   "product": null,
+   "notes": [],
+   "missed_slots": 0,
+   "slot_awake": null,
+   "max_gap_min": null,
+   "stale": false
   }
  ],
+ "loop_liveness_summary": {
+  "counts": {
+   "normal": 6,
+   "halted": 2,
+   "missed": 2
+  },
+  "total": 10,
+  "abnormal": [
+   {
+    "id": "98ffc7a2",
+    "name": "盘前就绪 PRE-MARKET",
+    "cadence": "daily",
+    "last_run": "2026-10-29 09:31",
+    "age_days": 3.5,
+    "slot": "2026-10-30 09:05",
+    "state": "missed",
+    "state_label": "③ 完全未运行",
+    "verdict": "awake_no_artifact",
+    "verdict_label": "醒着但零留痕（任务自身/宿主未触发）",
+    "evidence": "槽位 10-30 09:05 后无 memory、无产物；窗口内 17 条心跳，最大空档 6 分钟 ⇒ 机器醒着却零留痕，问题在任务自身",
+    "halt_markers": [],
+    "product": null,
+    "notes": [],
+    "missed_slots": 1,
+    "slot_awake": true,
+    "max_gap_min": 5.6,
+    "stale": true
+   },
+   {
+    "id": "ae0e2431",
+    "name": "盘后复盘 OBSERVE",
+    "cadence": "daily",
+    "last_run": "2026-10-30 17:27",
+    "age_days": 2.2,
+    "slot": "2026-10-30 15:35",
+    "state": "halted",
+    "state_label": "② 运行但自我停机",
+    "verdict": "prompt_gate",
+    "verdict_label": "prompt 门禁自停",
+    "evidence": "末条含停机标记 不执行 Step/整体停机/硬闸门/闸门未通过，且 10-30 15:35 起窗口内无产物；槽位窗口机器休眠（整窗口无心跳）",
+    "halt_markers": [
+     "不执行 Step",
+     "整体停机",
+     "硬闸门",
+     "闸门未通过"
+    ],
+    "product": null,
+    "notes": [],
+    "missed_slots": 0,
+    "slot_awake": false,
+    "max_gap_min": null,
+    "stale": true
+   },
+   {
+    "id": "2534a859",
+    "name": "工程维护 17:00",
+    "cadence": "daily",
+    "last_run": "2026-10-30 17:42",
+    "age_days": 2.1,
+    "slot": "2026-10-30 17:00",
+    "state": "halted",
+    "state_label": "② 运行但自我停机",
+    "verdict": "prompt_gate",
+    "verdict_label": "prompt 门禁自停",
+    "evidence": "末条含停机标记 停止一切落盘，且 10-30 17:00 起窗口内无产物；槽位窗口机器休眠（最大心跳空档 36.9 分钟）",
+    "halt_markers": [
+     "停止一切落盘"
+    ],
+    "product": null,
+    "notes": [],
+    "missed_slots": 0,
+    "slot_awake": false,
+    "max_gap_min": 36.9,
+    "stale": true
+   },
+   {
+    "id": "d8013e93",
+    "name": "周中自进化 PM-EVOLVE",
+    "cadence": "weekly",
+    "last_run": "2026-10-21 18:31",
+    "age_days": 11.1,
+    "slot": "2026-10-28 18:00",
+    "state": "missed",
+    "state_label": "③ 完全未运行",
+    "verdict": "awake_no_artifact",
+    "verdict_label": "醒着但零留痕（任务自身/宿主未触发）",
+    "evidence": "槽位 10-28 18:00 后无 memory、无产物；窗口内 16 条心跳，最大空档 5 分钟 ⇒ 机器醒着却零留痕，问题在任务自身",
+    "halt_markers": [],
+    "product": null,
+    "notes": [],
+    "missed_slots": 1,
+    "slot_awake": true,
+    "max_gap_min": 5.1,
+    "stale": true
+   }
+  ],
+  "headline": "活性三态：① 6 / ② 2 / ③ 2（共 10）；异常：盘前就绪 PRE-MARKET→③ 完全未运行（醒着但零留痕（任务自身/宿主未触发））、盘后复盘 OBSERVE→② 运行但自我停机（prompt 门禁自停）、工程维护 17:00→② 运行但自我停机（prompt 门禁自停）、周中自进化 PM-EVOLVE→③ 完全未运行（醒着但零留痕（任务自身/宿主未触发））"
+ },
  "ledger": {
   "exists": true,
-  "size_kb": 586.8,
-  "rounds": 59,
-  "rejected_mentions": 198,
+  "size_kb": 642.1,
+  "rounds": 66,
+  "rejected_mentions": 209,
   "landed_mentions": 12,
   "falsified_mentions": 175,
-  "lines": 8227
+  "lines": 9010
  },
  "capability": [
   {
@@ -1424,9 +1677,19 @@
  ],
  "baseline_drift": {
   "checked": 53,
-  "drift_n": 0,
+  "drift_n": 1,
   "unmapped_n": 75,
-  "drift": [],
+  "drift": [
+   {
+    "field": "manual_entry_codes",
+    "key": "manual_entry_codes",
+    "prod": [
+     "510050.SH"
+    ],
+    "bt": [],
+    "status": "★漂移"
+   }
+  ],
   "unmapped": [
    {
     "field": "use_gate",
@@ -1958,6 +2221,20 @@
  },
  "actions": [
   {
+   "pri": "P0",
+   "target": "反馈信号可信度（最高优先）",
+   "action": "修复 1 处 P0 基线漂移",
+   "detail": "`manual_entry_codes` 回测 () ≠ 生产 `manual_entry_codes` ['510050.SH']",
+   "why": "验证器基线是手抄镜像，漂移后所有 dSh 相对错误基线计算 ⇒ 循环在用一个说谎的尺子量自己"
+  },
+  {
+   "pri": "P0",
+   "target": "反馈信号可信度",
+   "action": "把 base_cfg() 改为从 config/settings.py 自动派生 + 漂移守卫测试",
+   "detail": "当前 75 个回测字段无生产键映射",
+   "why": "根治手抄漂移：让基线无法不同步（可加显式 IGNORE 白名单并注明理由）"
+  },
+  {
    "pri": "P1",
    "target": "搜索空间",
    "action": "删除或接线 3 个死参数",
@@ -1967,17 +2244,17 @@
   {
    "pri": "P2",
    "target": "口径背离",
-   "action": "把 23 个「仅实盘有读点」参数补进回测器",
-   "detail": "ma_short、ma_medium、ma_long、rsi_period、macd_fast、macd_slow、macd_signal、kdj_period、boll_period、boll_std、atr_period、volume_surge、require_daily_data、momentum_scope、enable_rotation、rotation_cooldown_sec、daily_loss_limit_pct、daily_loss_limit_abs、dd_recover_days、halt_recover_days、max_consecutive_losses、max_consecutive_losses_halt、max_daily_trades",
+   "action": "把 25 个「仅实盘有读点」参数补进回测器",
+   "detail": "ma_short、ma_medium、ma_long、rsi_period、macd_fast、macd_slow、macd_signal、kdj_period、boll_period、boll_std、atr_period、volume_surge、require_daily_data、momentum_scope、manual_entry_amount、exit_exempt_codes、enable_rotation、rotation_cooldown_sec、daily_loss_limit_pct、daily_loss_limit_abs、dd_recover_days、halt_recover_days、max_consecutive_losses、max_consecutive_losses_halt、max_daily_trades",
    "why": "回测测不到该行为 ⇒ 对该键的 A/B 结论不可信（非「无价值」）"
   },
   {
    "pri": "P0",
-   "target": "循环活性",
-   "action": "恢复 2 个停摆/未运行任务",
-   "detail": "周中自进化 PM-EVOLVE、周度深度 SYNTHESIZE",
-   "why": "停摆期间没有任何观测与裁决 ⇒ 自进化链条断掉（10-22~10-28 已发生一次）"
+   "target": "循环活性（三态）",
+   "action": "处置 4 个活性异常：自我停机 2 / 未运行 2",
+   "detail": "盘前就绪 PRE-MARKET→③ 完全未运行（醒着但零留痕（任务自身/宿主未触发））；盘后复盘 OBSERVE→② 运行但自我停机（prompt 门禁自停）；工程维护 17:00→② 运行但自我停机（prompt 门禁自停）；周中自进化 PM-EVOLVE→③ 完全未运行（醒着但零留痕（任务自身/宿主未触发））",
+   "why": "② 自我停机的任务是**在跑但什么都没做**（旧 L3 判为正常）⇒ 修 prompt 门禁；③ 未运行要先看 guardian 心跳：无心跳=整机休眠（无需改代码，改时段），有心跳=任务自身/宿主未触发（改 prompt 或排期）"
   }
  ],
- "elapsed_sec": 2.62
+ "elapsed_sec": 3.69
 }

@@ -142,6 +142,10 @@ td.code { font-family: monospace; color: #8898a6; }
 .risk-box.safe { border-left: 4px solid #5fd99e; }
 .risk-box.alert { border-left: 4px solid #ef5350;
   box-shadow: inset 0 0 0 1px #ef5350; }
+/* 资产口径不可信（2026-11-02）：熔断本轮被**跳过**判定，既不是"正常"也不是
+   "熔断"。用琥珀色区分，避免把「风控暂时失明」误读成「账户安全」。 */
+.risk-box.warn { border-left: 4px solid #f0a63c;
+  box-shadow: inset 0 0 0 1px rgba(240,166,60,.35); }
 .risk-box > div { display: flex; justify-content: space-between; align-items: center;
   padding: 6px 2px; border-bottom: 1px solid #20262f; gap: 10px; }
 .risk-box > div:last-child { border-bottom: none; }

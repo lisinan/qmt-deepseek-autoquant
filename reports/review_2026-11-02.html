@@ -1,0 +1,117 @@
+<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>盘后复盘 2026-11-02</title>
+<style>
+* { box-sizing: border-box; }
+body { font-family: -apple-system,"PingFang SC","Microsoft YaHei",sans-serif;
+  margin:0; background:#f5f7fa; color:#1f2937; }
+.wrap { max-width: 1040px; margin: 24px auto; padding: 0 16px; }
+h1 { font-size: 22px; margin: 0 0 4px; }
+.sub { color:#6b7280; font-size: 13px; margin-bottom: 18px; }
+.card { background:#fff; border-radius: 12px; padding: 18px 20px; margin-bottom: 16px;
+  box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+.card h2 { font-size: 16px; margin: 0 0 12px; border-left: 4px solid #1565c0; padding-left: 10px; }
+table { width:100%; border-collapse: collapse; font-size: 13px; }
+th,td { text-align:left; padding: 7px 8px; border-bottom: 1px solid #eef0f3; }
+th { color:#6b7280; font-weight:600; }
+.kpis { display:flex; gap:12px; flex-wrap:wrap; }
+.kpi { flex:1; min-width:130px; background:#f8fafc; border-radius:10px; padding:12px 14px; }
+.kpi .v { font-size:20px; font-weight:700; }
+.kpi .l { font-size:12px; color:#6b7280; }
+.pos { color:#c62828; } .neg { color:#2e7d32; }
+code { background:#eef2f7; padding:1px 5px; border-radius:4px; }
+</style></head><body><div class="wrap">
+<h1>📊 盘后复盘报告 · 2026-11-02</h1>
+<div class="sub">生成于 2026-11-02 15:36:14 ｜ 数据源 storage/qmt.db + logs/notices.log
+｜ 持仓源 engine_state(权威账本) ｜ FIFO 回溯窗 120 天</div>
+
+
+
+<div class="card"><div class="kpis">
+  <div class="kpi"><div class="v">3</div><div class="l">成交笔数</div></div>
+  <div class="kpi"><div class="v">0</div><div class="l">信号笔数</div></div>
+  <div class="kpi"><div class="v neg">3.50</div><div class="l">已实现盈亏(¥)</div></div>
+  <div class="kpi"><div class="v pos">0.00</div><div class="l">未实现盈亏(¥)</div></div>
+  <div class="kpi"><div class="v pos">-1,475.86</div><div class="l">组合总盈亏(已实现+未平盯市)(¥)</div></div>
+  <div class="kpi"><div class="v">1</div><div class="l">风控熔断次数</div></div>
+  <div class="kpi"><div class="v">1</div><div class="l">最大连亏</div></div>
+</div></div>
+
+<div class='card'><h2>执行模式记录（PAPER / LIVE 可区分核实）</h2><p style='font-size:13px;color:#6b7280'>本交易日成交记录标注的执行模式分布：<span style="color:#fff;background:#c62828;padding:1px 7px;border-radius:8px;font-size:11px">LIVE</span> ×3</p><p style='font-size:13px;color:#6b7280'>下单记录模式分布：<span style="color:#fff;background:#c62828;padding:1px 7px;border-radius:8px;font-size:11px">LIVE</span> ×4</p><p style='font-size:12px;color:#888'>切换至 LIVE 实盘后，所有订单/成交/权益快照均以 mode=LIVE 标记；引擎每次重启会在系统提示(⑤)固化当前模式，二者互证即可还原「何时从 PAPER 切到 LIVE」，便于盘后对照复盘与对账。</p></div>
+
+<div class="card"><h2>① 成交与盈亏</h2>
+<table><tr><th>代码</th><th>买入金额</th><th>卖出金额</th></tr>
+<tr><td>合计</td><td>0.00</td><td>56,294.50</td></tr></table><h3 style="font-size:14px;margin:14px 0 6px">已实现盈亏（按代码）</h3>
+<table><tr><th>代码</th><th>已实现盈亏(¥)</th></tr><tr><td>510050.SH</td><td>3.50</td></tr><tr><td>300308.SZ</td><td>0.00</td></tr></table>
+<h3 style="font-size:14px;margin:14px 0 6px">EOD 净持仓（含成本价）</h3>
+<table><tr><th>代码</th><th>净持仓(股)</th><th>当日实现盈亏(¥)</th><th>成本价</th></tr><tr><td colspan="4" style="color:#888">无净持仓（当日已平仓）</td></tr></table>
+<p style="font-size:13px;color:#6b7280">EOD 总资产 <b>63,207.98</b> ｜ 现金 <b>63,207.98</b> ｜
+持仓市值 <b>0.00</b> ｜ 未实现盈亏 <b>0.00</b> ｜
+当日收益(总资产) <b class="pos">-2.28%</b></p>
+<p style="font-size:13px;color:#374151">组合总盈亏(已实现 + 未平盯市) <b class="pos">-1,475.86</b> ｜
+已实现(引擎累计 daily_pnl) <b>-1,475.86</b> ｜ 未实现(盯市) <b>0.00</b></p>
+<p style="font-size:12px;color:#888">口径：已实现优先取引擎 RiskManager 累计 daily_pnl（risk_snapshots，逐笔 SELL 时累加，准确）；fills 重放结果仅作回退。未平盯市 = 权益快照市值 − engine_state 成本。已默认剔除 2026-09-01 之前的脏样本成交（修复前多进程遗留，不作收益基准）。</p>
+</div>
+
+<div class="card"><h2>② 信号明细（BUY）</h2>
+<table><tr><th>时间</th><th>代码</th><th>名称</th><th>评分</th><th>价</th><th>理由</th></tr><tr><td colspan="6" style="color:#888">当日无 BUY 信号</td></tr></table>
+<p style="font-size:13px;color:#6b7280">信号笔数（BUY）0 ｜ 成交笔数 3 ｜
+涉及代码 2（300308.SZ, 510050.SH）</p>
+</div>
+
+<div class="card"><h2>③ 风控事件（risk_snapshots + notices 双源）</h2>
+<p style="font-size:13px;color:#6b7280">当日真实交易时段（09:00–15:00）触发 <b>1</b> 次（仅列前 50 条明细）。已剔除测试/收盘后时段误报 <b>0</b> 次。原因分布：</p>
+<table><tr><th>熔断原因</th><th>次数</th></tr>
+<tr><td>daily_stop -89.25%</td><td>1</td></tr>
+</table>
+<p style="font-size:12px;color:#888">明细（前 50）：</p>
+<table><tr><th>时间</th><th>熔断原因</th><th>来源</th></tr><tr><td>2026-11-02T10:34:10.455483</td><td>daily_stop -89.25%</td><td>snapshot</td></tr></table>
+<p style="font-size:13px;color:#6b7280">最大连亏 1 次 ｜ 末笔日内盈亏 -1475.86</p>
+</div>
+
+<div class="card"><h2>⑥ 权益曲线 / 当日盈亏 / 日内最大回撤</h2><div class='kpis'><div class='kpi'><div class='v'>-2.28%</div><div class='l'>当日收益率</div></div><div class='kpi'><div class='v'>-2.86%</div><div class='l'>日内最大回撤</div></div><div class='kpi'><div class='v'>63,208</div><div class='l'>EOD 总资产</div></div><div class='kpi'><div class='v'>244</div><div class='l'>快照点数</div></div></div><p style='font-size:12px;color:#888;margin:8px 0'>数据源：equity_snapshots</p><svg viewBox="0 0 920 240" width="100%" preserveAspectRatio="none"
+ style="background:#fff;border:1px solid #eef0f3;border-radius:8px">
+ <line x1="44" y1="44.0" x2="876" y2="44.0" stroke="#e3e8ef" stroke-width="1"/><text x="880" y="48.0" font-size="11" fill="#9aa7b4">64,694</text><line x1="44" y1="94.7" x2="876" y2="94.7" stroke="#e3e8ef" stroke-width="1"/><text x="880" y="98.7" font-size="11" fill="#9aa7b4">64,077</text><line x1="44" y1="145.3" x2="876" y2="145.3" stroke="#e3e8ef" stroke-width="1"/><text x="880" y="149.3" font-size="11" fill="#9aa7b4">63,460</text><line x1="44" y1="196.0" x2="876" y2="196.0" stroke="#e3e8ef" stroke-width="1"/><text x="880" y="200.0" font-size="11" fill="#9aa7b4">62,843</text>
+ <path d="M44.0,44.8 L47.4,78.5 L50.8,44.0 L54.3,61.6 L57.7,117.0 L61.1,76.8 L64.5,81.2 L68.0,67.9 L71.4,58.7 L74.8,63.1 L78.2,70.6 L81.7,57.2 L85.1,59.8 L88.5,74.3 L91.9,101.9 L95.4,100.2 L98.8,108.0 L102.2,110.3 L105.6,111.1 L109.1,148.0 L112.5,143.5 L115.9,128.9 L119.3,118.2 L122.7,126.3 L126.2,141.6 L129.6,155.1 L133.0,160.5 L136.4,163.8 L139.9,150.3 L143.3,150.0 L146.7,164.0 L150.1,184.3 L153.6,175.5 L157.0,189.4 L160.4,196.0 L163.8,184.3 L167.3,154.0 L170.7,162.4 L174.1,142.7 L177.5,118.9 L181.0,126.2 L184.4,85.2 L187.8,101.8 L191.2,112.0 L194.7,95.1 L198.1,110.1 L201.5,93.7 L204.9,120.9 L208.3,117.7 L211.8,103.6 L215.2,100.3 L218.6,113.3 L222.0,79.4 L225.5,104.8 L228.9,125.5 L232.3,119.8 L235.7,113.4 L239.2,116.8 L242.6,130.6 L246.0,119.1 L249.4,132.2 L252.9,150.1 L256.3,157.9 L259.7,154.8 L263.1,161.8 L266.6,166.0 L270.0,166.0 L273.4,166.0 L276.8,166.0 L280.2,166.0 L283.7,166.0 L287.1,166.0 L290.5,166.0 L293.9,166.0 L297.4,166.0 L300.8,166.0 L304.2,166.0 L307.6,166.0 L311.1,166.0 L314.5,166.0 L317.9,166.0 L321.3,166.0 L324.8,166.0 L328.2,166.0 L331.6,166.0 L335.0,166.0 L338.5,166.0 L341.9,166.0 L345.3,166.0 L348.7,166.0 L352.1,166.0 L355.6,166.0 L359.0,166.0 L362.4,166.0 L365.8,166.0 L369.3,166.0 L372.7,166.0 L376.1,166.0 L379.5,166.0 L383.0,166.0 L386.4,166.0 L389.8,166.0 L393.2,166.0 L396.7,166.0 L400.1,166.0 L403.5,166.0 L406.9,166.0 L410.4,166.0 L413.8,166.0 L417.2,166.0 L420.6,166.0 L424.0,166.0 L427.5,166.0 L430.9,166.0 L434.3,166.0 L437.7,166.0 L441.2,166.0 L444.6,166.0 L448.0,166.0 L451.4,166.0 L454.9,166.0 L458.3,166.0 L461.7,166.0 L465.1,166.0 L468.6,166.0 L472.0,166.0 L475.4,166.0 L478.8,166.0 L482.3,166.0 L485.7,166.0 L489.1,166.0 L492.5,166.0 L496.0,166.0 L499.4,166.0 L502.8,166.0 L506.2,166.0 L509.6,166.0 L513.1,166.0 L516.5,166.0 L519.9,166.0 L523.3,166.0 L526.8,166.0 L530.2,166.0 L533.6,166.0 L537.0,166.0 L540.5,166.0 L543.9,166.0 L547.3,166.0 L550.7,166.0 L554.2,166.0 L557.6,166.0 L561.0,166.0 L564.4,166.0 L567.9,166.0 L571.3,166.0 L574.7,166.0 L578.1,166.0 L581.5,166.0 L585.0,166.0 L588.4,166.0 L591.8,166.0 L595.2,166.0 L598.7,166.0 L602.1,166.0 L605.5,166.0 L608.9,166.0 L612.4,166.0 L615.8,166.0 L619.2,166.0 L622.6,166.0 L626.1,166.0 L629.5,166.0 L632.9,166.0 L636.3,166.0 L639.8,166.0 L643.2,166.0 L646.6,166.0 L650.0,166.0 L653.4,166.0 L656.9,166.0 L660.3,166.0 L663.7,166.0 L667.1,166.0 L670.6,166.0 L674.0,166.0 L677.4,166.0 L680.8,166.0 L684.3,166.0 L687.7,166.0 L691.1,166.0 L694.5,166.0 L698.0,166.0 L701.4,166.0 L704.8,166.0 L708.2,166.0 L711.7,166.0 L715.1,166.0 L718.5,166.0 L721.9,166.0 L725.3,166.0 L728.8,166.0 L732.2,166.0 L735.6,166.0 L739.0,166.0 L742.5,166.0 L745.9,166.0 L749.3,166.0 L752.7,166.0 L756.2,166.0 L759.6,166.0 L763.0,166.0 L766.4,166.0 L769.9,166.0 L773.3,166.0 L776.7,166.0 L780.1,166.0 L783.6,166.0 L787.0,166.0 L790.4,166.0 L793.8,166.0 L797.3,166.0 L800.7,166.0 L804.1,166.0 L807.5,166.0 L810.9,166.0 L814.4,166.0 L817.8,166.0 L821.2,166.0 L824.6,166.0 L828.1,166.0 L831.5,166.0 L834.9,166.0 L838.3,166.0 L841.8,166.0 L845.2,166.0 L848.6,166.0 L852.0,166.0 L855.5,166.0 L858.9,166.0 L862.3,166.0 L865.7,166.0 L869.2,166.0 L872.6,166.0 L876.0,166.0 L876.0,196 L44.0,196 Z" fill="rgba(47,191,113,0.12)" stroke="none"/>
+ <line x1="44" y1="44.8" x2="876" y2="44.8"
+   stroke="#94a3b8" stroke-width="1" stroke-dasharray="5,4"/>
+ <polyline points="44.0,44.8 47.4,78.5 50.8,44.0 54.3,61.6 57.7,117.0 61.1,76.8 64.5,81.2 68.0,67.9 71.4,58.7 74.8,63.1 78.2,70.6 81.7,57.2 85.1,59.8 88.5,74.3 91.9,101.9 95.4,100.2 98.8,108.0 102.2,110.3 105.6,111.1 109.1,148.0 112.5,143.5 115.9,128.9 119.3,118.2 122.7,126.3 126.2,141.6 129.6,155.1 133.0,160.5 136.4,163.8 139.9,150.3 143.3,150.0 146.7,164.0 150.1,184.3 153.6,175.5 157.0,189.4 160.4,196.0 163.8,184.3 167.3,154.0 170.7,162.4 174.1,142.7 177.5,118.9 181.0,126.2 184.4,85.2 187.8,101.8 191.2,112.0 194.7,95.1 198.1,110.1 201.5,93.7 204.9,120.9 208.3,117.7 211.8,103.6 215.2,100.3 218.6,113.3 222.0,79.4 225.5,104.8 228.9,125.5 232.3,119.8 235.7,113.4 239.2,116.8 242.6,130.6 246.0,119.1 249.4,132.2 252.9,150.1 256.3,157.9 259.7,154.8 263.1,161.8 266.6,166.0 270.0,166.0 273.4,166.0 276.8,166.0 280.2,166.0 283.7,166.0 287.1,166.0 290.5,166.0 293.9,166.0 297.4,166.0 300.8,166.0 304.2,166.0 307.6,166.0 311.1,166.0 314.5,166.0 317.9,166.0 321.3,166.0 324.8,166.0 328.2,166.0 331.6,166.0 335.0,166.0 338.5,166.0 341.9,166.0 345.3,166.0 348.7,166.0 352.1,166.0 355.6,166.0 359.0,166.0 362.4,166.0 365.8,166.0 369.3,166.0 372.7,166.0 376.1,166.0 379.5,166.0 383.0,166.0 386.4,166.0 389.8,166.0 393.2,166.0 396.7,166.0 400.1,166.0 403.5,166.0 406.9,166.0 410.4,166.0 413.8,166.0 417.2,166.0 420.6,166.0 424.0,166.0 427.5,166.0 430.9,166.0 434.3,166.0 437.7,166.0 441.2,166.0 444.6,166.0 448.0,166.0 451.4,166.0 454.9,166.0 458.3,166.0 461.7,166.0 465.1,166.0 468.6,166.0 472.0,166.0 475.4,166.0 478.8,166.0 482.3,166.0 485.7,166.0 489.1,166.0 492.5,166.0 496.0,166.0 499.4,166.0 502.8,166.0 506.2,166.0 509.6,166.0 513.1,166.0 516.5,166.0 519.9,166.0 523.3,166.0 526.8,166.0 530.2,166.0 533.6,166.0 537.0,166.0 540.5,166.0 543.9,166.0 547.3,166.0 550.7,166.0 554.2,166.0 557.6,166.0 561.0,166.0 564.4,166.0 567.9,166.0 571.3,166.0 574.7,166.0 578.1,166.0 581.5,166.0 585.0,166.0 588.4,166.0 591.8,166.0 595.2,166.0 598.7,166.0 602.1,166.0 605.5,166.0 608.9,166.0 612.4,166.0 615.8,166.0 619.2,166.0 622.6,166.0 626.1,166.0 629.5,166.0 632.9,166.0 636.3,166.0 639.8,166.0 643.2,166.0 646.6,166.0 650.0,166.0 653.4,166.0 656.9,166.0 660.3,166.0 663.7,166.0 667.1,166.0 670.6,166.0 674.0,166.0 677.4,166.0 680.8,166.0 684.3,166.0 687.7,166.0 691.1,166.0 694.5,166.0 698.0,166.0 701.4,166.0 704.8,166.0 708.2,166.0 711.7,166.0 715.1,166.0 718.5,166.0 721.9,166.0 725.3,166.0 728.8,166.0 732.2,166.0 735.6,166.0 739.0,166.0 742.5,166.0 745.9,166.0 749.3,166.0 752.7,166.0 756.2,166.0 759.6,166.0 763.0,166.0 766.4,166.0 769.9,166.0 773.3,166.0 776.7,166.0 780.1,166.0 783.6,166.0 787.0,166.0 790.4,166.0 793.8,166.0 797.3,166.0 800.7,166.0 804.1,166.0 807.5,166.0 810.9,166.0 814.4,166.0 817.8,166.0 821.2,166.0 824.6,166.0 828.1,166.0 831.5,166.0 834.9,166.0 838.3,166.0 841.8,166.0 845.2,166.0 848.6,166.0 852.0,166.0 855.5,166.0 858.9,166.0 862.3,166.0 865.7,166.0 869.2,166.0 872.6,166.0 876.0,166.0" fill="none" stroke="#2fbf71" stroke-width="2"/>
+ <circle cx="44.0" cy="44.8" r="3" fill="#2fbf71"/>
+ <circle cx="876.0" cy="166.0" r="3" fill="#2fbf71"/>
+ <text x="44" y="228" font-size="11" fill="#9aa7b4">开 64,684</text>
+ <text x="786" y="228" font-size="11" fill="#9aa7b4">收 63,208</text>
+</svg></div>
+
+<div class='card' style='background:#fff5f5;border-left:5px solid #c62828'><h2 style='border-left:none;padding-left:0;color:#b71c1c'>💰 账户真实收益（引擎权威账本 · 含隔夜重估）</h2><div class='kpis'><div class='kpi'><div class='v neg'>—</div><div class='l'>账户真实当日收益率</div></div><div class='kpi'><div class='v neg'>—</div><div class='l'>账户真实当日盈亏(¥)</div></div><div class='kpi'><div class='v pos'>-2.75%</div><div class='l'>区间收益(2026-09-22→2026-10-28)</div></div><div class='kpi'><div class='v pos'>-1.89%</div><div class='l'>近20日收益</div></div></div><p style='font-size:12px;color:#888;margin-top:8px'>基准：engine_state（引擎落盘账本）。右侧「⑥ 当日收益率」用 equity_snapshots 日内口径（-2.28%）会漏隔夜跳空；此处用引擎 daily_pnl（含隔夜重估）的真实账户盈亏，二者差异即隔夜跳空/持仓重估亏损。</p></div>
+
+<div class="card"><h2>⑦ 逐笔交易明细（FIFO 配对，建仓腿回溯至全史）</h2>
+<p style="font-size:12px;color:#888">配对基于目标日及之前的全部成交（共 43 笔），
+因此跘日持仓的 round-trip 与真实持仓天数均可正确重建（旧版只读当日成交，跘日交易会被整笔丢弃、holding_days 恒为 0）。</p>
+<table><tr><th>代码</th><th>建仓</th><th>平仓</th><th>建仓价</th><th>平仓价</th><th>数量</th><th>持仓(天)</th><th>模式</th><th>盈亏(¥)</th><th>收益率</th></tr><tr><td>510050.SH</td><td>2026-10-30T10:07:45.267445</td><td>2026-11-02T10:34:13.467473</td><td>2.86</td><td>2.867</td><td>400</td><td>3</td><td><span style="color:#fff;background:#c62828;padding:1px 7px;border-radius:8px;font-size:11px">LIVE</span>/<span style="color:#fff;background:#c62828;padding:1px 7px;border-radius:8px;font-size:11px">LIVE</span></td><td class='neg'>2.80</td><td class='neg'>+0.24%</td></tr><tr><td>510050.SH</td><td>2026-10-30T10:07:45.267445</td><td>2026-11-02T10:34:13.467473</td><td>2.86</td><td>2.867</td><td>100</td><td>3</td><td><span style="color:#fff;background:#c62828;padding:1px 7px;border-radius:8px;font-size:11px">LIVE</span>/<span style="color:#fff;background:#c62828;padding:1px 7px;border-radius:8px;font-size:11px">LIVE</span></td><td class='neg'>0.70</td><td class='neg'>+0.24%</td></tr></table>
+</div>
+
+<div class="card"><h2>④ 与回测基准对照</h2>
+<p style="font-size:13px;color:#6b7280">回测验证基准（非当日收益，仅供策略一致性参照）：全样本 +254.26% / Sharpe 1.99 / MDD -9.82% / α 129.83pt｜ Walk-forward Sharpe 1.66（6 折正 α）</p>
+<table><tr><th>状态</th><th>项目</th><th>说明</th></tr><tr><td><span style="color:#fff;background:#ef6c00;padding:2px 8px;border-radius:10px;font-size:12px">WARN</span></td><td>风控熔断</td><td>当日触发 1 次熔断（双源统计）：[&#x27;daily_stop -89.25%&#x27;]。已修复为可冷却恢复断路器，复盘时确认次日已 resume 即可。</td></tr></table>
+</div>
+
+<div class="card"><h2>⑧ AI 分析（若启用）</h2>
+<table><tr><th>时间</th><th>代码</th><th>立场</th><th>置信度</th><th>结论</th></tr><tr><td colspan="5" style="color:#888">当日无 AI 分析记录（未启用或无网络）</td></tr></table>
+</div>
+
+<div class="card"><h2>⑤ 系统提示流水（38 条）</h2>
+<table><tr><th>时间</th><th>分类</th><th>级别</th><th>内容</th></tr><tr><td>2026-11-02 07:43:51</td><td>风控</td><td>WARNING</td><td>北向闸门已 fail-open（stale）：序列末端 20260825，不作为建仓拦截依据</td></tr><tr><td>2026-11-02 09:30:34</td><td>分析结论</td><td>SYSTEM</td><td>交易时段开启 | regime闸门=off(放行) 动态候选池=30只 当前持仓=2 现金=6,953.34 风控=正常</td></tr><tr><td>2026-11-02 09:30:50</td><td>心跳</td><td>INFO</td><td>存活确认 | 状态=交易中 轮次=1 持仓=2 总资产=64,683.84 现金=6,953.34 风控=正常 券商重连=1</td></tr><tr><td>2026-11-02 09:40:53</td><td>心跳</td><td>INFO</td><td>存活确认 | 状态=交易中 轮次=201 持仓=2 总资产=64,180.84 现金=6,953.34 风控=正常 券商重连=1</td></tr><tr><td>2026-11-02 09:50:56</td><td>心跳</td><td>INFO</td><td>存活确认 | 状态=交易中 轮次=401 持仓=2 总资产=63,559.84 现金=6,953.34 风控=正常 券商重连=1</td></tr><tr><td>2026-11-02 10:00:59</td><td>心跳</td><td>INFO</td><td>存活确认 | 状态=交易中 轮次=601 持仓=2 总资产=63,098.34 现金=6,953.34 风控=正常 券商重连=1</td></tr><tr><td>2026-11-02 10:11:02</td><td>心跳</td><td>INFO</td><td>存活确认 | 状态=交易中 轮次=801 持仓=2 总资产=63,767.34 现金=6,953.34 风控=正常 券商重连=1</td></tr><tr><td>2026-11-02 10:21:04</td><td>心跳</td><td>INFO</td><td>存活确认 | 状态=交易中 轮次=1001 持仓=2 总资产=63,930.84 现金=6,953.34 风控=正常 券商重连=1</td></tr><tr><td>2026-11-02 10:31:06</td><td>心跳</td><td>INFO</td><td>存活确认 | 状态=交易中 轮次=1196 持仓=2 总资产=63,500.84 现金=6,953.34 风控=正常 券商重连=1</td></tr><tr><td>2026-11-02 10:34:10</td><td>风控</td><td>ERROR</td><td>日内硬止损: 当日账户亏损 -89.25%（相对开盘）已达强平阈值 -6%，强平全部可卖持仓并暂停新开仓</td></tr><tr><td>2026-11-02 10:34:10</td><td>风控</td><td>ERROR</td><td>触发熔断: daily_stop -89.25%（已暂停新开仓，冷却 1 日后自动恢复或手动 resume）</td></tr><tr><td>2026-11-02 10:34:10</td><td>交易</td><td>ERROR</td><td>日内硬止损强平触发：当日账户亏损达阈值，开始逐仓平仓（可卖持仓）</td></tr><tr><td>2026-11-02 10:34:10</td><td>交易</td><td>WARNING</td><td>提交卖出委托 300308.SZ 中际旭创 ×100 @549.940 盈亏+35569.44 理由=daily_hard_stop_flatten → True</td></tr><tr><td>2026-11-02 10:34:10</td><td>交易</td><td>WARNING</td><td>提交卖出委托 510050.SH 510050.SH ×500 @2.867 盈亏-1.50 理由=daily_hard_stop_flatten → True</td></tr><tr><td>2026-11-02 10:34:40</td><td>交易</td><td>WARNING</td><td>委托超时未成交，已撤单 300308.SZ SELL oid=1082285654 (已成交 0/100，撤单 成功)</td></tr><tr><td>2026-11-02 10:34:40</td><td>交易</td><td>WARNING</td><td>提交卖出委托 300308.SZ 中际旭创 ×100 @549.170 盈亏+35492.44 理由=daily_hard_stop_flatten → True</td></tr><tr><td>2026-11-02 10:35:10</td><td>交易</td><td>WARNING</td><td>委托超时未成交，已撤单 300308.SZ SELL oid=1082285806 (已成交 0/100，撤单 成功)</td></tr><tr><td>2026-11-02 10:35:10</td><td>交易</td><td>WARNING</td><td>提交卖出委托 300308.SZ 中际旭创 ×100 @548.610 盈亏+35436.44 理由=daily_hard_stop_flatten → True</td></tr><tr><td>2026-11-02 10:41:06</td><td>心跳</td><td>INFO</td><td>存活确认 | 状态=交易中 轮次=1395 持仓=0 总资产=63,207.98 现金=63,207.98 风控=熔断 券商重连=1</td></tr><tr><td>2026-11-02 10:51:09</td><td>心跳</td><td>INFO</td><td>存活确认 | 状态=交易中 轮次=1595 持仓=0 总资产=63,207.98 现金=63,207.98 风控=熔断 券商重连=1</td></tr><tr><td>2026-11-02 11:01:12</td><td>心跳</td><td>INFO</td><td>存活确认 | 状态=交易中 轮次=1795 持仓=0 总资产=63,207.98 现金=63,207.98 风控=熔断 券商重连=1</td></tr><tr><td>2026-11-02 11:11:15</td><td>心跳</td><td>INFO</td><td>存活确认 | 状态=交易中 轮次=1995 持仓=0 总资产=63,207.98 现金=63,207.98 风控=熔断 券商重连=1</td></tr><tr><td>2026-11-02 11:21:18</td><td>心跳</td><td>INFO</td><td>存活确认 | 状态=交易中 轮次=2195 持仓=0 总资产=63,207.98 现金=63,207.98 风控=熔断 券商重连=1</td></tr><tr><td>2026-11-02 13:00:11</td><td>分析结论</td><td>SYSTEM</td><td>交易时段开启 | regime闸门=off(放行) 动态候选池=30只 当前持仓=0 现金=63,207.98 风控=熔断</td></tr><tr><td>2026-11-02 13:00:17</td><td>心跳</td><td>INFO</td><td>存活确认 | 状态=交易中 轮次=2369 持仓=0 总资产=63,207.98 现金=63,207.98 风控=熔断 券商重连=1</td></tr><tr><td>2026-11-02 13:10:20</td><td>心跳</td><td>INFO</td><td>存活确认 | 状态=交易中 轮次=2569 持仓=0 总资产=63,207.98 现金=63,207.98 风控=熔断 券商重连=1</td></tr><tr><td>2026-11-02 13:20:20</td><td>心跳</td><td>INFO</td><td>存活确认 | 状态=交易中 轮次=2768 持仓=0 总资产=63,207.98 现金=63,207.98 风控=熔断 券商重连=1</td></tr><tr><td>2026-11-02 13:30:23</td><td>心跳</td><td>INFO</td><td>存活确认 | 状态=交易中 轮次=2968 持仓=0 总资产=63,207.98 现金=63,207.98 风控=熔断 券商重连=1</td></tr><tr><td>2026-11-02 13:40:26</td><td>心跳</td><td>INFO</td><td>存活确认 | 状态=交易中 轮次=3168 持仓=0 总资产=63,207.98 现金=63,207.98 风控=熔断 券商重连=1</td></tr><tr><td>2026-11-02 13:50:29</td><td>心跳</td><td>INFO</td><td>存活确认 | 状态=交易中 轮次=3368 持仓=0 总资产=63,207.98 现金=63,207.98 风控=熔断 券商重连=1</td></tr><tr><td>2026-11-02 14:00:31</td><td>心跳</td><td>INFO</td><td>存活确认 | 状态=交易中 轮次=3566 持仓=0 总资产=63,207.98 现金=63,207.98 风控=熔断 券商重连=1</td></tr><tr><td>2026-11-02 14:10:34</td><td>心跳</td><td>INFO</td><td>存活确认 | 状态=交易中 轮次=3766 持仓=0 总资产=63,207.98 现金=63,207.98 风控=熔断 券商重连=1</td></tr><tr><td>2026-11-02 14:20:37</td><td>心跳</td><td>INFO</td><td>存活确认 | 状态=交易中 轮次=3966 持仓=0 总资产=63,207.98 现金=63,207.98 风控=熔断 券商重连=1</td></tr><tr><td>2026-11-02 14:30:40</td><td>心跳</td><td>INFO</td><td>存活确认 | 状态=交易中 轮次=4166 持仓=0 总资产=63,207.98 现金=63,207.98 风控=熔断 券商重连=1</td></tr><tr><td>2026-11-02 14:40:41</td><td>心跳</td><td>INFO</td><td>存活确认 | 状态=交易中 轮次=4365 持仓=0 总资产=63,207.98 现金=63,207.98 风控=熔断 券商重连=1</td></tr><tr><td>2026-11-02 14:50:41</td><td>心跳</td><td>INFO</td><td>存活确认 | 状态=交易中 轮次=4564 持仓=0 总资产=63,207.98 现金=63,207.98 风控=熔断 券商重连=1</td></tr><tr><td>2026-11-02 15:00:41</td><td>心跳</td><td>INFO</td><td>存活确认 | 状态=交易中 轮次=4761 持仓=0 总资产=63,207.98 现金=63,207.98 风控=熔断 券商重连=1</td></tr><tr><td>2026-11-02 15:02:02</td><td>行情</td><td>ERROR</td><td>行情源失效：33 只标的快照已陈旧 2 分钟（阈值 2 分钟），已暂停建仓——价格不可信时下单等于盲打，请检查 miniQMT 行情连接</td></tr></table>
+</div>
+
+<div class='card'><h2>⑨ 迭代优化洞察（稳定/安全/准确/高效）</h2><div class='kpis'><div class='kpi'><div class='v' style='color:#c62828'>60</div><div class='l'>稳定</div></div><div class='kpi'><div class='v' style='color:#ef6c00'>75</div><div class='l'>安全</div></div><div class='kpi'><div class='v' style='color:#2e7d32'>100</div><div class='l'>准确</div></div><div class='kpi'><div class='v' style='color:#2e7d32'>100</div><div class='l'>高效</div></div><div class='kpi'><div class='v' style='color:#ef6c00'>84</div><div class='l'>迭代健康分(均)</div></div></div><p style='font-size:12px;color:#888;margin:8px 0'>目的：从当日真实记录挖掘优化方向与优先级，驱动项目在稳定/安全/准确/高效上持续迭代，最终提升收益。以下仅产出方向，不改动生产参数。</p><table><tr><th>优先级</th><th>轴</th><th>级别</th><th>发现</th><th>数据证据</th><th>建议动作</th><th>定位</th></tr><tr><td><b>P0</b></td><td>安全</td><td><span style="color:#fff;background:#c62828;padding:2px 8px;border-radius:10px;font-size:12px">ERR</span></td><td>触发 1 次熔断</td><td>原因分布：daily_stop -89.25%×1；最大连亏 1</td><td>确认冷却窗口（连亏/日亏 1 日、回撤 5 日）后已自动 resume；若为误触复查阈值</td><td><code>core/risk_manager.py；settings max_drawdown_pct/dd_recover_days</code></td></tr><tr><td><b>P1</b></td><td>稳定</td><td><span style="color:#fff;background:#c62828;padding:2px 8px;border-radius:10px;font-size:12px">ERR</span></td><td>当日 4 条 ERROR/异常</td><td>系统提示中 ERROR/Traceback 共 4 条</td><td>查 logs/quant_system.log 与当日 traceback，优先修根因（DLL/网络/数据可得性）</td><td><code>engine/event_engine.py 主循环异常隔离；core/notices.py</code></td></tr></table></div>
+
+<div class="card" style="background:#eef6ff"><h2>📌 复盘结论与优化线索</h2>
+<p style="font-size:13px;line-height:1.7">
+• 本工具从结构化记录重建当日表现，覆盖成交/盈亏/权益曲线/逐笔交易/信号/风控/AI/系统提示。<br>
+• 权益曲线优先读 equity_snapshots（引擎每 ~60s 落盘）；缺失时回退解析心跳，二者皆无则标注缺数据。<br>
+• 若当日触发熔断：确认其在冷却窗口（连亏/日亏 1 日、回撤 5 日）后已自动恢复，否则手动 <code>RiskManager.resume()</code>。<br>
+• 实盘收益对照回测基准：若长期 α 显著为负，回到策略层排查（参数高原已证无调参空间，优先查数据源/执行滑点）。<br>
+• 优化迭代：将本日 JSON（logs/review_2026-11-02.json）与历史日对比，定位回归。<br>
+• 执行模式核实：本日成交/订单/权益快照已标注 PAPER 或 LIVE（见「执行模式记录」卡）。从模拟盘切到实盘后，记录与系统提示(⑤)中「模式」通知互证，可干净区分两段收益、方便对账与复盘。
+</p></div>
+</div></body></html>

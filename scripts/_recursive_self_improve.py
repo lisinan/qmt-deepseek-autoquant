@@ -44,16 +44,23 @@ AUTOS = {
     "6265093f": "量测卫生守卫", "4a425d4f": "递归自进化",
 }
 
-# ★ 单一事实源（2026-10-28 R42）：读点扫描逻辑（identifiers / _collect /
-#   分类 / 别名）**全部**在 strategy/_param_audit.py，并由
-#   tests/test_search_space_contract.py 钉住。
-#   为什么删掉本脚本自带的副本：同一批参数，脚本报「仅实盘 24」而契约模块报
-#   23 —— 双份实现从诞生起就在静默漂移，而报告与守卫读的是不同那份。
+# ★ L3 活性审计的**全部**判定逻辑在 scripts/_loop_liveness.py（单一事实源，
+#   R49-RSI 2026-11-01）。这里只 import，不自带副本 —— 旧实现在本文件里用
+#   「memory.md mtime > 3 天」判停摆，看不见「在跑但整体停机」那一类：
+#   2026-10-29 切 live 后 5 个任务自我停机，OBSERVE 明明写了 memory
+#   「⛔ 硬闸门拦截，整体停机」，旧 L3 判它「✓ 运行中」⇒ 全绿报告掩盖了
+#   真实资金账户 2 个交易日没有盘前体检/盘后复盘。
+#   历史教训（第 24 条）：同一事实两份实现 = 必然静默漂移。
+from scripts import _loop_liveness as LL  # noqa: E402
+
+# ★ 另一条单一事实源（2026-10-28 R42）：参数读点扫描逻辑（identifiers /
+#   _collect / 分类 / 别名）全部在 strategy/_param_audit.py，由
+#   tests/test_search_space_contract.py 钉住。本脚本不得自带副本。
 #   历史教训：判「无读点」必须扫**全仓库**（曾只扫 engine/+strategy/+main.py，
 #   漏掉 risk/manager.py ⇒ 5 个熔断键被误判死参数）；误报比漏报更伤人。
 from strategy import _param_audit as PA  # noqa: E402
 
-# 新增：待首跑的新任务不应算「停摆」
+# 新增：待首跑的新任务不应算「停摆」（三态判定下仅作用于 ③ 的表述）
 NEW_AUTOS = {"1c6e4605", "6265093f", "4a425d4f"}
 
 # 注：本脚本原本还转出了 EXCLUDE_DIRS / RESEARCH_STRATEGY 两个别名和一个
@@ -152,33 +159,14 @@ def audit_search_space() -> dict:
 
 
 def audit_loop_activity() -> list:
-    base = ROOT / ".workbuddy" / "memory" / "automations"
-    now = time.time()
-    seen = {}
-    for d in sorted(base.glob("*")) if base.exists() else []:
-        uid = d.name.split("-")[0]
-        if uid not in AUTOS:
-            continue                          # 只统计已登记任务，避免历史残留目录噪声
-        mem = d / "memory.md"
-        if mem.exists():
-            age = (now - mem.stat().st_mtime) / 86400.0
-            seen[uid] = {
-                "id": uid, "name": AUTOS[uid],
-                "last_run": datetime.fromtimestamp(
-                    mem.stat().st_mtime).strftime("%Y-%m-%d %H:%M"),
-                "age_days": round(age, 1),
-                "stale": age > 3.0,
-                "status": "⚠ 停摆" if age > 3.0 else "✓ 运行中"}
-    out = []
-    for uid, name in AUTOS.items():
-        if uid in seen:
-            out.append(seen[uid])
-        else:
-            is_new = uid in NEW_AUTOS
-            out.append({"id": uid, "name": name, "last_run": None,
-                        "age_days": None, "stale": not is_new,
-                        "status": "待首跑（新增）" if is_new else "⚠ 从未运行"})
-    return out
+    """L3 循环活性 —— 委托给 scripts/_loop_liveness.py（活性三态）。
+
+    旧实现在本文件里：只读 memory.md mtime，> 3 天判「停摆」。三个盲区见
+    `scripts/_loop_liveness.py` 模块 docstring（①在跑≠在做 ②归因混淆
+    ③阈值与节奏不匹配）。此处保留同名函数以免调用点漂移，实现严格收敛到
+    单一事实源。
+    """
+    return LL.audit()
 
 
 def audit_ledger() -> dict:
@@ -333,11 +321,21 @@ def priority_actions(space: dict, activity: list, caps: list,
             "why": "回测测不到该行为 ⇒ 对该键的 A/B 结论不可信（非「无价值」）"})
     stale = [a for a in activity if a["stale"]]
     if stale:
+        # ★ 三态分开写：② 自我停机要改 prompt 门禁，③ 未运行要看是休眠还是宿主。
+        #   合并成一句「恢复 N 个停摆任务」会让修复对象失焦（这正是旧 L3 的病）。
+        halted = [a for a in stale if a.get("state") == LL.STATE_HALTED]
+        missed = [a for a in stale if a.get("state") == LL.STATE_MISSED]
+        detail = "；".join(
+            f"{a['name']}→{a['state_label']}（{a['verdict_label']}）"
+            for a in stale)
         acts.append({
-            "pri": "P0", "target": "循环活性",
-            "action": f"恢复 {len(stale)} 个停摆/未运行任务",
-            "detail": "、".join(a["name"] for a in stale),
-            "why": "停摆期间没有任何观测与裁决 ⇒ 自进化链条断掉（10-22~10-28 已发生一次）"})
+            "pri": "P0", "target": "循环活性（三态）",
+            "action": (f"处置 {len(stale)} 个活性异常：自我停机 "
+                       f"{len(halted)} / 未运行 {len(missed)}"),
+            "detail": detail,
+            "why": ("② 自我停机的任务是**在跑但什么都没做**（旧 L3 判为正常）⇒ "
+                    "修 prompt 门禁；③ 未运行要先看 guardian 心跳：无心跳=整机休眠"
+                    "（无需改代码，改时段），有心跳=任务自身/宿主未触发（改 prompt 或排期）")})
     missing = [c for c in caps if not c["ok"]]
     if missing:
         acts.append({
@@ -361,6 +359,7 @@ def main() -> None:
                  "unmapped": [], "checked": 0, "drift_n": 0, "unmapped_n": 0,
                  "rows": []}
     acts = priority_actions(space, activity, caps, drift)
+    live_sum = LL.summarize(activity)
 
     cls_count = {}
     for r in space["rows"]:
@@ -377,7 +376,9 @@ def main() -> None:
                          "rows": space["rows"],
                          "live_files": space["live_files"],
                          "research_files": space["research_files"]},
-        "loop_activity": activity, "ledger": ledger,
+        "loop_activity": activity,
+        "loop_liveness_summary": live_sum,
+        "ledger": ledger,
         "capability": caps, "baseline_drift": {
             "checked": drift.get("checked"), "drift_n": drift.get("drift_n"),
             "unmapped_n": drift.get("unmapped_n"),
@@ -394,6 +395,24 @@ def main() -> None:
     L.append("> 二阶优化：不改策略参数，改「改进流程本身」。\n")
     L.append(f"> 扫描文件：实盘侧 {len(space['live_files'])} 个，"
              f"研究侧 {len(space['research_files'])} 个（注释已剥离，只数真实代码读点）\n\n")
+
+    # ★ 活性三态必须出现在**首段**：它是唯一「链条是否还活着」的判据。
+    #   放在报告末尾会被当成附录跳过（历史教训：METRIC-HYGIENE 把资金安全级
+    #   发现写在报告中部，17:00 汇总没读到）。
+    c = live_sum["counts"]
+    L.append("## 〇、活性三态（首屏必读）\n\n")
+    L.append(f"**① 正常产出 {c[LL.STATE_NORMAL]} / ② 运行但自我停机 "
+             f"{c[LL.STATE_HALTED]} / ③ 完全未运行 {c[LL.STATE_MISSED]}**"
+             f"（共 {live_sum['total']} 个任务）\n\n")
+    if live_sum["abnormal"]:
+        L.append("| 任务 | 态 | 归因 | 证据 |\n|---|---|---|---|\n")
+        for a in live_sum["abnormal"]:
+            L.append(f"| {a['name']} | {a['state_label']} | {a['verdict_label']} | "
+                     f"{a['evidence']} |\n")
+        L.append("\n> 归因判据（契约 §4.3）：`logs/guardian.log` 300s 心跳缺失 = 整机休眠；"
+                 "心跳连续却零产物 = 任务自身/prompt 门禁。\n\n")
+    else:
+        L.append("✅ 全部任务在最近一个应跑槽位上有产出。\n")
 
     L.append("## 一、搜索空间审计\n\n")
     L.append(f"生产参数 **{total}** 个，其中**双向可验证 {usable} 个"
@@ -439,10 +458,17 @@ def main() -> None:
             L.append(f"\n未映射回测字段（{drift['unmapped_n']}，需人工确认是否应接生产键）："
                      + "、".join(f"`{r['field']}`" for r in drift["unmapped"]) + "\n")
 
-    L.append("\n## 三、循环活性\n\n| 任务 | 最近运行 | 距今天数 | 判定 |\n|---|---|---:|---|\n")
+    L.append("\n## 三、循环活性（逐任务明细）\n\n"
+             "| 任务 | 应跑槽位 | 最近 memory | 态 | 归因 | 错过槽位 |\n"
+             "|---|---|---|---|---|---:|\n")
     for a in activity:
-        L.append(f"| {a['name']} | {a['last_run'] or '—'} | "
-                 f"{a['age_days'] if a['age_days'] is not None else '—'} | {a['status']} |\n")
+        L.append(f"| {a['name']} | {a['slot'] or '—'} | {a['last_run'] or '—'} | "
+                 f"{a['state_label']} | {a['verdict_label']} | "
+                 f"{a['missed_slots'] or '—'} |\n")
+    L.append("\n> 「应跑槽位」按契约 §五 的时段表计算（`scripts/_loop_liveness.py::TASKS`），"
+             "不是按 rrule 字面：GUARD 的 rrule 全天每小时，但职责只到 15:00。\n"
+             "> 判据：② = 槽位后写过 memory 且末条含停机标记且窗口内无产物；"
+             "③ = 槽位后既无 memory 也无产物。\n")
 
     L.append("\n## 四、决策账本\n\n")
     if ledger.get("exists"):
@@ -479,11 +505,13 @@ def main() -> None:
     print(f"[仅回测] {[r['param'] for r in space['rows'] if r['class']=='仅回测']}")
     print(f"[仅实盘] {len([r for r in space['rows'] if r['class']=='仅实盘'])} 个: "
           f"{[r['param'] for r in space['rows'] if r['class']=='仅实盘']}")
-    print(f"\n[循环活性] 停摆 {sum(1 for a in activity if a['stale'])}/"
-          f"{len(activity)}")
-    for a in activity:
-        if a["stale"] or a["last_run"] is None:
-            print(f"   {a['status']:<12} {a['name']:<22} 最近 {a['last_run'] or '—'}")
+    c = live_sum["counts"]
+    print(f"\n[循环活性] 三态 ①{ c[LL.STATE_NORMAL]} ②{c[LL.STATE_HALTED]} "
+          f"③{c[LL.STATE_MISSED]} / 共 {live_sum['total']}")
+    for a in live_sum["abnormal"]:
+        print(f"   {a['state_label']:<14} {a['name']:<22} 槽位 {a['slot'] or '—'} | "
+              f"{a['verdict_label']}")
+        print(f"      ↳ {a['evidence']}")
     # ★ 文案必须带「提及」二字：这三个数都是正则词频，不是事件数。
     #   旧文案打印「落盘 9 否决 189 效率 16%」，读起来像 9/189 个轮次事件，
     #   实际只是文本里这些词出现了多少次（改一段说明就会变）。

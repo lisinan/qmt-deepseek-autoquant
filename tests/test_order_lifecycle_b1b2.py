@@ -423,6 +423,13 @@ class _StubClient:
 
 def _prepare_flatten_engine(eng, code, price=10.0):
     """把 _run_once 的重活替换成无操作桩，只保留强平块的行为。"""
+    # 【2026-11-02】本组用例测的是「强平重试计数/跨日重置」，**与豁免语义无关**。
+    # 而用例里的 code 用的是 300308.SZ —— 它自 2026-10-30 起在生产
+    # `exit_exempt_codes` 里（OWNER 要求长期持有），新规则「强平不碰豁免仓」
+    # 会让这些用例拿到 0 次调用而失败。
+    # 这里显式关掉本实例的豁免（不动全局 STRATEGY_PARAMS，避免污染同进程其它用例）：
+    # 豁免语义由 tests/test_flatten_respects_exempt.py 单独钉死。
+    eng._is_manual_exempt = lambda _code: False
     eng._market_stale = False
     eng._update_market_staleness = lambda raw: None
     eng._aggregate_bar = lambda *a, **k: None

@@ -451,6 +451,15 @@ class EventEngine:
         # 断链时归零 ⇒ 自动回落到本地拼装口径。回滚：删除本行与两处赋值即可。
         self._broker_total_asset: float = 0.0
         self._broker_total_ts: float = 0.0
+        # ★【2026-11-02 P0】熔断/强平专用的「可信总资产」状态（live 才有意义）。
+        # 见 _risk_total_asset()：券商口径不可用时**跳过判定**，绝不回落到
+        # 「现金 + 本地持仓」的拼装值 —— 2026-11-02 正是拼装值塌成纯现金
+        # （6,953.34）⇒ 判出 −89.25% 假日内亏损 ⇒ 把真实持仓强平掉了。
+        self._risk_asset_window: list = []      # 最近 N 个可信样本（去毛刺用）
+        self._risk_asset_last: float = 0.0      # 最近一次可信值（面板展示用）
+        self._risk_asset_basis: str = ""        # broker / local / untrusted
+        self._asset_untrusted_n: int = 0        # 连续不可信轮数
+        self._asset_untrusted_notice_ts: float = 0.0
         # 盯市价兜底第三档的日线收盘缓存：(code, 交易日) -> (取值时刻, close)
         self._mark_close_cache: Dict[tuple, tuple] = {}
         self._pending_ai: Dict[str, threading.Thread] = {}
@@ -485,6 +494,8 @@ class EventEngine:
         self._flatten_attempts: Dict[str, int] = {}
         self._flatten_day: str = ""
         self._flatten_notified: bool = False
+        # 【2026-11-02】豁免仓不参与强平的当日一次性提示（否则每轮刷屏）。
+        self._flatten_exempt_notified: bool = False
         # B2-3 可用量=0 告警去重（每个 code 每日一次）。
         self._avail0_warned: set = set()
         # 拒单日志去重：code -> 上次记录过的拒绝原因 / 时间戳
@@ -1074,6 +1085,7 @@ class EventEngine:
             self._flatten_attempts = {}
             self._flatten_day = ""
             self._flatten_notified = False
+            self._flatten_exempt_notified = False
             # 【2026-10-21 B1】隔夜未成交委托不应跨日残留，清空待成交账本。
             self._pending_orders = {}
             self._pending_sells = {}
@@ -2102,9 +2114,20 @@ class EventEngine:
         #   daily_loss_limit_abs=5000 的日内亏损熔断**事实上失效**。
         #   live 改「总资产 − 当日开盘资产」逐轮重算；paper / 回测传 False
         #   ⇒ 逐位保持旧口径（P0 不变性）。回滚：把实参改成 False。
-        self.risk.on_asset_update(
-            total_asset, self._day_open_baseline(total_asset),
-            equity_daily_pnl=(getattr(self, "exec_mode", "paper") == "live"))
+        #
+        # ★【2026-11-02 P0】熔断入参改用 `_risk_total_asset()`（只认真实券商仓位口径）。
+        #   2026-11-02 10:34:10 用 `_total_asset()` 的拼装值（6,953.34，持仓表被一次
+        #   空返回清空）判出 −89.25% 假日内亏损 ⇒ 强平了真实持仓（成交价 548.61 / 2.867），
+        #   10:34:58 权益即恢复 63,258 ⇒ 单轮毛刺。现在：券商口径不可用 ⇒ 本轮
+        #   **不判定、不强平、不写权益快照**（宁可少判一次，不可错杀真仓）。
+        #   回滚：把下面 risk_asset 的三处取值换回 total_asset。
+        risk_asset = self._risk_total_asset()
+        if risk_asset is None:
+            self._asset_untrusted_skip_notice()
+        else:
+            self.risk.on_asset_update(
+                risk_asset, self._day_open_baseline(risk_asset),
+                equity_daily_pnl=(getattr(self, "exec_mode", "paper") == "live"))
 
         # 4.4) 日内硬止损强平（2026-09-16 新增）：risk 判定当日亏损达
         #   daily_stop_flatten_pct 后置 flatten_requested，这里平掉全部可卖持仓。
@@ -2118,18 +2141,19 @@ class EventEngine:
                 self._flatten_day = today_s
                 self._flatten_attempts.clear()
                 self._flatten_notified = False
+                self._flatten_exempt_notified = False
             if not self._flatten_notified:
                 self._flatten_notified = True
                 system_notice(
                     "ERROR", "交易",
                     "日内硬止损强平触发：当日账户亏损达阈值，开始逐仓平仓（可卖持仓）")
             _flat_n = 0
-            for _code, _pos in list(self._positions.items()):
-                if _pos.quantity <= 0:
-                    continue
+            # ★【2026-11-02 OWNER 指令】熔断强平**不碰豁免仓**（见
+            #   `_split_flatten_candidates` 的完整说明）。
+            _flat_codes, _skipped_exempt = self._split_flatten_candidates()
+            for _code in _flat_codes:
+                _pos = self._positions[_code]
                 if _code in self._pending_sells:
-                    continue
-                if self._flatten_attempts.get(_code, 0) >= self.FLATTEN_MAX_ATTEMPTS:
                     continue
                 self._flatten_attempts[_code] = self._flatten_attempts.get(_code, 0) + 1
                 self._handle_sell(Signal(
@@ -2137,10 +2161,24 @@ class EventEngine:
                     side="SELL", price=_pos.last_price or _pos.avg_cost,
                     reason="daily_hard_stop_flatten"), _pos, force=True)
                 _flat_n += 1
+            if _skipped_exempt and not self._flatten_exempt_notified:
+                self._flatten_exempt_notified = True
+                _names = "、".join(_skipped_exempt)
+                logger.warning(
+                    "日内硬止损强平：豁免仓 %d 只不参与强平（%s）——"
+                    "仅保留 −18%% 灾难止损，账户仍熔断",
+                    len(_skipped_exempt), _names)
+                system_notice(
+                    "WARNING", "交易",
+                    f"日内硬止损强平：{len(_skipped_exempt)} 只豁免仓（{_names}）"
+                    f"不参与强平，仅保留灾难止损；账户仍熔断、暂停开仓")
             # 全部清空或尝试耗尽后写一条 INFO 日志。
+            # 豁免仓不算「未完成」：它们是**有意留下**的，否则每轮都会重复打印
+            # 「全部持仓已清空或重试次数耗尽」，把真问题淹掉。
             remaining = [
                 c for c, p in self._positions.items()
                 if p.quantity > 0 and c not in self._pending_sells
+                and c not in _skipped_exempt
                 and self._flatten_attempts.get(c, 0) < self.FLATTEN_MAX_ATTEMPTS
             ]
             if _flat_n:
@@ -2150,7 +2188,10 @@ class EventEngine:
 
         # 6.5) 持久化权益快照（节流 ~60s）——供盘后复盘重建权益曲线 / 当日收益 /
         # 日内最大回撤，避免复盘只能依赖解析自由文本心跳（格式易变、易丢）。
-        self._persist_equity(total_asset)
+        # ★【2026-11-02 P0】口径不可信时不落盘：脏权益会污染复盘收益/回撤/KPI#4，
+        #   而且「快照 6,953」这种行事后无法与真实值区分（10-30 的 EOD 盘中值已踩过一次）。
+        if risk_asset is not None:
+            self._persist_equity(total_asset)
 
         # 4) 评估退出（所有持仓）——轻量级，总是跑
         # regime 强制清仓：市场转弱时，先无条件平掉所有持仓（regime filter 核心）
@@ -2410,6 +2451,41 @@ class EventEngine:
             logger.debug("regime 计算失败，保守放行: %s", e)
         return True
 
+    def _split_flatten_candidates(self) -> Tuple[List[str], List[str]]:
+        """日内硬止损强平的候选拆分：``(应强平的 code, 豁免不动的 code)``。
+
+        ★【2026-11-02 OWNER 指令】熔断强平**不碰豁免仓**。
+
+        为什么必须显式拆开（而不是在循环里 continue 了事）：
+          · 2026-11-02 10:34 的假熔断把 300308 一起卖掉，而它正是 OWNER 指定
+            「长期持有」的 `exit_exempt_codes`。豁免在**正常退出路径**（:2202）
+            生效，但强平走 `force=True` 绕过了它 —— 结果「最危急的时刻反而把
+            战略底仓清了」，与 OWNER 意图完全相反。
+          · 语义澄清：**熔断 = 停止进攻（暂停开仓），不是清掉 OWNER 的战略持仓**。
+            豁免仓仍受 −18% 灾难止损保护（正常退出路径兜底），不会失去风控。
+          · 拆成独立函数是为了可测：主循环那一大段无法单测，而「谁被强平」
+            恰恰是最需要钉死的语义（同型缺陷已发生 3 次）。
+
+        过滤条件与原有强平逻辑一致：qty>0 / 不在待成交卖单 / 未耗尽重试次数。
+        返回的 exempt 列出全部「有仓位且被豁免」的 code（用于日志与提示）。
+        """
+        flat: List[str] = []
+        exempt: List[str] = []
+        attempts = getattr(self, "_flatten_attempts", None) or {}
+        pending = getattr(self, "_pending_sells", None) or {}
+        for code, pos in list(self._positions.items()):
+            if int(getattr(pos, "quantity", 0) or 0) <= 0:
+                continue
+            if self._is_manual_exempt(code):
+                exempt.append(code)
+                continue
+            if code in pending:
+                continue
+            if attempts.get(code, 0) >= getattr(self, "FLATTEN_MAX_ATTEMPTS", 3):
+                continue
+            flat.append(code)
+        return flat, exempt
+
     def _is_manual_exempt(self, code: str) -> bool:
         """该持仓是否豁免「趋势破位 / 超时 / 单日暴跌」等策略退出。
 
@@ -2521,6 +2597,123 @@ class EventEngine:
                     f"观察篮建仓 {code} {get_stock_name(code)} @{price:.3f}"
                     f"（paper，绕过信号闸门，风控/现金夹紧照旧）")
 
+    def _owner_reentry_step(self, ticks: Dict[str, Tick],
+                            current_prices: Dict[str, float]) -> None:
+        """按 ``STRATEGY_PARAMS["owner_reentry"]`` 在指定价格区间回补 OWNER 底仓。
+
+        【2026-11-02 新增】语义与 `_manual_entry_step` 的本质区别：
+          · 观察篮 = 绕过**信号闸门**（动量/日线/评分），资金约束全保留；
+          · 本通道 = 绕过**单仓上限 40%**，其余资金与风控约束全保留。
+
+        为什么必须单独一条：一手 300308 = 权益 87%，在 40% 上限下
+        `PositionSizer.size()` 恒返回 0 股 —— 不破这条限制就永远接不回原仓位。
+        详见 `config/settings.py::STRATEGY_PARAMS["owner_reentry"]` 的注释。
+
+        刻意不具备的能力：
+          · 不放开任何**其他**标的的单仓上限（主信号/轮动路径不传
+            `owner_reentry=True`，`RiskManager.can_open` 的默认值仍为 False）；
+          · 不自动补仓/加仓（成交后该 code 进持仓 ⇒ 本方法首行即 return）；
+          · 不绕过熔断、日内次数、现金夹紧、行情新鲜度、总资产可信度。
+        """
+        cfg = STRATEGY_PARAMS.get("owner_reentry") or {}
+        if not isinstance(cfg, dict) or not cfg:
+            return
+        code = str(cfg.get("code") or "").strip()
+        if not code:
+            return
+        # 已持仓 ⇒ 回补完成（防重复买入，也防把「回补」变成「加仓」）
+        if any(int(getattr(p, "quantity", 0) or 0) > 0
+               for c, p in self._positions.items() if c == code):
+            return
+
+        now = datetime.now()
+        today = now.strftime("%Y-%m-%d")
+
+        # 有效期：到期作废，只告警一次（不留永久后门，也不刷屏）
+        valid_until = str(cfg.get("valid_until") or "").strip()
+        if valid_until and today > valid_until:
+            if getattr(self, "_owner_reentry_expired_notified", "") != valid_until:
+                self._owner_reentry_expired_notified = valid_until
+                msg = (f"[OWNER 回补] {code} 回补单已于 {valid_until} 过期未成交"
+                       f"（价格始终未落入区间），后续不再尝试")
+                logger.warning(msg)
+                system_notice("WARNING", "交易", msg)
+            return
+
+        # 时段：避开开盘 5 分钟与尾盘
+        hhmm = now.strftime("%H:%M")
+        earliest = str(cfg.get("earliest") or "").strip()
+        latest = str(cfg.get("latest") or "").strip()
+        if earliest and hhmm < earliest:
+            return
+        if latest and hhmm > latest:
+            return
+
+        tick = ticks.get(code)
+        if tick is None:
+            return
+        price = float(getattr(tick, "price", 0) or 0)
+        if price <= 0:
+            return
+
+        try:
+            lo = float(cfg.get("min_price") or 0)
+            hi = float(cfg.get("max_price") or 0)
+            lots = int(cfg.get("lots") or 0)
+            max_amt = float(cfg.get("max_amount") or 0)
+        except (TypeError, ValueError):
+            logger.warning("[OWNER 回补] 配置值非法（非数值），本轮跳过且不下单")
+            return
+        if lots <= 0:
+            return
+
+        if hi > 0 and price > hi:
+            return                      # 高于上限：不追高，等回落
+        if lo > 0 and price < lo:
+            # 破位不接飞刀。每日只提示一次，避免每个 tick 刷屏。
+            if getattr(self, "_owner_reentry_break_date", "") != today:
+                self._owner_reentry_break_date = today
+                msg = (f"[OWNER 回补] {code} 现价 {price:.2f} 已跌破下限 {lo:.2f}"
+                       f"（支撑失守），今日不接飞刀；若确要强行接回请下调 min_price")
+                logger.warning(msg)
+                system_notice("WARNING", "交易", msg)
+            return
+
+        qty = lots * 100
+        amount = qty * price
+        if max_amt > 0 and amount > max_amt:
+            logger.warning("[OWNER 回补] %s ×%d @%.3f = %.0f 元 超上限 %.0f，跳过",
+                           code, qty, price, amount, max_amt)
+            return
+        # 重试节流：本方法每 tick 被调用，若 `_handle_buy` 因现金/口径等原因
+        # 未成交，没有节流会每秒刷一条日志。60s 一次足够，且不会错过窗口
+        # （价格短暂掠过区间时仍有 60s 粒度的捕捉机会）。
+        _now_ts = time.time()
+        if _now_ts - getattr(self, "_owner_reentry_last_try", 0.0) < 60.0:
+            return
+        self._owner_reentry_last_try = _now_ts
+
+        sig = Signal(ts=now, code=code, name=get_stock_name(code), side="BUY",
+                     score=0.0, price=price,
+                     reason=(f"owner_reentry(OWNER 指定价位 {lo:.0f}~{hi:.0f} "
+                             f"回补底仓)"))
+        self._save_signal(sig)          # 落库：页面「实时信号」可查，事后可审计
+        _eq = self._total_asset()
+        logger.info("[OWNER 回补] 触发 %s ×%d @%.3f = %.0f 元 "
+                    "（权益 %.0f，拟占比 %.1f%%）",
+                    code, qty, price, amount, _eq,
+                    amount / _eq * 100 if _eq > 0 else 0.0)
+        # fixed_amount 留 0.5% 余量：_handle_buy 内部按 int(amount/price/100)*100
+        # 反推股数，浮点误差可能把 100 股 floor 成 0 股（静默不成交）。
+        self._handle_buy(sig, tick, current_prices,
+                         fixed_amount=amount * 1.005, owner_reentry=True)
+        if any(int(getattr(p, "quantity", 0) or 0) > 0
+               for c, p in self._positions.items() if c == code):
+            msg = (f"[OWNER 回补] 已提交/成交 {code} {get_stock_name(code)} "
+                   f"×{qty} @{price:.3f}（约 {amount:,.0f} 元）")
+            logger.info(msg)
+            system_notice("SUCCESS", "交易", msg)
+
     def _run_single_step(self, ticks: Dict[str, Tick]) -> None:
         """单标的模式的入场决策（【2026-09-02 #E】已切换为日线路径）。
 
@@ -2530,6 +2723,12 @@ class EventEngine:
               score 来自 DailyContext（与 backtest_daily 同口径）。
               资金、持仓、趋势入场、cash 夹紧等完整保留。
         """
+        # 【2026-11-02 OWNER 回补】刻意放在「入场决策 5 分钟节流」**之前**：
+        #   价格窗口只有 537~545 共 8 元（≈1.5%），300s 粒度可能整段错过
+        #   （开盘急跌到 538 再 3 分钟内拉回 550 就会漏）。本方法只做比价、
+        #   不做评分，每 tick 调用开销可忽略；内部对「触发但未成交」有 60s 节流，
+        #   不会因为反复失败而刷屏。
+        self._owner_reentry_step(ticks, {c: t.price for c, t in ticks.items()})
         # 节流：日线 score 不会变快于 DailyContext 刷新；避免每 tick 重复评分。
         now = time.time()
         if (now - self._last_entry_decision_ts
@@ -3133,7 +3332,8 @@ class EventEngine:
                 logger.warning("对账委托 %s 异常(忽略): %s", oid, e)
 
     def _handle_buy(self, sig: Signal, tick, current_prices: Dict,
-                    fixed_amount: float = 0.0) -> None:
+                    fixed_amount: float = 0.0,
+                    owner_reentry: bool = False) -> None:
         """买入执行（唯一落单口）。
 
         ``fixed_amount``（元，默认 0 = 不生效）【2026-10-29 新增】：
@@ -3144,6 +3344,19 @@ class EventEngine:
           现金 8,337 时会被买到 ≈7,900 元——那是重仓，不是小额验证。
           ★ 主信号路径 / 轮动路径**不传**此参 ⇒ 对已验证策略零行为影响。
           回滚：把默认值改回不可用（删掉本参 + 下面 fixed_qty 分支）即可。
+
+        ``owner_reentry``（默认 False）【2026-11-02 新增】：
+          仅由 ``_owner_reentry_step`` 传入。三处差异，全部围绕「OWNER 显式
+          指定的股数必须原样成交」：
+            ① 不乘连亏降仓系数 ``position_scale``（100 股 × 0.5 = 50 股不是整百，
+               券商必拒，而日志会假装「已提交」）；
+            ② ``position_scale <= 0`` 的「僵尸冻结」早退分支对它放行
+               （否则账户一进僵尸态，回补通道会静默失效）；
+            ③ ``RiskManager.can_open`` 收到 ``allow_large_position=True``，
+               跳过 ``pos_ratio > max_single_position_pct`` 这一条（**仅此一条**，
+               熔断 / 日内次数 / 单笔金额上限全部保留）。
+          ★ 唯一目的：一手 300308 = 权益 87% > 40% 上限，不跳过就永远买不进。
+            该参数不影响任何其他调用方（默认 False = 逐位不变）。
         """
         # 持仓名称解析为规范中文名（兜底回退代码），避免仪表板持仓只显示代码
         # 【2026-09-30 AM-EVOLVE R14】合成行情闸门（P0）：mock 价与真实市价可差
@@ -3170,8 +3383,14 @@ class EventEngine:
         if scale <= 0:
             # 【2026-10-29】原本是静默 return（连日志都没有）⇒ 信号会以裸 BUY
             # 留在库里，界面显示「BUY」却查不到任何原因。补一条拒绝记录。
-            self._log_reject_once(sig.code, "position_scale=0(连亏降仓压到 0)")
-            return
+            # 【2026-11-02】OWNER 回补不受「僵尸冻结」影响：它的股数由 OWNER
+            #   显式指定，不该被连亏降仓系数一票否决（否则通道会静默失效）。
+            if not owner_reentry:
+                self._log_reject_once(sig.code, "position_scale=0(连亏降仓压到 0)")
+                return
+            logger.warning(
+                "[OWNER 回补] position_scale=0（连亏降仓）不阻断显式股数建仓 %s",
+                sig.code)
         price = float(getattr(tick, "price", 0) or 0)
         if price <= 0:
             self._log_reject_once(sig.code, "price<=0(tick 无有效价)")
@@ -3198,6 +3417,13 @@ class EventEngine:
         blocked = self.risk.account_block_reason(self._daily_trade_count)
         if blocked:
             self._log_reject_once(sig.code, blocked)
+            return
+        # ★【2026-11-02 P0】总资产不可信（券商口径不可用）时**禁止建仓**：
+        #   仓位大小直接由 total_asset 派生，用一个塌成纯现金的假值下单，
+        #   既会算出错误的股数，也会让 max_single_position_pct 夹紧失效。
+        #   方向是保守的（只减少交易），不涉及强平/撤单。
+        if self._risk_asset_basis == "untrusted":
+            self._log_reject_once(sig.code, "asset_untrusted(总资产口径不可信)")
             return
         # 波动率目标仓位：用日线 ATR% 做风险平价（替换固定的 5 万）
         atr_pct = self.daily.atr_pct(sig.code) if self.daily else 0.0
@@ -3251,6 +3477,11 @@ class EventEngine:
         if _fixed_qty > 0:
             # 观察篮：金额说了算（只保留连亏降仓系数，不再叠加信念乘子）
             qty = int(_fixed_qty * scale)
+        if owner_reentry and _fixed_qty > 0:
+            # 【2026-11-02 OWNER 回补】股数由 OWNER 显式指定（lots×100），
+            # **不乘**连亏降仓系数 —— 100×0.5=50 股不是整百，券商必拒单，
+            # 而日志只会显示「已提交」，故障会藏起来。
+            qty = int(_fixed_qty)
         # ---- 买入力（buying power）夹紧【P0 修正 2026-09-02】----
         # 原实现完全没有现金校验，paper 分支直接 ``self._cash -= qty*price``。
         # 配置上 max_single_position_pct(0.30) × max_positions(5) = 150%，本身就
@@ -3266,7 +3497,7 @@ class EventEngine:
                       account="cash")
         ok, reason = self.risk.can_open(
             order, self._positions, self._total_asset(),
-            self._daily_trade_count)
+            self._daily_trade_count, allow_large_position=owner_reentry)
         if not ok:
             self._log_reject_once(sig.code, reason)
             return
@@ -4010,9 +4241,29 @@ class EventEngine:
                     )
             # 清掉 broker 已无持仓的本地记录（数量置 0，退出逻辑自然跳过；
             # 元数据保留以便复盘）。
+            # ★【2026-11-02 P0 可观测】这一步是「销毁性」的：单次空返回就会把
+            #   本地持仓全部归零，随后 `_total_asset()` 退化为纯现金。2026-11-02
+            #   10:34:10 正是如此（本地账本清空 + 券商 total 不可用 ⇒ 6,953.34 ⇒
+            #   假 −89.25% ⇒ 强平真仓）。清空本身不改（真清仓时也需要），但必须留痕：
+            #   否则事后只能靠 equity 快照倒推，日志里一个字都查不到。
+            _cleared = [c for c in list(self._positions.keys())
+                        if c not in held
+                        and getattr(self._positions[c], "quantity", 0) > 0]
+            _cleared_mv = sum(float(getattr(self._positions[c], "market_value", 0.0))
+                              for c in _cleared)
             for code in list(self._positions.keys()):
                 if code not in held:
                     self._positions[code].quantity = 0
+            if _cleared:
+                if not raw:
+                    logger.warning(
+                        "券商返回「空持仓」而本地有 %d 个持仓（市值 %.2f）⇒ "
+                        "本地账本已归零；若本轮无卖出成交则属数据毛刺，"
+                        "风控将跳过判定（见 _risk_total_asset）",
+                        len(_cleared), _cleared_mv)
+                else:
+                    logger.info("券商持仓已无 %d 个本地记录（市值 %.2f），归零",
+                                len(_cleared), _cleared_mv)
             # 【2026-10-30 P1】持仓出现后补订阅（自愈）。
             # 启动订阅发生在 broker 连接之前（见 _run_forever 的 subscribe 调用），
             # 那时持仓尚未拉取；盘中 OWNER 手工建仓 / 观察篮补买同样会引入池外
@@ -4314,6 +4565,84 @@ class EventEngine:
         for p in self._positions.values():
             v += p.market_value
         return v
+
+    # 去毛刺窗口长度：3 轮 ≈ 9~15 秒。取中位数而不是均值 —— 单点毛刺对中位数
+    # 无影响（均值会被一条 6,953 的脏样本拉低 1.9 万）。
+    RISK_ASSET_MEDIAN_N = 3
+
+    def _risk_total_asset(self) -> Optional[float]:
+        """★熔断/强平专用的总资产：**只认真实（券商）仓位口径**，不可信就返回 None。
+
+        真实事故（2026-11-02 10:34:10，真实资金）
+        ------------------------------------------
+        09:30 开盘基线 64,683.84；10:31~10:33 权益 63,401 / 63,307 / 63,344（真实约 −2.1%）；
+        10:34:10 那一轮 `_total_asset()` 返回 **6,953.34 = 纯现金**（本地持仓表被一次
+        「券商返回空」清空，且券商 total_asset 那一刻不可用 ⇒ 回落到「cash + Σ持仓」
+        的拼装口径），对开盘算得 **−89.25%** ⇒ 命中 daily_stop −6% ⇒
+        **强平 300308×100 @548.61 + 510050×500 @2.867（真实成交）**；
+        10:34:58 权益立刻恢复到 63,258.84 ⇒ 是**单轮采样毛刺**，不是真亏损。
+
+        为什么不能靠 `_total_asset()`：那个函数为了「不断链」保留了一条回落路径
+        （券商值陈旧/为 0 ⇒ 用本地拼装）。回落本身对**展示**无害，但风控拿它开火
+        就等于「仪表盘断电时按最后一个错数字直接强平」。同类事故已是第 3 次：
+        10-30 −86.58%（资金已扣/持仓未到）、11-02 −89.25%（持仓表被空返回清空）、
+        09-30 假亏 21 万。
+
+        语义（live）：
+          · 券商 total_asset > 0 且 ≤120s 新鲜 ⇒ 可信；取最近 3 个样本**中位数**，
+            单点毛刺被吸收（真实趋势最多滞后 1 轮 ≈ 3s，对 −6% 阈值无实质影响）；
+          · 券商值不可用 ⇒ 返回 None。调用方**跳过**本轮熔断/强平判定并告警，
+            **绝不**用拼装值开火（宁可少判一次，不可错杀真仓）。
+        paper / 回测：逐位返回 `_total_asset()`，行为完全不变（P0 不变性）。
+
+        回滚：主循环把 `_risk_total_asset()` 换回 `_total_asset()` 即可（一行）。
+        """
+        mode = getattr(self, "exec_mode", "paper")
+        if mode != "live":
+            self._risk_asset_basis = "local"
+            v = self._total_asset()
+            self._risk_asset_last = v
+            return v
+        bt = float(getattr(self, "_broker_total_asset", 0.0) or 0.0)
+        ts = float(getattr(self, "_broker_total_ts", 0.0) or 0.0)
+        if bt <= 0 or (time.time() - ts) > 120:
+            self._risk_asset_basis = "untrusted"
+            self._asset_untrusted_n = int(
+                getattr(self, "_asset_untrusted_n", 0)) + 1
+            win = getattr(self, "_risk_asset_window", None)
+            if win is not None:
+                win.clear()          # 断链后旧样本不再代表当前仓位
+            return None
+        win = getattr(self, "_risk_asset_window", None)
+        if win is None:
+            self._risk_asset_window = win = []
+        win.append(bt)
+        del win[:-self.RISK_ASSET_MEDIAN_N]
+        ordered = sorted(win)
+        val = ordered[len(ordered) // 2]
+        self._risk_asset_basis = "broker"
+        self._asset_untrusted_n = 0
+        self._risk_asset_last = val
+        return val
+
+    def _asset_untrusted_skip_notice(self) -> None:
+        """总资产口径不可信时的节流告警（每 5 分钟最多一条）。
+
+        必须告警而不是静默跳过：跳过判定意味着「这一段时间风控看不见账户」，
+        属于需要人介入的状态；但每轮（3s）都发一条会把 notices 刷成噪声
+        （10-30 曾每小时刷 711 条同类告警，反而掩盖真问题）。
+        """
+        now = time.time()
+        if now - float(getattr(self, "_asset_untrusted_notice_ts", 0.0)) < 300:
+            return
+        self._asset_untrusted_notice_ts = now
+        n = int(getattr(self, "_asset_untrusted_n", 0))
+        logger.warning("总资产口径不可信（连续 %d 轮）：券商 total_asset 不可用，"
+                       "本轮跳过熔断/强平判定与权益落盘（禁止用拼装值开火）", n)
+        system_notice(
+            "WARN", "风控",
+            f"总资产口径不可信（券商 total_asset 不可用，已连续 {n} 轮）"
+            f"⇒ 本轮跳过熔断判定、暂停建仓；恢复后自动继续")
 
     def _shutdown(self) -> None:
         # 重启延续：优雅退出前落盘引擎状态（全模式），确保下次启动时记录延续

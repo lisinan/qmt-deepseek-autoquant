@@ -188,7 +188,18 @@ class RiskManager:
         return ""
 
     def can_open(self, order: Order, positions: Dict[str, Position],
-                 total_asset: float, daily_trade_count: int) -> Tuple[bool, str]:
+                 total_asset: float, daily_trade_count: int,
+                 allow_large_position: bool = False) -> Tuple[bool, str]:
+        """是否允许开仓。``allow_large_position=True`` 时**只**跳过单标的上限。
+
+        【2026-11-02 新增参数】唯一调用方是 ``EventEngine._owner_reentry_step``
+        （OWNER 指定价位回补，见 ``config/settings.py::owner_reentry``）。
+        存在理由：一手 300308 = 权益 87% > ``max_single_position_pct=40%``，
+        不跳过这一条，「接回原仓位」在数学上不可能。
+        **刻意只放开这一条**：熔断、单笔金额上限、日内次数、日内亏损熔断
+        全部照常 —— 越权范围必须能被一句话说清，否则就是开了个总后门。
+        默认 False ⇒ 其余所有路径行为逐位不变。
+        """
         self.reset_daily()
         self._maybe_recover(date.today())
         if self._halted:
@@ -200,7 +211,7 @@ class RiskManager:
         # 单标的上限
         if total_asset > 0 and amount > 0:
             ratio = amount / total_asset
-            if ratio > self.p["max_single_position_pct"]:
+            if ratio > self.p["max_single_position_pct"] and not allow_large_position:
                 return False, f"pos_ratio>{self.p['max_single_position_pct']}"
         # 日内次数
         if daily_trade_count >= self.p["max_daily_trades"]:
