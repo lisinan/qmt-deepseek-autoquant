@@ -349,7 +349,13 @@ def _collect_tests():
             #   独立的 OWNER 回补通道：价格区间（不追高/不接飞刀）、有效期、
             #   金额上限、已持仓即完成，以及**只**跳过单仓比例这一条越权边界；
             #   含正向对照（不带该标志时 55,000 元订单必须仍被 pos_ratio>0.4 拒）。
-            "tests.test_owner_reentry"]
+            "tests.test_owner_reentry",
+            # 【2026-11-02 P0 上游】持仓同步闸门：单次「券商返回空持仓」不得销毁
+            #   本地账本。熔断只堵了**下游**（不再按错数字开火），但本地账本被
+            #   清空后策略会误判空仓 ⇒ max_positions 失效、可能重复买入。
+            #   11-02 事故链的上游正是「一次 [] 就清账」。语义：连续
+            #   SYNC_EMPTY_CONFIRM_N 轮空返回才确认；中途非空即清零重计。
+            "tests.test_sync_empty_confirm"]
     tests = []
     import_errors = []
     for m in mods:

@@ -407,6 +407,9 @@ class EventEngine:
         # 【2026-10-21 C4】券商持仓查询连续失败计数（区分「未知」与「空仓」）。
         self._sync_fail_count: int = 0
         self._sync_fail_notice_day: str = ""
+        # 【2026-11-02 P0】券商「空持仓」连续确认计数（区分「单次毛刺」与「真空仓」）。
+        # 见 _sync_broker_positions：单次 [] 不得销毁本地账本。
+        self._sync_empty_count: int = 0
         # 【2026-10-21 C8】最近一次「无入场信号」原因文案（供 snapshot 暴露）。
         self._no_entry_reason: str = ""
         self.analyst = analyst or AIAnalyst()
@@ -4194,6 +4197,29 @@ class EventEngine:
             self._sync_fail_count = 0
             held: set = {p.get("code") for p in raw
                          if (p.get("quantity") or 0) > 0}
+            # ★【2026-11-02 P0】「券商返回空持仓」必须**连续确认**才销毁本地账本。
+            # 为什么：下面那段归零是销毁性操作（一次 [] 就把全部持仓 quantity 置 0），
+            # 而 2026-11-02 10:34:10 的事故链正是：单次空返回 → 本地持仓全零 →
+            # `_total_asset()` 退化成纯现金 6,953.34 → 假 −89.25% → 强平真仓。
+            # 下游（熔断改吃 `_risk_total_asset()`）已于同日堵住，但那是「事后不
+            # 开火」；本条是**上游不产生错误状态**：策略若误判空仓会重复买入。
+            # 语义：连续 N 轮空返回才认（N=2，约 3~6 秒）；中途出现非空即清零重计。
+            # 代价：真实清仓场景下本地账本多存活一轮（≤6s），期间退出逻辑可能对
+            # 已不存在的仓位再发一次卖单 → 券商拒单（306050），无害且已有 T+1 处理。
+            if not raw:
+                _local_held = [c for c in self._positions
+                               if getattr(self._positions[c], "quantity", 0) > 0]
+                if _local_held:
+                    self._sync_empty_count += 1
+                    if self._sync_empty_count < self.SYNC_EMPTY_CONFIRM_N:
+                        logger.warning(
+                            "券商返回「空持仓」但本地有 %d 个持仓（第 %d/%d 次确认），"
+                            "本轮**不动**本地账本（防单次空返回毛刺清空真仓）",
+                            len(_local_held), self._sync_empty_count,
+                            self.SYNC_EMPTY_CONFIRM_N)
+                        return
+            else:
+                self._sync_empty_count = 0
             wide = abs(STRATEGY_PARAMS.get("hard_stop_pct", -0.18))
             for p in raw:
                 code = p.get("code")
@@ -4256,14 +4282,22 @@ class EventEngine:
                     self._positions[code].quantity = 0
             if _cleared:
                 if not raw:
+                    # 走到这里说明「空持仓」已连续 N 轮确认（见上方闸门）⇒ 视为
+                    # 真实清仓（OWNER 手工平仓 / 外部委托成交）。仍必须上首屏：
+                    # 账号在引擎不知情的情况下变空是资金安全级事件。
                     logger.warning(
-                        "券商返回「空持仓」而本地有 %d 个持仓（市值 %.2f）⇒ "
-                        "本地账本已归零；若本轮无卖出成交则属数据毛刺，"
-                        "风控将跳过判定（见 _risk_total_asset）",
+                        "券商连续 %d 轮返回「空持仓」而本地有 %d 个持仓（市值 %.2f）"
+                        "⇒ 已确认清空本地账本", self.SYNC_EMPTY_CONFIRM_N,
                         len(_cleared), _cleared_mv)
+                    system_notice(
+                        "ERROR", "风控",
+                        f"券商确认无持仓，本地 {len(_cleared)} 个持仓记录"
+                        f"（市值 {_cleared_mv:,.0f}）已归零 —— 若本轮引擎未卖出，"
+                        f"说明仓位在引擎之外被平掉，请核对")
                 else:
                     logger.info("券商持仓已无 %d 个本地记录（市值 %.2f），归零",
                                 len(_cleared), _cleared_mv)
+                self._sync_empty_count = 0
             # 【2026-10-30 P1】持仓出现后补订阅（自愈）。
             # 启动订阅发生在 broker 连接之前（见 _run_forever 的 subscribe 调用），
             # 那时持仓尚未拉取；盘中 OWNER 手工建仓 / 观察篮补买同样会引入池外
@@ -4569,6 +4603,11 @@ class EventEngine:
     # 去毛刺窗口长度：3 轮 ≈ 9~15 秒。取中位数而不是均值 —— 单点毛刺对中位数
     # 无影响（均值会被一条 6,953 的脏样本拉低 1.9 万）。
     RISK_ASSET_MEDIAN_N = 3
+
+    # 【2026-11-02 P0】券商「空持仓」连续确认轮数：连续 N 轮 [] 才销毁本地账本。
+    # 1 轮 ⇒ 单次空返回即清空（11-02 事故）；2 轮 ⇒ 约 3~6 秒内可被真实非空数据否决，
+    # 又短到不影响真实清仓的账本收敛。回滚：置 1 即恢复旧行为。
+    SYNC_EMPTY_CONFIRM_N = 2
 
     def _risk_total_asset(self) -> Optional[float]:
         """★熔断/强平专用的总资产：**只认真实（券商）仓位口径**，不可信就返回 None。

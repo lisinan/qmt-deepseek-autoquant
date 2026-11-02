@@ -190,8 +190,14 @@ def test_sync_broker_positions_none_does_not_clear_local_ledger():
         "首次失败不告警（阈值是连续 3 次）"
 
 
-def test_sync_broker_positions_empty_list_still_clears():
-    """C4 对照组：[] = 确认无持仓，仍照原逻辑置 0，并清零失败计数。"""
+def test_sync_broker_positions_empty_list_clears_after_confirmation():
+    """C4 对照组：[] 仍是「确认无持仓」，但须连续确认才置 0，并清零失败计数。
+
+    【2026-11-02 P0 语义变更】原契约是「一次 [] 即清账」，直接后果是
+    `_total_asset()` 退化成纯现金 ⇒ 假 −89.25% ⇒ 强平真仓（真实事故）。
+    新契约：连续 ``SYNC_EMPTY_CONFIRM_N`` 轮 [] 才清；单次 [] 只计待确认。
+    本用例同时保留原 C4 的「成功同步清零失败计数」断言，防止修复顺带破坏它。
+    """
     eng = _make_live_engine()
     eng._positions["300308.SZ"] = Position(
         code="300308.SZ", name="中际旭创", quantity=100,
@@ -200,7 +206,12 @@ def test_sync_broker_positions_empty_list_still_clears():
     orig = EE.qmt_broker
     EE.qmt_broker = _FakeBroker([])       # 确认空仓
     try:
-        eng._sync_broker_positions()
+        eng._sync_broker_positions()      # 第 1 轮：待确认，不动账本
+        assert eng._positions["300308.SZ"].quantity == 100, \
+            "单次 [] 不得清账（11-02 事故成因）"
+        assert eng._sync_empty_count == 1
+        for _ in range(eng.SYNC_EMPTY_CONFIRM_N - 1):
+            eng._sync_broker_positions()
     finally:
         EE.qmt_broker = orig
     assert eng._positions["300308.SZ"].quantity == 0

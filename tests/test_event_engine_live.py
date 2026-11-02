@@ -96,6 +96,13 @@ def test_live_sync_maintains_positions_and_total_asset():
 
 
 def test_live_sync_removes_closed_positions():
+    """券商确认无持仓后本地记录置 0（退出逻辑自然跳过）。
+
+    【2026-11-02 P0 语义变更】单次 [] 不再直接清账：须连续
+    ``SYNC_EMPTY_CONFIRM_N`` 轮确认。原因见 `test_sync_empty_confirm.py`
+    —— 单次空返回清账会让 total_asset 退化成纯现金，进而误触发强平（11-02 事故）。
+    这里同时钉住「确认后仍会清」这一原契约，避免修复被做成「永不清账」。
+    """
     eng = _make_engine()
     fake = FakeBroker()
     orig = EE.qmt_broker
@@ -109,8 +116,12 @@ def test_live_sync_removes_closed_positions():
         fake._positions = []
         fake._asset = {"cash": 1000000.0, "total_asset": 1000000.0}
         eng._sync_broker_positions()
+        assert eng._positions["300308.SZ"].quantity == 100, (
+            "单次空返回属待确认，不得直接清账（11-02 事故成因）")
+        for _ in range(eng.SYNC_EMPTY_CONFIRM_N - 1):
+            eng._sync_broker_positions()
         assert eng._positions["300308.SZ"].quantity == 0, \
-            "broker 已平仓的本地记录应置 0（退出逻辑自然跳过）"
+            "券商连续确认无持仓后，本地记录应置 0（退出逻辑自然跳过）"
     finally:
         EE.qmt_broker = orig
 
