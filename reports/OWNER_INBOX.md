@@ -26,7 +26,16 @@
 > 当日 −3.38%（−2,134.33）**全部来自唯一一笔人工覆盖买入**（300308 @501.51，10:59:01）；策略自身全天零成交且结论正确（277 次漏斗、候选池恒空）。
 > 三件事叠加：**整机掉电 10:54:28（Kernel-Power 41，引擎停摆 4 分 52 秒）** + 人工把 `min_price` 537→0（10:53:56）+ 光模块赛道崩（300394 −12.80 / 300308 −12.69 / 300502 −9.46，同期创业板 −2.73、510050 **+0.45**）⇒ 高低切换日。
 
-- [P1] [INFO] **[已撤回 P0，降级为结构性隐患] 510050 的观察篮豁免确实丢了且不自愈，但明日不会被趋势破位卖出**：撤回理由（我按代码核的）：`510050.SH` **只在 `VALIDATION_UNIVERSE`**（`settings.py:214-216`），**不在 `UNIVERSE`（n=16）/ `STOCK_CODES`（n=12）/ `INDEX_CODES`（n=4）**（实测 `from config import settings` 四者谓词均为 False）；`_daily_codes():685-693` = STOCK_CODES + INDEX_CODES + `dynamic_universe.active_codes`，**不含 510050**；`daily.refresh` 只有 `:738/:747` 两处、都传 `_daily_codes()`。⇒ 引擎内 `_closes["510050.SH"]` **不存在**，`trend_broken:557 if not c or len(c) < exit_ma: return False` 恒 False；单日暴跌需日涨跌幅（取不到）；无 tick 兜底 `:3805-3807 features(code) is None → return`；超时因 `open_date=None` 跳过。⇒ **四条策略退出全部为空，唯一出口只剩 −18% 硬止损 = 2.879×0.82 = 2.361**（与 `engine_state.stop_price=2.361` 吻合）。
+> **【2026-11-03 23:16 OWNER 指令「510050.SH 加进」· 已落盘】**
+> `config/settings.py:723` → `exit_exempt_codes: ["300308.SZ", "510050.SH"]`。
+> **实测复核（不是读代码猜的）**：`_is_manual_exempt("510050.SH")=True`；`_split_flatten_candidates()` 返回
+> `flat=[]` / `exempt=['300308.SZ','510050.SH']`；`TrendStrategy.on_exit` 在日线宇宙不含 510050 时，
+> 价位 2.884/2.70/2.40 **全部 None**，只有 2.35 才出 `硬止损 -18.37%` ⇒ **豁免没削掉任何保护**，阈值等价（2.361）。
+> ⇒ 净变化**只有一条**：510050 不再进 −6% 日亏强平候选。副作用（已知并接受）：两只持仓都在豁免清单内，
+> **熔断不再减仓，退化为「只停新开仓」**。`tests/run_all.py` **793/793 PASS**。
+> ⚠ **需重启生效**（pid 20084 仍为 10:58:26）；今晚的 `force=True` 修复也在同一份重启里一起生效。
+
+- [P1] [INFO] **[已裁决·已改] 510050 的观察篮豁免确实丢了且不自愈，但明日不会被趋势破位卖出**：撤回理由（我按代码核的）：`510050.SH` **只在 `VALIDATION_UNIVERSE`**（`settings.py:214-216`），**不在 `UNIVERSE`（n=16）/ `STOCK_CODES`（n=12）/ `INDEX_CODES`（n=4）**（实测 `from config import settings` 四者谓词均为 False）；`_daily_codes():685-693` = STOCK_CODES + INDEX_CODES + `dynamic_universe.active_codes`，**不含 510050**；`daily.refresh` 只有 `:738/:747` 两处、都传 `_daily_codes()`。⇒ 引擎内 `_closes["510050.SH"]` **不存在**，`trend_broken:557 if not c or len(c) < exit_ma: return False` 恒 False；单日暴跌需日涨跌幅（取不到）；无 tick 兜底 `:3805-3807 features(code) is None → return`；超时因 `open_date=None` 跳过。⇒ **四条策略退出全部为空，唯一出口只剩 −18% 硬止损 = 2.879×0.82 = 2.361**（与 `engine_state.stop_price=2.361` 吻合）。
   ★ **我的错误（记下来）**：我用 xtdata 原始日线算出 `trend_broken=True`（2.884 < MA60 2.9673），但引擎的 `DailyContext` 里没有这只票 ⇒ **「指标算得对」≠「引擎会这么算」**。这是「同一事实两份实现」的第 21 次复现，也是我本轮唯一一个未验证「路径是否可达」就定 P0 的错误。
   ★ **真实风险（这才是要留的）**：豁免丢失后 510050 从「**强平豁免仓**」变成「**强平对象**」——`_split_flatten_candidates:2482` 按 `_is_manual_exempt` 剔除，重启前它在 `_manual_positions` 会被剔除，重启后不再剔除 ⇒ **若 300308 跌到 443.56 触发 −6% 日亏强平，510050（1,442 元 / 2.4%）会被卖掉**（重启前不会）。规模小，但机理是真的。
   ★ **更该留的形态**：`_manual_positions` 不持久化（`:389`）+ 已持仓永不重新登记（`:2573`）⇒ 任何重启都会让观察篮豁免永久丢失。**一旦某只观察篮票被纳入 `UNIVERSE` / 日线上下文，这条缺失的豁免会立刻变成真卖出。** 今天没咬人，是因为 510050 不在日线宇宙 — `config/settings.py:214-216` + `engine/event_engine.py:389/2573/685-693/738/747/2482` + `strategy/daily_context.py:557` — 发现于 live-ops 特殊日复核（含我的误判与撤回）2026-11-03
