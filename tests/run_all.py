@@ -60,6 +60,13 @@ def _collect_tests():
             "tests.test_rotation",
             "tests.test_t1_sell_guard",
             "tests.test_batch_a_fixes", "tests.test_batch_c_fixes",
+            # 【2026-11-03 P0 账本缺陷】孤儿卖出（找不到建仓腿的 SELL）不得静默：
+            #   _replay_fills 曾把 pnl 记成 0.0（伪装成「没赚钱」）、_match_trades
+            #   曾整笔丢弃（实盘：2026-11-02 卖出 300308×100 @548.61 = 54,861 元
+            #   在 trades 里凭空消失）。本模块钉死 pnl=None / trades 保留且
+            #   orphan=True / sell_amount 不丢 / 正常配对逐位不变 / 必打 WARNING。
+            # 注意：漏注册会让整文件用例隐形未执行（见本文件顶部纪律）。
+            "tests.test_review_orphan_sell",
             "tests.test_batch_d_fixes",
             "tests.test_batch_b_t1",
             "tests.test_batch_b_minute",

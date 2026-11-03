@@ -49,13 +49,28 @@ def test_match_trades_finds_cross_day_roundtrip():
     assert abs(t["entry_price"] - 100.0) < 1e-6
     assert abs(t["return_pct"] - 10.0) < 1e-6
     assert abs(t["pnl"] - 10000.0) < 1e-6
+    assert t["orphan"] is False, "正常配对的 round-trip 不得被误标孤儿"
 
 
-def test_match_trades_only_day_fills_loses_the_trade():
-    """反向确认 bug 的存在：只喂当天 fills 时该笔交易必然消失。"""
+def test_match_trades_keeps_orphan_sell_instead_of_dropping_it():
+    """只喂当天 fills（无建仓腿）时，该笔卖出必须**保留**并标记为孤儿。
+
+    【2026-11-03 修复】原断言把缺陷写成了期望行为：
+        assert R._match_trades(only_today, target="2026-09-01") == []
+        —— 这条把「裸卖单被整笔静默丢弃」钉成了正确行为，于是修缺陷时
+        CI 会亮假绿灯。实盘铁证：2026-11-02 卖出 300308.SZ ×100 @548.61
+        = 54,861 元，在 trades 中整笔消失（fills 3 笔卖出 / trades 只有 2 笔）。
+    修复后的正确行为：保留该笔，orphan=True，pnl/entry_qty/entry_price 为 None
+    —— 「盈亏不可判定」不等于「这笔没发生」。
+    """
     only_today = [_fill("2026-09-01T14:00:00", "300308.SZ", "SELL", 1000, 110.0)]
-    assert R._match_trades(only_today, target="2026-09-01") == [], \
-        "只读当天 fills 时卖出腿找不到建仓腿——这正是被修复的缺陷"
+    trades = R._match_trades(only_today, target="2026-09-01")
+    assert len(trades) == 1, f"孤儿卖出不得被丢弃，实际 {trades}"
+    t = trades[0]
+    assert t["orphan"] is True, t
+    assert t["pnl"] is None, f"缺建仓腿时 pnl 必须不可判定（None），实际 {t['pnl']}"
+    assert t["entry_qty"] is None and t["entry_price"] is None, t
+    assert t["entry_ts"] is None, t
 
 
 def test_match_trades_target_filter_excludes_other_days():

@@ -348,9 +348,17 @@ def _replay_fills(fills: list, target: str = None) -> dict:
     :param target: 目标交易日 'YYYY-MM-DD'。传入时，已实现盈亏 / 买卖金额
         只统计**当日**成交，而持仓与成本基础仍由全史重放得出——这正是
         隔夜仓未实现盈亏能算对的关键。为 None 时退化为旧行为（全部计入）。
+
+    【2026-11-03 修复】找不到建仓腿的 SELL（孤儿卖出）语义：
+    账本里没有该代码的可卖持仓时（OWNER 手工建仓 / 建仓腿在回溯窗外 /
+    旧会话弃仓），真实盈亏**不可判定**，因此 ``pnl = None`` 并单独记入
+    ``orphan_sells``，**不**计入 ``realized``（``pnl=0`` 会被下游读成
+    「这笔没赚钱」，把「不知道」伪装成事实）。成交额仍然照记 —— 那是
+    真实发生的现金流。
     """
     pos = {}          # code -> {"qty":int, "avg":float}
     realized = defaultdict(float)
+    orphan_sells = []  # 当日找不到建仓腿的卖出（pnl 不可判定）
     buy_amt = sell_amt = 0.0
 
     def _on_target(ts: str) -> bool:
@@ -375,6 +383,28 @@ def _replay_fills(fills: list, target: str = None) -> dict:
         elif side == "SELL":
             cur = pos.get(code, {"qty": 0, "avg": 0.0})
             q = min(qty, cur["qty"])
+            if q <= 0:
+                # 【2026-11-03 修复】孤儿卖出：账本里没有该代码的可卖持仓。
+                # 原实现 q=0 ⇒ pnl=(price-0.0)*0=0.0 ⇒ realized[code]+=0.0，
+                # 把「盈亏不可判定」静默伪装成「这笔没赚钱」；而 sell_amt 照加，
+                # 于是「成交额进了、盈亏归零」。实盘铁证：2026-11-02 卖出
+                # 300308.SZ ×100 @548.61 = 54,861 元被记成 0.00（真实约 −1,966 元）。
+                amount = float(f["amount"] or price * qty)
+                if today:
+                    orphan_sells.append({
+                        "code": code,
+                        "date": str(f.get("ts") or "")[:10],
+                        "qty": qty,
+                        "price": price,
+                        "amount": round(amount, 2),
+                        "reason": "找不到建仓腿（账本无该代码可卖持仓）",
+                    })
+                    # 必须显式告警：静默的账本错误比算错更危险（没人会去查）。
+                    print(f"  [WARNING] 孤儿卖出：找不到建仓腿，pnl 不可判定"
+                          f" | code={code} date={str(f.get('ts') or '')[:10]}"
+                          f" qty={qty} price={price} amount={amount:,.2f}")
+                    sell_amt += amount   # 成交额是真实现金流，不能丢
+                continue
             pnl = (price - cur["avg"]) * q
             if today:
                 realized[code] += pnl
@@ -389,6 +419,7 @@ def _replay_fills(fills: list, target: str = None) -> dict:
     return {
         "realized_total": round(sum(realized.values()), 2),
         "realized_by_code": {c: round(v, 2) for c, v in realized.items()},
+        "orphan_sells": orphan_sells,
         "eod_positions": eod,
         "eod_avg": eod_avg,
         "cost_basis": cost_basis,
@@ -415,6 +446,13 @@ def _match_trades(fills: list, target: str = None) -> list:
         但建仓价/持仓天数仍来自全史配对，因而准确。
 
     同时记录建仓/平仓所属的执行模式（PAPER/LIVE），便于 paper→live 切换后核实。
+
+    【2026-11-03 修复】找不到建仓腿的 SELL **不再整笔丢弃**：原实现
+    ``if entry_qty > 0`` 不成立就静默跳过，于是真实成交在「逐笔交易明细」里
+    凭空消失（实测 2026-11-02 的 300308.SZ ×100 @548.61 = 54,861 元整笔不见，
+    fills 有 3 笔卖出、trades 只有 2 笔）。现在保留该笔并标记
+    ``orphan=True`` / ``entry_qty=None`` / ``entry_price=None`` / ``pnl=None``
+    —— 「不可判定」不等于「没发生」。返回值长度恒等于 SELL 笔数。
     """
     lots = defaultdict(list)   # code -> [[ts, price, qty, mode], ...]
     trades = []
@@ -456,11 +494,30 @@ def _match_trades(fills: list, target: str = None) -> list:
                     "entry_price": round(ep, 3),
                     "exit_price": round(price, 3),
                     "qty": entry_qty,
+                    "entry_qty": entry_qty,
                     "pnl": round(pnl, 2),
                     "holding_days": _holding_days(entry_ts, ts),
                     "return_pct": round((price / ep - 1) * 100, 2) if ep > 0 else 0.0,
                     "entry_mode": entry_mode,
                     "exit_mode": fmode,
+                    "orphan": False,
+                })
+            else:
+                # 孤儿卖出（无建仓腿）：保留该笔，盈亏标注为不可判定。
+                trades.append({
+                    "code": code,
+                    "entry_ts": None,
+                    "exit_ts": ts,
+                    "entry_price": None,
+                    "exit_price": round(price, 3),
+                    "qty": qty,
+                    "entry_qty": None,
+                    "pnl": None,
+                    "holding_days": None,
+                    "return_pct": None,
+                    "entry_mode": None,
+                    "exit_mode": fmode,
+                    "orphan": True,
                 })
     if target is not None:
         trades = [t for t in trades
@@ -1186,15 +1243,58 @@ def _render_html(target: str, rep: dict) -> str:
         if (m or "").upper() == "LIVE":
             return '<span style="color:#fff;background:#c62828;padding:1px 7px;border-radius:8px;font-size:11px">LIVE</span>'
         return '<span style="color:#fff;background:#1565c0;padding:1px 7px;border-radius:8px;font-size:11px">PAPER</span>'
-    trade_rows = "".join(
-        f"<tr><td>{E(t['code'])}</td><td>{E(t['entry_ts'])}</td><td>{E(t['exit_ts'])}</td>"
-        f"<td>{t['entry_price']}</td><td>{t['exit_price']}</td><td>{t['qty']}</td>"
-        f"<td>{t['holding_days']}</td>"
-        f"<td>{_mode_badge(t.get('entry_mode'))}/{_mode_badge(t.get('exit_mode'))}</td>"
-        f"<td class='{('neg' if t['pnl']>=0 else 'pos')}'>{t['pnl']:,.2f}</td>"
-        f"<td class='{('neg' if t['return_pct']>=0 else 'pos')}'>{t['return_pct']:+.2f}%</td></tr>"
-        for t in trades
-    ) or '<tr><td colspan="10" style="color:#888">当日无平仓（无 round-trip 交易）</td></tr>'
+
+    def _trade_row(t):
+        """单笔交易行。孤儿卖出（pnl 不可判定）的字段为 None，必须显示「不可判定」
+        而不是 0.00 —— 否则报表会把「不知道」读成「不赚不亏」（2026-11-03 修复）。"""
+        def _cls(v):
+            return "" if v is None else ("neg" if v >= 0 else "pos")
+        orphan_tag = (
+            '<span style="color:#fff;background:#ef6c00;padding:1px 6px;'
+            'border-radius:8px;font-size:11px;margin-left:4px">孤儿</span>'
+            if t.get("orphan") else "")
+        entry_price = ("不可判定" if t.get("entry_price") is None
+                       else f"{t['entry_price']:.3f}")
+        pnl_txt = "不可判定" if t.get("pnl") is None else f"{t['pnl']:,.2f}"
+        ret_txt = ("不可判定" if t.get("return_pct") is None
+                   else f"{t['return_pct']:+.2f}%")
+        hold_txt = "—" if t.get("holding_days") is None else str(t["holding_days"])
+        entry_ts = t.get("entry_ts") or "—"
+        entry_mode = (_mode_badge(t.get("entry_mode"))
+                      if t.get("entry_mode") else "—")
+        return (
+            f"<tr><td>{E(t['code'])}{orphan_tag}</td><td>{E(entry_ts)}</td>"
+            f"<td>{E(t['exit_ts'])}</td><td>{entry_price}</td>"
+            f"<td>{t['exit_price']:.3f}</td><td>{t['qty']}</td>"
+            f"<td>{hold_txt}</td><td>{entry_mode}/{_mode_badge(t.get('exit_mode'))}</td>"
+            f"<td class='{_cls(t.get('pnl'))}'>{pnl_txt}</td>"
+            f"<td class='{_cls(t.get('return_pct'))}'>{ret_txt}</td></tr>"
+        )
+
+    trade_rows = "".join(_trade_row(t) for t in trades) \
+        or '<tr><td colspan="10" style="color:#888">当日无平仓（无 round-trip 交易）</td></tr>'
+
+    # 孤儿卖出横幅：账本缺陷必须显眼暴露（成交额进了、盈亏不可判定）
+    _orphans = pnl.get("orphan_sells") or []
+    orphan_note = ""
+    if _orphans:
+        _o_rows = "".join(
+            f"<tr><td>{E(o.get('date'))}</td><td>{E(o.get('code'))}</td>"
+            f"<td>{E(o.get('qty'))}</td><td>{E(o.get('price'))}</td>"
+            f"<td>{float(o.get('amount') or 0):,.2f}</td><td>{E(o.get('reason'))}</td></tr>"
+            for o in _orphans
+        )
+        orphan_note = (
+            f"<div class='card' style='background:#fff4e5;border-left:5px solid #ef6c00'>"
+            f"<h2 style='border-left:none;padding-left:0;color:#b35300'>"
+            f"⚠ 孤儿卖出：找不到建仓腿，pnl 不可判定（{len(_orphans)} 笔）</h2>"
+            f"<p style='font-size:13px;line-height:1.7'>以下卖出在 fills 里有真实成交、"
+            f"成交额已计入「卖出金额」，但账本中找不到对应建仓腿（OWNER 手工建仓 / "
+            f"建仓腿在回溯窗外 / 旧会话弃仓）⇒ <b>已实现盈亏不可判定，不计入合计</b>。"
+            f"修账需人工补齐该笔成本，勿把它当成「没赚钱」。</p>"
+            f"<table><tr><th>日期</th><th>代码</th><th>数量</th><th>价格</th>"
+            f"<th>成交额</th><th>原因</th></tr>{_o_rows}</table></div>"
+        )
 
     # 账户真实收益卡（引擎权威账本，含隔夜重估）——让复盘如实呈现账户真实表现，
     # 不再被「日内权益涨跌 -0.25%」掩盖隔夜重估亏损（如 9-16 隔夜缺口 -16.4%）。
@@ -1340,6 +1440,8 @@ code {{ background:#eef2f7; padding:1px 5px; border-radius:4px; }}
 ｜ 持仓源 {E(rep.get('position_source', '?'))} ｜ FIFO 回溯窗 {rep.get('lookback_days', '?')} 天</div>
 
 {warn_banner}
+
+{orphan_note}
 
 <div class="card"><div class="kpis">
   <div class="kpi"><div class="v">{fills_n}</div><div class="l">成交笔数</div></div>
