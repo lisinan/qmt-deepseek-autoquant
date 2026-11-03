@@ -59,7 +59,14 @@ def main() -> None:
             # 标签取实际末根日期（time[:8]），逐次拉取而非硬编码，
             # 否则数据已是当日、标签却停在旧日期（2026-11-02 已发现）
             if asof is None and raw:
-                asof = str(raw[-1]["time"])[:8]
+                # 【2026-11-03 DAILY-REVIEW / SAFE 修复】`qmt_client.get_history()`
+                #   统一返回的 bar 键是 `ts`（datetime），**不存在** xtdata 原始字段
+                #   `time` ⇒ 旧写法 `raw[-1]["time"]` 恒抛 KeyError，本脚本自
+                #   get_history 统一结构起就没成功跑完过（归因链断在最后一环）。
+                #   回滚：删除本 4 行，恢复 `asof = str(raw[-1]["time"])[:8]`。
+                _t = raw[-1].get("ts")
+                asof = (_t.strftime("%Y%m%d") if hasattr(_t, "strftime")
+                        else str(_t)[:8])
             cl = [b["close"] for b in raw]
             o = [b["open"] for b in raw]
             h = [b["high"] for b in raw]

@@ -2598,7 +2598,15 @@ class EventEngine:
                 system_notice(
                     "INFO", "交易",
                     f"观察篮建仓 {code} {get_stock_name(code)} @{price:.3f}"
-                    f"（paper，绕过信号闸门，风控/现金夹紧照旧）")
+                    # 【2026-11-03 DAILY-REVIEW / SAFE 修复】原文硬编码「（paper，…）」，
+                    #   在 live 下同一条通知仍自称 paper —— 2026-11-03 09:30 该文案与
+                    #   `fills#389 mode=live / 真实成交 1,434.50` 同时存在，属**会误导
+                    #   OWNER 把真实买入读成模拟**的文案缺陷（R47 §二.2「实盘口径」同型）。
+                    #   改为跟随 exec_mode；getattr 兜底是因为测试用 `EventEngine.__new__`
+                    #   桩构造实例（同上文 :1098 的既有写法）。
+                    #   回滚：把 `{getattr(self, 'exec_mode', 'paper')}` 换回字面量 `paper`。
+                    f"（{getattr(self, 'exec_mode', 'paper')}，绕过信号闸门，"
+                    f"风控/现金夹紧照旧）")
 
     def _owner_reentry_step(self, ticks: Dict[str, Tick],
                             current_prices: Dict[str, float]) -> None:
