@@ -350,6 +350,14 @@ def _collect_tests():
             #   一起卖掉 —— 豁免只在正常退出路径生效，强平走 force=True 绕过了它。
             #   语义：熔断=停止进攻，不是清掉战略底仓；豁免仓仍受 −18% 灾难止损。
             "tests.test_flatten_respects_exempt",
+            # 【2026-11-03 OWNER 批准】豁免仓 −18% 灾难止损必须传 force=True。
+            #   豁免仓没有其它出口（策略三类退出被 continue 短路、日线兜底被豁免、
+            #   熔断强平结构性剔除），而 _handle_sell 五闸中唯一带 `not force`
+            #   的建仓保护期（自买入时刻连续到次日 10:00，无下界）会把它静默
+            #   拦下 ⇒ 该时段灾难止损失效。含两条正向对照（不传 force 必须被拦、
+            #   未破阈值必须不卖）与一条边界（force 不得绕过 T+1）。
+            #   变异验证：撤掉 force=True 该用例即失败。
+            "tests.test_exempt_hard_stop_force",
             # 【2026-11-02 OWNER 指令「明天找合适的价格把中际旭创接回来」】
             #   一手 300308 = 权益 87% > max_single_position_pct=40% ⇒ 现有任何
             #   买入路径算出的股数恒为 0（不是价格问题，是算术）。本模块钉死

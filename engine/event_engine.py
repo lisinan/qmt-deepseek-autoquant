@@ -2228,11 +2228,20 @@ class EventEngine:
                 cost = float(getattr(pos, "avg_cost", 0) or 0)
                 hard = abs(float(STRATEGY_PARAMS.get("hard_stop_pct", -0.18)))
                 if px > 0 and cost > 0 and (px - cost) / cost <= -hard:
+                    # ★【2026-11-03 修复】必须 force=True。
+                    # 豁免仓**没有其它任何出口**：策略三类出场（趋势破位/超时/单日
+                    # 暴跌）在下方 on_exit 分支被本处 continue 短路，日线兜底
+                    # `_daily_fallback_exit` 在 :2214 也被豁免掉，熔断强平
+                    # `_split_flatten_candidates` 结构性剔除豁免品种。
+                    # 于是本行是唯一出口 —— 而 `_handle_sell` 五闸中唯一带
+                    # `not force` 的入场保护窗（ENTRY_PROTECT_MINUTES=30，自
+                    # 买入时刻连续到次日 10:00，无下界）会把它静默拦下，
+                    # 等于灾难止损在保护窗内失效。与 :2165 每日强平对齐。
                     self._handle_sell(Signal(
                         ts=datetime.now(), code=code, name=pos.name,
                         side="SELL", price=px,
                         reason=f"观察篮硬止损 {(px - cost) / cost * 100:.2f}%"),
-                        pos)
+                        pos, force=True)
                 continue
             bars = list(self._bars.get(code, []))
             if len(bars) < 5:
