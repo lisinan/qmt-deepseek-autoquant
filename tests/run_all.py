@@ -108,6 +108,11 @@ def _collect_tests():
             # 若不认模式，live 首日会被记成 −93.5% 假崩盘，毒化整条进化链。
             "tests.test_ledger_mode_boundary",
             "tests.test_ledger_eod_freshness",
+            # 【2026-11-04】人工修正不可持久守卫：`record_ledger --date <day>`
+            #   会把 10-30 的修正行整行替换回 DB 的 11:29 盘中快照，
+            #   连 fix / eod_basis 一起抹掉。而这条命令的典型动机正是
+            #   「核对 10-30 为什么是 −4.29%」—— 审计动作本身销毁证据。
+            "tests.test_ledger_repair_durability",
             # 【2026-10-30 P1】持仓订阅 + 盯市价兜底：池外持仓（OWNER 手工建仓 /
             # 观察篮补买）原来收不到 tick，盯市价退回成本价 ⇒ 总资产低估 57.7%。
             "tests.test_position_subscription_mark",

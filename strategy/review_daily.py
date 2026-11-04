@@ -1459,14 +1459,14 @@ def _render_html(target: str, rep: dict) -> str:
     # 【2026-11-04】live 的 risk.daily_pnl 是「总资产 − 当日开盘资产」，已含盯市，
     # 不能再叫「已实现」，否则标签会指着一根权益曲线说这是已实现盈亏。
     if rep.get("pnl_caliber") == "equity":
-        _pnl_caliber_txt = "组合总盈亏(当日权益变动，已含未平盯市)"
+        _pnl_caliber_txt = "当日盈亏(当日开盘→收盘，不含隔夜跳空)"
         _pnl_parts_txt = (
             f"当日权益变动(引擎 daily_pnl = 总资产 − 当日开盘资产) "
             f"<b>{rep.get('realized_eff', 0.0):,.2f}</b> ｜ "
             f"未实现(盯市，已含在上式中，勿重复相加) "
             f"<b>{eod['unrealized']:,.2f}</b>")
     else:
-        _pnl_caliber_txt = "组合总盈亏(已实现 + 未平盯市)"
+        _pnl_caliber_txt = "当日盈亏(已实现 + 未平盯市)"
         _pnl_parts_txt = (
             f"已实现(引擎累计 daily_pnl) <b>{rep.get('realized_eff', 0.0):,.2f}</b> ｜ "
             f"未实现(盯市) <b>{eod['unrealized']:,.2f}</b>")
@@ -1507,7 +1507,7 @@ code {{ background:#eef2f7; padding:1px 5px; border-radius:4px; }}
   <div class="kpi"><div class="v">{sig_n}</div><div class="l">信号笔数</div></div>
   <div class="kpi"><div class="v {pos_cls}">{pnl['realized_total']:,.2f}</div><div class="l">已实现盈亏(¥)</div></div>
   <div class="kpi"><div class="v {eod_cls}">{eod['unrealized']:,.2f}</div><div class="l">未实现盈亏(¥)</div></div>
-  <div class="kpi"><div class="v {tot_cls}">{rep.get('total_pnl', 0.0):,.2f}</div><div class="l">组合总盈亏(¥)</div></div>
+  <div class="kpi"><div class="v {tot_cls}">{rep.get('total_pnl', 0.0):,.2f}</div><div class="l">当日盈亏(¥)</div></div>
   <div class="kpi"><div class="v">{risk['halt_count']}</div><div class="l">风控熔断次数</div></div>
   <div class="kpi"><div class="v">{risk['max_consecutive_losses']}</div><div class="l">最大连亏</div></div>
 </div></div>
@@ -1525,7 +1525,7 @@ code {{ background:#eef2f7; padding:1px 5px; border-radius:4px; }}
 当日收益(总资产) <b class="{eod_cls}">{eod['total_return_pct']:+.2f}%</b></p>
 <p style="font-size:13px;color:#374151">{_pnl_caliber_txt} <b class="{tot_cls}">{rep.get('total_pnl', 0.0):,.2f}</b> ｜
 {_pnl_parts_txt}</p>
-<p style="font-size:12px;color:#888">口径：已实现优先取引擎 RiskManager 累计 daily_pnl（risk_snapshots）；fills 重放结果仅作回退。未平盯市 = 权益快照市值 − engine_state 成本。<b>live 模式下引擎 daily_pnl 已是「总资产 − 当日开盘资产」（2026-10-30 起 equity_daily_pnl=True），本身含盯市，故不再叠加未实现（否则双计，11-03 曾把 −2,134.29 记成 −4,268.58）；paper 模式仍是「已实现 + 未平盯市」。</b>已默认剔除 {DIRTY_SAMPLE_CUTOFF} 之前的脏样本成交（修复前多进程遗留，不作收益基准）。</p>
+<p style="font-size:12px;color:#888">口径：已实现优先取引擎 RiskManager 累计 daily_pnl（risk_snapshots）；fills 重放结果仅作回退。未平盯市 = 权益快照市值 − engine_state 成本。<b>live 模式下引擎 daily_pnl 已是「总资产 − 当日开盘资产」（2026-10-30 起 equity_daily_pnl=True），本身含盯市，故不再叠加未实现（否则双计，11-03 曾把 −2,134.29 记成 −4,268.58）；paper 模式仍是「已实现 + 未平盯市」。</b><b style="color:#b45309">本表「当日盈亏」是日内口径（当日开盘→收盘，不含隔夜跳空）；账本的 daily_ret_pct 是跨日口径（前收→今收，含隔夜跳空）。两者差额即隔夜缺口（11-02 差 999.42 元），<u>不可混用</u>，也别拿本表的数去和账本的 −0.75% 对账。</b>已默认剔除 {DIRTY_SAMPLE_CUTOFF} 之前的脏样本成交（修复前多进程遗留，不作收益基准）。</p>
 </div>
 
 <div class="card"><h2>② 信号明细（BUY）</h2>

@@ -655,8 +655,30 @@ def append_markdown(row: dict) -> bool:
     return True
 
 
+def _is_repaired(row: dict) -> bool:
+    """该行是否带「人工修正 / 非自动来源」标记。
+
+    一旦判定为人工修正行，DB 原始值就**不得**再覆盖它 —— 见 ``append_jsonl``
+    的守卫说明（2026-11-04）。
+    """
+    return bool(row.get("fix") or row.get("eod_basis")
+                or (row.get("source") == "manual_repair"))
+
+
 def append_jsonl(row: dict) -> bool:
-    """机读 JSONL 追加；同日幂等（去重后重写该行）。"""
+    """机读 JSONL 追加；同日幂等（去重后重写该行）。
+
+    【2026-11-04 修复·修正不可持久】人工修正行禁止被 DB 原始值覆盖。
+    触发链（逐行核实过）：
+      1. ``logs/review_<day>.json`` 不存在 ⇒ ``main()`` 走 DB 直读回退；
+      2. ``eod_asset()`` 的 stale 守卫要求「零成交 + 权益零波动 + 跳变>0.5%」，
+         而 2026-10-30 有 2 笔成交、权益大幅波动 ⇒ 三条全不满足 ⇒ 直接返回
+         11:29 的盘中快照 65,748.42；
+      3. 旧 ``append_jsonl`` 无条件 ``rows[i] = row`` 整行替换（连 ``fix`` 一起
+         抹掉），于是修复值 63,684.42 退回盘中的 65,748.42、−4.29% 退回 −1.19%。
+    最讽刺的是触发命令 ``--date 2026-10-30`` 的典型动机正是「核对 10-30 为什么
+    是 −4.29%」—— **审计动作会销毁证据**，事后连「这行被修过」都查不到。
+    """
     LEDGER_JSONL.parent.mkdir(parents=True, exist_ok=True)
     rows = []
     if LEDGER_JSONL.exists():
@@ -671,6 +693,15 @@ def append_jsonl(row: dict) -> bool:
     replaced = False
     for i, r in enumerate(rows):
         if r.get("date") == row["date"]:
+            eod_old, eod_new = r.get("eod_asset"), row.get("eod_asset")
+            if _is_repaired(r) and eod_new != eod_old:
+                # 拒绝覆盖：保留人工修正行原样（**不写盘**，避免任何格式漂移）
+                print(f"  [WARN] 拒绝用 {eod_new!r} 覆盖 {row['date']} 的人工修正行"
+                      f"（既有 eod_asset={eod_old!r}"
+                      f"，fix={r.get('fix')!r}，eod_basis={r.get('eod_basis')!r}）。"
+                      f"DB 原始值不可信，账本保持原值未改动。"
+                      f"若确需重算，请先人工删除该行的 fix/eod_basis 标记。")
+                return False
             rows[i] = row
             replaced = True
             break

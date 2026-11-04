@@ -161,11 +161,14 @@ def _rep(caliber):
 
 def test_live_caliber_is_labelled_equity_not_realized():
     html = R._render_html("2026-11-03", _rep("equity"))
-    assert "当日权益变动" in html, "live 口径必须明示是权益变动"
+    assert "当日开盘→收盘" in html, "live 口径必须明示是「当日开盘→收盘」"
+    assert "不含隔夜跳空" in html, (
+        "必须写明不含隔夜跳空 —— 11-02 日内 −1,475.86 vs 跨日 −476.44 差 999.42")
+    assert "当日权益变动" in html
     assert "已实现(引擎累计 daily_pnl)" not in html, (
         "live 的 daily_pnl 不是已实现盈亏，标签不能这么写")
     assert "已含在上式中，勿重复相加" in html, "必须显式提示不得再加未实现"
-    assert "-2,134.29" in html or "−2,134.29" in html or "2,134.29" in html
+    assert "账本的 daily_ret_pct 是跨日口径" in html, "必须点明与账本口径的差异"
 
 
 def test_paper_caliber_keeps_old_label():

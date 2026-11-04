@@ -157,10 +157,17 @@ def test_repair_path_carries_freshness_marker():
     assert "eod_ts" in out, "修补行缺 eod_ts ⇒ 消费端无法判来源"
     assert "eod_is_close" in out, (
         "修补行缺 eod_is_close 键 ⇒ row.get(..., True) 默认按「可信收盘」处理")
-    assert out["eod_is_close"] is False, \
-        "该日无 15:00 后快照 ⇒ 不得声称为可信收盘口径"
+    # 【2026-11-04 team-lead 裁决】必须写 True 而不是 False：
+    # 63,684.42 是按真实收盘价重算、并与券商读数双源核对一致的**收盘口径**值，
+    # 可跨日比较。写 False（= 盘中快照、不可比）等于给正确的数贴「不可比」标签，
+    # 且会让 ``eod_is_close is not True`` 的消费端把 10-30 永久列为异常、
+    # 「只取 True」的 KPI 把 live 序列从 3 天砍到 2 天 —— 恰好删掉 −4.29% 这一天。
+    assert out["eod_is_close"] is True, \
+        "收盘口径的重算值必须标 True（False 会让它被 KPI/审计排除）"
     assert out["eod_ts"] is None, "当日无收盘快照 ⇒ 不得把 11:29 盘中快照伪造成 eod_ts"
-    assert "EOD 新鲜度" in out["note"], f"note 未说明来源：{out['note']}"
+    assert out["eod_basis"] == "close_recalc", (
+        "来源必须由 eod_basis 承载，不能靠污染 eod_is_close 表达")
+    assert "EOD 口径" in out["note"], f"note 未说明来源：{out['note']}"
     # 正向对照：标注字段不得改写任何既有数值
     assert out["eod_asset"] == 63684.42, out["eod_asset"]
     assert out["prev_asset"] == 66542.31, out["prev_asset"]

@@ -60,18 +60,29 @@ def _rebuild(row: dict) -> dict:
     row["fix"] = "ledger_eod_1030_close_recalc"
     # 【2026-11-04 修复】修补行原先**没有** ``eod_ts`` / ``eod_is_close`` 键（键都不存在，
     # 不是 None），而全账本唯一真出过「盘中值当收盘」事故的就是这一行。
-    # 消费端 ``row.get("eod_is_close", True)`` 取默认值 True ⇒ 把手工重算值当成
-    # 「15:00 后快照收盘值」，日收益被拿去与其它交易日直接比较。
     #
-    # 这里显式标注第三态，且**不调用** ``annotate_eod_freshness``：后者会把当日
-    # 最后一条快照（11:29:43 盘中价 65,748.42 —— 正是本行要修掉的那个值）写成
-    # 本行 ``eod_ts``，并在 note 里断言「该 eod_asset 为盘中值」，与本行已修正为
-    # 63,684.42 的事实相反 ⇒ 会造出**来源错误的溯源**。
-    row["eod_ts"] = None          # 当日无 15:00 后快照可用（不猜）
-    row["eod_is_close"] = False   # 非快照收盘口径（按收盘价重算），勿与快照 EOD 混用
-    fresh = ("[EOD 新鲜度] 该日无 15:00 后快照（最后快照 11:29:43 为盘中值，已被本行"
-             "修正取代）；eod_asset 为按收盘价重算值，eod_is_close=False，"
-             "不得当作快照收盘口径与其它交易日直接比较。")
+    # 编码（team-lead 2026-11-04 裁决，采纳 data-ledger-auditor-2 的异议）：
+    #   eod_ts       = None   —— 诚实：当日无 ≥15:00 快照，不能编时间戳；
+    #   eod_is_close = True   —— 诚实：63,684.42 是**按真实收盘价重算**的收盘口径，
+    #                            可与其他交易日比较。此前一度写成 False，那是错的：
+    #                            False 的定义是「盘中快照、不可跨日比较」，而本值可以比。
+    #                            且已有消费端 ``scripts/_audit_*.py`` 用
+    #                            ``eod_is_close is not True`` 筛异常行，写 False 会让
+    #                            10-30 永久挂在告警里、「只取 True」的 KPI 把 live
+    #                            序列从 3 天砍成 2 天 —— 恰好在「修好它」的名义下
+    #                            删掉 −4.29% 这一天。
+    #   eod_basis    = "close_recalc" —— 来源差异不污染「可比性」判断。
+    #
+    # 不调用 ``annotate_eod_freshness``：它会把当日最后一条快照（11:29:43 的
+    # 65,748.42，正是本行修掉的那个值）写成本行 ``eod_ts``，并断言「该 eod_asset
+    # 为盘中值」—— 与已修正的 63,684.42 事实相反 ⇒ 伪造溯源，比缺字段更坏。
+    row["eod_ts"] = None
+    row["eod_is_close"] = True
+    row["eod_basis"] = "close_recalc"
+    fresh = ("[EOD 口径] 无 ≥15:00 快照，故 eod_ts 留空；eod_asset 为按收盘价重算的"
+             "收盘口径（553.00x100 + 2.862x500 + 现金 6,953.42 = 63,684.42，与券商 "
+             "2026-11-01 读数 63,684.34 交叉核对，差 0.08）⇒ eod_is_close=True，"
+             "可与其它交易日比较；来源见 eod_basis=close_recalc。")
     if fresh not in row["note"]:
         row["note"] = (row["note"] + " " + fresh).strip()
     return row
