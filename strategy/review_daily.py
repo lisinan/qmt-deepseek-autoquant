@@ -1623,6 +1623,26 @@ def _load_dynamic_universe():
         return None
 
 
+def _default_target_date(c: sqlite3.Connection) -> str:
+    """无 ``--date`` 时的默认目标交易日：**今天是交易日就取今天**，否则取最近有成交日。
+
+    【2026-11-04 DAILY-REVIEW 修复】原默认直接取「最近有成交日」。零成交日
+    （如 2026-11-04，全天 0 笔成交）不带 ``--date`` 运行时，会静默把**上一日**
+    当目标日，并**覆盖上一日**的 ``logs/review_<date>.json`` /
+    ``reports/review_<date>.html`` —— 当日复盘既没生成，历史复核还被改掉，
+    而屏幕上打印的日期是上一日，看起来"正常完成"。DAILY-REVIEW 的调用形式正是无参。
+    回滚：改回 ``_latest_trade_date(c)`` 并删除本函数。
+    """
+    try:
+        from core.market_calendar import is_trading_day
+        today = date.today()
+        if is_trading_day(today):
+            return today.isoformat()
+    except Exception:
+        pass
+    return _latest_trade_date(c)
+
+
 def main():
     ap = argparse.ArgumentParser(description="盘后复盘工具")
     ap.add_argument("--date", help="交易日 YYYY-MM-DD（默认取最近有成交日）")
@@ -1633,7 +1653,7 @@ def main():
     args = ap.parse_args()
 
     c = _conn()
-    target = args.date or _latest_trade_date(c)
+    target = args.date or _default_target_date(c)
     print(f"[复盘] 目标交易日: {target}")
 
     fills = _clean_fills(_rows(c, "fills", target))
@@ -1653,6 +1673,12 @@ def main():
     state_acct = _state_account(c)
     acct_daily = _account_daily(c, target)
     acct_range = _load_account_range(c)
+    # 【2026-11-04 DAILY-REVIEW 修复】`_day_exec_mode` 必须**在 c.close() 之前**调用。
+    # 缺陷：原实现在 :1730 传的是已 close 的连接 ⇒ sqlite3.ProgrammingError 被函数内
+    # `except Exception: pass` 静默吞掉 ⇒ 返回 '' ⇒ 回落到 paper 口径 ⇒ live 的
+    # total_pnl 双计（11-04 实测 4,740.00 被记成 7,943.21）。「修复已落盘但已失效」，
+    # 是本项目第 8 条「落盘≠生效」的同类。回滚：删此行、:1731 改回 _day_exec_mode(...)。
+    day_mode = _day_exec_mode(c, target, fills)
     c.close()
 
     pnl = _replay_fills(fills_all, target=target)
@@ -1727,7 +1753,7 @@ def main():
         # 回退值是 fills 重放的**纯已实现**，口径等同 paper ⇒ 必须加未实现
         _eff_mode = "paper"
     else:
-        _eff_mode = _day_exec_mode(c, target, fills)
+        _eff_mode = day_mode   # 连接关闭前已判定（见 :1656 旁注）
     total_pnl, pnl_caliber = _compose_total_pnl(
         realized_eff, eod["unrealized"], _eff_mode)
 

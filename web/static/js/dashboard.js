@@ -185,9 +185,13 @@
     // 熔断状态 + **判定依据**（2026-11-02 P0）：面板必须能回答「这条熔断是按谁算的」。
     // 事故背景：10:34 显示「熔断 daily_stop −89.25%」，而真实日内只有 −2.28%
     // （券商口径），用户只能看到结论、看不到依据，无法分辨「真亏损」与「数据毛刺」。
-    var _basis = r.asset_basis || 'local';
+    // 【2026-11-04 P1】空串兜底改 'unknown'：原来 `|| 'local'` 是**第三份**兜底
+    //   （后端 observability.py 已兜一次），两处兜底会把「没判定过」和「paper 本地口径」
+    //   显示成同一个东西。现在 unknown 单独一态，并在徽章处按不可信处理。
+    var _basis = r.asset_basis || 'unknown';
     var _basisTag = (_basis === 'broker') ? '（券商真实口径）'
-      : (_basis === 'untrusted' ? '（资产数据不可信·本轮暂停判定）' : '');
+      : (_basis === 'untrusted' ? '（资产数据不可信·本轮暂停判定）'
+      : (_basis === 'unknown' ? '（资产口径未判定·主循环尚未跑）' : ''));
     $('risk-halted').textContent = (r.halted ? ('熔断 (' + r.halt_reason + ')') : '正常') + _basisTag;
     $('risk-halted').className = r.halted ? 'halted' : 'ok';
     // 风控卡片整体状态色：熔断红框 / 正常绿框；资产不可信时用警示框

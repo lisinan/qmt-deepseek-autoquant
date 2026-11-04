@@ -184,3 +184,42 @@ def test_snapshot_exposes_asset_basis():
     snap2 = Observability(eng2)._build_risk_snapshot(BAD_TOTAL)
     assert snap2["asset_basis"] == "untrusted"
     assert snap2["asset_trusted"] is False
+
+
+# ------------------------------------------------ 7. 「一次都没判定过」≠ 可信
+
+def test_never_judged_is_unknown_and_not_trusted():
+    """未进主循环（一次都没判定）必须显示 unknown + trusted=False（2026-11-04 P1）。
+
+    缺陷（实测 2026-11-04 08:11 / 08:33 两次只读抓取）：
+      `tick=0`、`session.state="pre_open"`、`asset_basis="local"`、
+      `asset_trusted=True`、`risk_asset_used=0.0`。
+    根因：`_risk_asset_basis` 初值是空串，observability 用 `or "local"` 兜底，
+    而 `asset_trusted = basis != "untrusted"` ⇒ 空串 → local → **可信**。
+
+    为什么 live 下的 "local" 一定等于「没判定过」：
+      `_risk_asset_basis` 全仓只有 4 个写入点，其中 `= "local"` 位于
+      `_risk_total_asset()` 的 `if mode != "live"` 分支 —— **live 进程永远写不出 local**。
+      所以 live 面板出现 local 只可能来自兜底。
+
+    下游为何要紧：`web/static/js/dashboard.js` 用
+    `r.asset_trusted === false ? 'warn' : 'safe'` 点亮风控卡片徽章
+    ⇒ 此处为真就等于**在实盘面板上点亮绿灯**，而风控一轮都没跑过。
+    """
+    from engine.observability import Observability
+
+    eng = _engine("live")                      # 刻意不调 _risk_total_asset()
+    assert eng._risk_asset_basis == "", "前置：初值应为空串（未判定）"
+    snap = Observability(eng)._build_risk_snapshot(BROKER_TOTAL)
+    assert snap["asset_basis"] == "unknown", snap["asset_basis"]
+    assert snap["asset_trusted"] is False, "未判定过不得显示为可信"
+    assert snap["risk_asset_used"] == 0.0
+
+    # 正向对照：一旦真判定成 broker，必须立刻转为可信 —— 否则上面那条
+    # 「永远 False」也能通过，等于把守卫写成恒假。
+    _feed(eng, BROKER_TOTAL)
+    eng._risk_total_asset()
+    snap_ok = Observability(eng)._build_risk_snapshot(BROKER_TOTAL)
+    assert snap_ok["asset_basis"] == "broker"
+    assert snap_ok["asset_trusted"] is True
+    assert snap_ok["risk_asset_used"] > 0

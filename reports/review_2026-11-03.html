@@ -22,7 +22,7 @@ th { color:#6b7280; font-weight:600; }
 code { background:#eef2f7; padding:1px 5px; border-radius:4px; }
 </style></head><body><div class="wrap">
 <h1>📊 盘后复盘报告 · 2026-11-03</h1>
-<div class="sub">生成于 2026-11-03 15:42:13 ｜ 数据源 storage/qmt.db + logs/notices.log
+<div class="sub">生成于 2026-11-04 15:42:43 ｜ 数据源 storage/qmt.db + logs/notices.log
 ｜ 持仓源 engine_state(权威账本) ｜ FIFO 回溯窗 120 天</div>
 
 
@@ -34,7 +34,7 @@ code { background:#eef2f7; padding:1px 5px; border-radius:4px; }
   <div class="kpi"><div class="v">2</div><div class="l">信号笔数</div></div>
   <div class="kpi"><div class="v neg">0.00</div><div class="l">已实现盈亏(¥)</div></div>
   <div class="kpi"><div class="v pos">-2,134.29</div><div class="l">未实现盈亏(¥)</div></div>
-  <div class="kpi"><div class="v pos">-4,268.58</div><div class="l">组合总盈亏(已实现+未平盯市)(¥)</div></div>
+  <div class="kpi"><div class="v pos">-2,134.29</div><div class="l">当日盈亏(¥)</div></div>
   <div class="kpi"><div class="v">0</div><div class="l">风控熔断次数</div></div>
   <div class="kpi"><div class="v">0</div><div class="l">最大连亏</div></div>
 </div></div>
@@ -50,9 +50,9 @@ code { background:#eef2f7; padding:1px 5px; border-radius:4px; }
 <p style="font-size:13px;color:#6b7280">EOD 总资产 <b>61,073.65</b> ｜ 现金 <b>11,611.65</b> ｜
 持仓市值 <b>49,462.00</b> ｜ 未实现盈亏 <b>-2,134.29</b> ｜
 当日收益(总资产) <b class="pos">-3.38%</b></p>
-<p style="font-size:13px;color:#374151">组合总盈亏(已实现 + 未平盯市) <b class="pos">-4,268.58</b> ｜
-已实现(引擎累计 daily_pnl) <b>-2,134.29</b> ｜ 未实现(盯市) <b>-2,134.29</b></p>
-<p style="font-size:12px;color:#888">口径：已实现优先取引擎 RiskManager 累计 daily_pnl（risk_snapshots，逐笔 SELL 时累加，准确）；fills 重放结果仅作回退。未平盯市 = 权益快照市值 − engine_state 成本。已默认剔除 2026-09-01 之前的脏样本成交（修复前多进程遗留，不作收益基准）。</p>
+<p style="font-size:13px;color:#374151">当日盈亏(当日开盘→收盘，不含隔夜跳空) <b class="pos">-2,134.29</b> ｜
+当日权益变动(引擎 daily_pnl = 总资产 − 当日开盘资产) <b>-2,134.29</b> ｜ 未实现(盯市，已含在上式中，勿重复相加) <b>-2,134.29</b></p>
+<p style="font-size:12px;color:#888">口径：已实现优先取引擎 RiskManager 累计 daily_pnl（risk_snapshots）；fills 重放结果仅作回退。未平盯市 = 权益快照市值 − engine_state 成本。<b>live 模式下引擎 daily_pnl 已是「总资产 − 当日开盘资产」（2026-10-30 起 equity_daily_pnl=True），本身含盯市，故不再叠加未实现（否则双计，11-03 曾把 −2,134.29 记成 −4,268.58）；paper 模式仍是「已实现 + 未平盯市」。</b><b style="color:#b45309">本表「当日盈亏」是日内口径（当日开盘→收盘，不含隔夜跳空）；账本的 daily_ret_pct 是跨日口径（前收→今收，含隔夜跳空）。两者差额即隔夜缺口（11-02 差 999.42 元），<u>不可混用</u>，也别拿本表的数去和账本的 −0.75% 对账。</b>已默认剔除 2026-09-01 之前的脏样本成交（修复前多进程遗留，不作收益基准）。</p>
 </div>
 
 <div class="card"><h2>② 信号明细（BUY）</h2>

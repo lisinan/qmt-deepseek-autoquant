@@ -175,3 +175,61 @@ def test_paper_caliber_keeps_old_label():
     html = R._render_html("2026-11-03", _rep("realized+mtm"))
     assert "已实现(引擎累计 daily_pnl)" in html, "paper 口径标签必须保持原样"
     assert "当日权益变动" not in html
+
+
+# ============================================ ⑤ 接线（2026-11-04 失效事故）
+#
+# 教训：①②③④ 全绿，但线上仍然双计 —— 因为 `_compose_total_pnl` 本身是对的，
+# 错在**调用点把已经 close() 的连接**传给了 `_day_exec_mode`：函数内
+# `except Exception: pass` 把 `sqlite3.ProgrammingError` 吞掉 ⇒ 返回 ''
+# ⇒ 回落 paper 口径 ⇒ live 双计。**测了纯函数，没测接线**，等于没修。
+# 这四条钉住接线：判定必须在 close 之前，且关闭后必须"看得见"降级。
+
+def test_day_exec_mode_on_closed_connection_degrades_silently():
+    """记录陷阱本身：关闭的连接不会抛错给调用方，只会静默返回 ''。"""
+    c = _db([("2026-11-03T15:04:42", "live")])
+    assert R._day_exec_mode(c, "2026-11-03") == "live"
+    c.close()
+    assert R._day_exec_mode(c, "2026-11-03") == "", (
+        "若这里开始抛错，说明 _day_exec_mode 已改为显式失败 —— "
+        "那也是可接受的，但必须同步改 main() 的调用顺序")
+
+
+def test_main_judges_mode_before_closing_connection():
+    """接线守卫：main() 里**所有** `_day_exec_mode(...)` 调用都必须先于 `c.close()`。
+
+    用 AST 而不是字符串 index —— 注释里也会出现 ``c.close()``/``_day_exec_mode(``，
+    字符串比对会被自己的注释骗过（第一版就是这么假阳性的）。
+    """
+    import ast
+    import inspect
+    import textwrap
+    tree = ast.parse(textwrap.dedent(inspect.getsource(R.main)))
+    mode_lines, close_lines = [], []
+    for n in ast.walk(tree):
+        if not isinstance(n, ast.Call):
+            continue
+        f = n.func
+        if isinstance(f, ast.Name) and f.id == "_day_exec_mode":
+            mode_lines.append(n.lineno)
+        elif isinstance(f, ast.Attribute) and f.attr == "close":
+            close_lines.append(n.lineno)
+    assert mode_lines, "main 必须自己判定当日模式（不能只靠 fills 的 mode）"
+    assert close_lines, "main 必须显式关闭连接"
+    assert max(mode_lines) < min(close_lines), (
+        f"`_day_exec_mode` 传的是 c，必须全部在 close() 之前调用"
+        f"（mode@{mode_lines} vs close@{close_lines}）；否则 ProgrammingError "
+        f"被 `except Exception: pass` 静默吞掉 → 回落 paper → live 的 total_pnl 双计。"
+        f"11-04 事故原文即 `_eff_mode = _day_exec_mode(c, target, fills)` 写在 close 之后")
+
+
+
+def test_default_target_date_prefers_today_when_trading_day():
+    """零成交日必须复盘「今天」；否则会静默覆盖上一日的 review 文件。"""
+    c = _db([])
+    got = R._default_target_date(c)
+    from datetime import date
+    from core.market_calendar import is_trading_day
+    expect = date.today().isoformat() if is_trading_day(date.today()) else got
+    assert got == expect
+

@@ -147,8 +147,23 @@ class Observability:
         #     broker    = 券商权威值（可信，熔断据此判定）
         #     local     = paper/回测本地拼装（正常路径）
         #     untrusted = 券商不可用 ⇒ 本轮**跳过**熔断判定（不是"没熔断"）
-        snap["asset_basis"] = getattr(o, "_risk_asset_basis", "") or "local"
-        snap["asset_trusted"] = snap["asset_basis"] != "untrusted"
+        #     unknown   = ★【2026-11-04 P1】**一次都还没判定过**（主循环未跑一轮）。
+        #   缺陷史：原实现 `... or "local"` 把空串兜底成 local，而
+        #   `asset_trusted = basis != "untrusted"` ⇒ unknown 显示成 **trusted: true**，
+        #   面板 `dashboard.js` 据此点亮绿色 'safe' 徽章。实盘（exec_mode=live）
+        #   进程里 `_risk_total_asset()` 只会写 broker/untrusted，**永远写不出 local**
+        #   （:4658 只在 `if mode != "live"` 分支）⇒ live 面板出现的 "local"
+        #   只可能来自这个兜底，语义上等价于「没判定过」。
+        #   ⇒ 「风控一轮没跑」被显示成「用本地口径在判定，且可信」。
+        #   现在改成四态：空串 → unknown，且 unknown 一律 trusted=False。
+        _basis = getattr(o, "_risk_asset_basis", "") or "unknown"
+        snap["asset_basis"] = _basis
+        # 显式白名单：只有 broker 无条件可信；local 仅在非 live（paper/回测）可信；
+        # unknown / untrusted 一律不可信。不要再用 `!= "untrusted"` 这种补集写法
+        # —— 它让任何新增状态默认变成"可信"。
+        _mode = getattr(o, "exec_mode", "paper")
+        snap["asset_trusted"] = bool(
+            _basis == "broker" or (_mode != "live" and _basis == "local"))
         snap["asset_untrusted_n"] = int(getattr(o, "_asset_untrusted_n", 0) or 0)
         snap["risk_asset_used"] = round(
             float(getattr(o, "_risk_asset_last", 0.0) or 0.0), 2)
