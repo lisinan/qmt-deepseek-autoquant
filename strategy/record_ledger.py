@@ -678,6 +678,12 @@ def append_jsonl(row: dict) -> bool:
          抹掉），于是修复值 63,684.42 退回盘中的 65,748.42、−4.29% 退回 −1.19%。
     最讽刺的是触发命令 ``--date 2026-10-30`` 的典型动机正是「核对 10-30 为什么
     是 −4.29%」—— **审计动作会销毁证据**，事后连「这行被修过」都查不到。
+
+    ⚠ 契约边界（2026-11-04 补记）：本守卫**只覆盖 ``append_jsonl`` 这一扇门**。
+    任何**直接改写账本文件**的脚本（如 ``scripts/_fix_ledger_1030_eod_20261101.py``
+    用 ``write_text`` 整文件重写、将来的压缩 / 轮转 / 批量重写）都绕过它，
+    必须自行实现同一判据：带 ``fix`` / ``eod_basis`` / ``source=manual_repair``
+    的行，不得被来源不同的值覆盖。否则守卫会变成「看起来有保护」的装饰。
     """
     LEDGER_JSONL.parent.mkdir(parents=True, exist_ok=True)
     rows = []
@@ -700,7 +706,9 @@ def append_jsonl(row: dict) -> bool:
                       f"（既有 eod_asset={eod_old!r}"
                       f"，fix={r.get('fix')!r}，eod_basis={r.get('eod_basis')!r}）。"
                       f"DB 原始值不可信，账本保持原值未改动。"
-                      f"若确需重算，请先人工删除该行的 fix/eod_basis 标记。")
+                      f"若确需重算，请先人工删除该行的 fix/eod_basis 标记。"
+                      f"（注：本判据只保护 append_jsonl 这条写入路径；"
+                      f"直接改写账本文件的脚本需自行实现同样的检查。）")
                 return False
             rows[i] = row
             replaced = True
