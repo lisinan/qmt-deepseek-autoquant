@@ -236,3 +236,21 @@ def test_skip_message_keeps_exception_type_for_triage():
     assert ok is False
     assert "ConnectionError" in reason, reason
     assert "≥3 次" in reason or ">=3 次" in reason, reason
+
+
+def test_probe_checks_reachability_not_data_completeness():
+    """探活只判「连得上」，不判「有没有数据」—— 不要把 exit 2 并回 exit 3。
+
+    「连上了但一条日线都没有」属于**跑了、结论不可用**（exit 2），不是**没跑**（exit 3）。
+    若有人"顺手把探活加严成必须有数据"，两个状态就会合并，四态契约当场退化成三态。
+    （data-ledger-auditor-2 2026-11-04 明确背书：这个边界不要动。）
+    """
+    m = _mod()
+    real = m._fetch_daily
+    # 连接成功但返回空 dict（无任何数据）——探活必须判为"可达"
+    m._fetch_daily = lambda *a, **k: (True, {})
+    try:
+        assert m._probe_xtdata() is True, \
+            "探活把「无数据」误判成「不可达」⇒ exit 2 会被并进 exit 3"
+    finally:
+        m._fetch_daily = real
