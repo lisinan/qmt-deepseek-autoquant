@@ -144,7 +144,9 @@ def d4() -> None:
         raise SystemExit(2)
 
     from xtquant import xtdata            # 正确入口；`xtdata` 顶层模块不存在
-    start, end = "20260901", "20261110"
+    # 窗口要足够长：既判「末端是否新鲜」，也要能支撑 MA60 可行性判断。
+    # 原来 start=20260901 只取到 ~40 根，读者会误以为「bars=40 ⇒ MA60 不可算」。
+    start, end = "20250101", "20261110"
     data = xtdata.get_local_data(field_list=["time", "close"], stock_list=codes,
                                  period="1d", start_time=start, end_time=end,
                                  fill_data=False)
@@ -162,6 +164,12 @@ def d4() -> None:
     if zero:
         print(f"[FAIL] 完全无日线数据的标的（{len(zero)}）：{zero}")
         raise SystemExit(3)
+    # MA60 可行性（只告警，不判失败：本段的契约是「末端新鲜度」）
+    short = [(c, 0 if data.get(c) is None else len(data.get(c))) for c in codes
+             if data.get(c) is None or len(data.get(c)) < 60]
+    print(f"MA60 可行性: {len(codes) - len(short)}/{len(codes)} 只 bars ≥ 60")
+    if short:
+        print(f"[WARN] bars<60（MA60 不可算）：{short}")
 
 
 if __name__ == "__main__":
