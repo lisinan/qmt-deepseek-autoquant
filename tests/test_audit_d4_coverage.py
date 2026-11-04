@@ -175,3 +175,64 @@ def test_probe_runs_before_engine_import():
     assert called["sub"] == 0, "探活失败后仍调用了 _subscription_codes（顺序反了）"
     out = buf.getvalue()
     assert "[SKIP]" in out and "0 / " in out and "未执行" in out, out[-300:]
+
+
+def test_fetch_daily_does_not_swallow_ctrl_c():
+    """Ctrl-C / SystemExit 必须继续上抛，绝不能变成 `[SKIP] xtdata 不可达`。
+
+    「人把取数掐了」也是「没跑」，但它不是「环境不可达」。混进 exit 3 就又造出
+    一个「看起来正常的坏状态」（auditor-2 2026-11-04 指出）。
+
+    实现细节：不能在工作线程内直接 raise —— 那只会杀死线程、box 为空，
+    调用方会误判成功；必须在主线程按类型 re-raise。
+    """
+    import sys
+    from types import SimpleNamespace
+
+    m = _mod()
+
+    class _X:
+        @staticmethod
+        def get_local_data(**kw):
+            raise KeyboardInterrupt()
+
+    old = sys.modules.get("xtquant")
+    sys.modules["xtquant"] = SimpleNamespace(xtdata=_X)
+    try:
+        try:
+            m._fetch_daily(["000001.SH"], "20260101", "20260102", timeout=5)
+        except KeyboardInterrupt:
+            pass
+        else:
+            raise AssertionError("KeyboardInterrupt 被吞成 SKIP(3)，与『环境不可达』不可区分")
+    finally:
+        if old is None:
+            sys.modules.pop("xtquant", None)
+        else:
+            sys.modules["xtquant"] = old
+
+
+def test_skip_message_keeps_exception_type_for_triage():
+    """SKIP 文案必须带异常类型 + 「连续 ≥3 次按工具缺陷排查」后手提示。"""
+    import sys
+    from types import SimpleNamespace
+
+    m = _mod()
+
+    class _X:
+        @staticmethod
+        def get_local_data(**kw):
+            raise ConnectionError("mock refused")
+
+    old = sys.modules.get("xtquant")
+    sys.modules["xtquant"] = SimpleNamespace(xtdata=_X)
+    try:
+        ok, reason = m._fetch_daily(["000001.SH"], "20260101", "20260102", timeout=5)
+    finally:
+        if old is None:
+            sys.modules.pop("xtquant", None)
+        else:
+            sys.modules["xtquant"] = old
+    assert ok is False
+    assert "ConnectionError" in reason, reason
+    assert "≥3 次" in reason or ">=3 次" in reason, reason

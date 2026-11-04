@@ -143,7 +143,11 @@ def _fetch_daily(codes, start: str, end: str, timeout: float = 20.0):
     又会被当成工具 bug 而无人追（人会对 traceback 脱敏）。
 
     返回 (ok, data_or_reason)。**仅当异常属于「代码自身写错」时才向上抛**，
-    保证这种情况仍是 traceback + exit 1。
+    保证这种情况仍是 traceback + exit 1。``KeyboardInterrupt`` / ``SystemExit``
+    也必须上抛 —— 「人把取数掐了」属于**没跑**，但绝不是「环境不可达」，
+    混进 exit 3 就又多了一个「看起来正常的坏状态」（2026-11-04 审计官指出）。
+    注意：不能在**工作线程内**直接 raise —— 那只会杀死该线程、box 为空，
+    调用方会误判成功；必须在主线程按类型 re-raise。
     """
     import threading
     box = {}
@@ -154,7 +158,7 @@ def _fetch_daily(codes, start: str, end: str, timeout: float = 20.0):
             box["data"] = xtdata.get_local_data(
                 field_list=["time", "close"], stock_list=codes, period="1d",
                 start_time=start, end_time=end, fill_data=False)
-        except BaseException as e:              # noqa: BLE001 —— 要区分类型
+        except BaseException as e:              # noqa: BLE001 —— 先收下，主线程再分类
             box["err"] = e
 
     t = threading.Thread(target=_work, daemon=True)
@@ -164,9 +168,14 @@ def _fetch_daily(codes, start: str, end: str, timeout: float = 20.0):
         return False, f"xtdata 无响应（>{timeout:.0f}s 超时）"
     if "err" in box:
         e = box["err"]
+        if isinstance(e, (KeyboardInterrupt, SystemExit)):
+            raise e                              # 人中断/退出 ⇒ 照常中断，不伪装成 SKIP
         if isinstance(e, (ImportError, AttributeError, TypeError, KeyError, ValueError)):
             raise e                              # 代码/环境写错 ⇒ traceback + exit 1
-        return False, f"{type(e).__name__}: {e}"  # 连接失败等 ⇒ SKIP + exit 3
+        # 其余（连接失败等）⇒ SKIP + exit 3。文案保留异常类型：分类万一错了，
+        # 人还能顺着类型去找，而不是永远停在「环境没就绪」。
+        return False, (f"{type(e).__name__}: {e}"
+                       f"（若同类异常连续出现 ≥3 次，按工具缺陷排查，而非环境问题）")
     return True, box["data"]
 
 
