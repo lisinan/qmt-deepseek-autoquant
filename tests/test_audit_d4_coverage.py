@@ -88,3 +88,56 @@ def test_log_anchor_is_parsed_not_hardcoded():
         assert n == len(m._subscription_codes()[0]), (
             f"脚本实算 {len(m._subscription_codes()[0])} 只 != 日志锚点 {n} 只"
             f" —— 覆盖率已不正确")
+
+
+# ---------------------------------------------------------------- 退出码契约
+
+def test_d4_skip_exit_code_is_3_and_coverage_line_stays_visible(monkeypatch=None):
+    """xtdata 不可达 ⇒ 必须 exit 3 + 明确打印 `0 / N（未执行）`，且绝不 exit 0。
+
+    契约（2026-11-04）：0=跑了且干净；2=跑了但结论不可用；3=**没跑**；1=工具抛异常。
+    为什么 `0 / 38（未执行）` 这行必须存在：一行的**缺席**比一个 `0` 更容易被当成
+    健康 —— 人眼扫摘要时 `0 / 38` 很刺眼，没有这一行则什么都不会发现。
+    """
+    import contextlib
+    import io
+
+    m = _mod()
+    m._fetch_daily = lambda *a, **k: (False, "mock: xtdata 不可达")
+    buf = io.StringIO()
+    code = None
+    try:
+        with contextlib.redirect_stdout(buf):
+            m.d4()
+    except SystemExit as e:
+        code = e.code
+    else:
+        raise AssertionError("xtdata 不可达时必须 SystemExit，不得静默通过（exit 0）")
+    assert code == 3, f"未执行必须是 3（实际 {code}）；0 会被读成健康"
+    out = buf.getvalue()
+    assert "[SKIP]" in out, out[-400:]
+    assert "未执行" in out
+    assert "覆盖只数: 0 /" in out, "未执行时仍必须打印 0 / N，不能靠『这行消失』表达"
+
+
+def test_d4_coverage_mismatch_is_not_exit_0():
+    """订阅只数与日志锚点不符 ⇒ exit 2（跑了但结论不可用），不是 0、也不是 3。"""
+    import contextlib
+    import io
+
+    m = _mod()
+    real = m._subscription_codes
+    m._subscription_codes = lambda: (["X.SH"], {"UNIVERSE": 1, "VALIDATION": 0,
+                                                "dynamic_active": 0, "positions": 0})
+    m._log_subscription_count = lambda: 38
+    buf = io.StringIO()
+    code = None
+    try:
+        with contextlib.redirect_stdout(buf):
+            m.d4()
+    except SystemExit as e:
+        code = e.code
+    finally:
+        m._subscription_codes = real
+    assert code == 2, f"覆盖率不符应 exit 2（实际 {code}）"
+    assert "[FAIL]" in buf.getvalue()

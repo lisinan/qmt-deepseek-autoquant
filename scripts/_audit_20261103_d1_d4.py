@@ -2,6 +2,14 @@
 
 ★ 只读：不改任何生产文件/参数，只 print。
    用法: python scripts/_audit_20261103_d1_d4.py
+
+★ 退出码契约（2026-11-04 定，D4 尤其重要）：
+    0 = 跑了且干净
+    2 = 跑了，但结论不可用（订阅只数对不上 / 有标的完全无日线）
+    3 = **没跑**（xtdata 不可达，D4 未执行）
+    1 = 跑了但工具自身抛异常（traceback）
+  四者永不混用：把「没跑」记成 0 会被读成健康；把「不可达」抛成 traceback
+  又会被当成工具 bug 而无人追。CI 判 `!= 0` 一律告警。
 """
 from __future__ import annotations
 
@@ -122,6 +130,42 @@ def _log_subscription_count() -> int | None:
     return last
 
 
+def _fetch_daily(codes, start: str, end: str, timeout: float = 20.0):
+    """取日线；把「xtdata 不可达」与「工具自身坏了」区分开。
+
+    退出码契约（team-lead / data-ledger-auditor-2 2026-11-04 定）：
+        0 = 跑了且干净；3 = **没跑**（xtdata 不可达）；1 = 跑了但工具坏了。
+    绝不混用 —— 把「没跑」记成 0 会被读成健康；把「不可达」抛成 traceback
+    又会被当成工具 bug 而无人追（人会对 traceback 脱敏）。
+
+    返回 (ok, data_or_reason)。**仅当异常属于「代码自身写错」时才向上抛**，
+    保证这种情况仍是 traceback + exit 1。
+    """
+    import threading
+    box = {}
+
+    def _work():
+        try:
+            from xtquant import xtdata          # 正确入口；顶层 `xtdata` 不存在
+            box["data"] = xtdata.get_local_data(
+                field_list=["time", "close"], stock_list=codes, period="1d",
+                start_time=start, end_time=end, fill_data=False)
+        except BaseException as e:              # noqa: BLE001 —— 要区分类型
+            box["err"] = e
+
+    t = threading.Thread(target=_work, daemon=True)
+    t.start()
+    t.join(timeout)
+    if t.is_alive():
+        return False, f"xtdata 无响应（>{timeout:.0f}s 超时）"
+    if "err" in box:
+        e = box["err"]
+        if isinstance(e, (ImportError, AttributeError, TypeError, KeyError, ValueError)):
+            raise e                              # 代码/环境写错 ⇒ traceback + exit 1
+        return False, f"{type(e).__name__}: {e}"  # 连接失败等 ⇒ SKIP + exit 3
+    return True, box["data"]
+
+
 def d4() -> None:
     from datetime import datetime
     from collections import Counter
@@ -143,13 +187,14 @@ def d4() -> None:
         print(f"         实算集合（{len(codes)}）：{codes}")
         raise SystemExit(2)
 
-    from xtquant import xtdata            # 正确入口；`xtdata` 顶层模块不存在
     # 窗口要足够长：既判「末端是否新鲜」，也要能支撑 MA60 可行性判断。
     # 原来 start=20260901 只取到 ~40 根，读者会误以为「bars=40 ⇒ MA60 不可算」。
     start, end = "20250101", "20261110"
-    data = xtdata.get_local_data(field_list=["time", "close"], stock_list=codes,
-                                 period="1d", start_time=start, end_time=end,
-                                 fill_data=False)
+    ok, data = _fetch_daily(codes, start, end)
+    if not ok:
+        print(f"  [SKIP] xtdata 不可达，D4 未执行（非健康）—— {data}")
+        print(f"覆盖只数: 0 / {len(codes)}（未执行）")
+        raise SystemExit(3)
     cnt = Counter()
     for c in codes:
         df = data.get(c)
@@ -162,8 +207,10 @@ def d4() -> None:
     print(f"覆盖只数: {len(codes)} / 引擎日志锚点 {log_n}（一致）")
     zero = [c for c in codes if data.get(c) is None or len(data.get(c)) == 0]
     if zero:
+        # 跑了、但结论不可用 ⇒ 2（与「覆盖只数不符」同一语义）。
+        # 不能用 3：3 专指「没跑」，混用会让「没跑」和「跑了发现坏数据」不可区分。
         print(f"[FAIL] 完全无日线数据的标的（{len(zero)}）：{zero}")
-        raise SystemExit(3)
+        raise SystemExit(2)
     # MA60 可行性（只告警，不判失败：本段的契约是「末端新鲜度」）
     short = [(c, 0 if data.get(c) is None else len(data.get(c))) for c in codes
              if data.get(c) is None or len(data.get(c)) < 60]
