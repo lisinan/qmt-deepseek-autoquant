@@ -67,6 +67,12 @@ def _collect_tests():
             #   orphan=True / sell_amount 不丢 / 正常配对逐位不变 / 必打 WARNING。
             # 注意：漏注册会让整文件用例隐形未执行（见本文件顶部纪律）。
             "tests.test_review_orphan_sell",
+            # 【2026-11-03 P1 量测口径】组合总盈亏双计一倍守卫。同一个
+            #   risk.daily_pnl 在 live 是「总资产−当日开盘资产」（已含盯市），
+            #   paper 是逐笔已实现累加 —— 无脑 +eod.unrealized 在 live 就是双计
+            #   （11-03 实测 −2,134.29 被记成 −4,268.58；正收益日则虚增一倍）。
+            #   本模块钉死按 exec_mode 分流 + 标签诚实 + 未知模式回落旧口径。
+            "tests.test_review_pnl_caliber",
             "tests.test_batch_d_fixes",
             "tests.test_batch_b_t1",
             "tests.test_batch_b_minute",

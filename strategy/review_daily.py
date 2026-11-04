@@ -248,6 +248,51 @@ def _load_account_range(c: sqlite3.Connection, days: int = 20) -> dict:
         return {}
 
 
+def _day_exec_mode(c: sqlite3.Connection, target: str, fills: list = None) -> str:
+    """目标日的执行模式（'paper' / 'live'）；取不到返回 ''。
+
+    为什么需要：**同一个 ``risk.daily_pnl`` 字段在两种模式下口径相反**——
+      - live（2026-10-30 起 ``equity_daily_pnl=True``）：
+        ``daily_pnl = 当前总资产 − 当日开盘资产``，**已含未平盯市**；
+      - paper：``daily_pnl`` 仍是逐笔 SELL 的已实现累加，**不含**盯市。
+    于是「已实现 + 未实现」这个加法只在 paper 成立；live 再加一次就是双计
+    （2026-11-03 实测：真实 −2,134.29 被记成 −4,268.58，恰好 2 倍）。
+
+    数据源优先级：当日最后一个权益快照的 ``mode``（事实）→ 当日成交的 ``mode``。
+    两者都没有时返回 ''（调用方按 paper 旧口径处理，不猜）。
+    """
+    try:
+        row = c.execute(
+            "SELECT mode FROM equity_snapshots WHERE ts >= ? AND ts < ? "
+            "ORDER BY ts DESC LIMIT 1",
+            (target + "T", target + "T23:59:59.999999")).fetchone()
+        if row is not None and row[0]:
+            return str(row[0]).lower()
+    except Exception:
+        pass
+    modes = {(f.get("mode") or "").lower() for f in (fills or [])} - {""}
+    return next(iter(modes)) if len(modes) == 1 else ""
+
+
+def _compose_total_pnl(realized_eff, unrealized, exec_mode: str):
+    """组合总盈亏 = (已实现 + 未平盯市)，但**必须与 ``realized_eff`` 的口径一致**。
+
+    :param realized_eff: ``risk.daily_pnl``（引擎口径）或 fills 重放的已实现
+    :param unrealized:   ``eod.market_value − cost_basis``（mark-to-market）
+    :param exec_mode:    ``'live'`` / ``'paper'`` / ``''``
+    :return: ``(total_pnl, caliber)``，``caliber`` ∈ {'equity', 'realized+mtm'}
+
+    【2026-11-04 修复】live 下 ``daily_pnl`` 已是「总资产 − 当日开盘资产」，
+    再叠加 ``unrealized`` 会把当日盈亏放大一倍（11-03: −2,134.29 → −4,268.58）。
+    负收益日表现为「亏得比真实的更惨」，正收益日表现为「赚得比真实的多一倍」，
+    而报表标签写着「已实现+未平盯市」，看的人不会怀疑 —— 所以必须按模式分流，
+    不能一刀切（paper 的加法是对的，且要逐位保持不变）。
+    """
+    if (exec_mode or "") == "live":
+        return round(realized_eff or 0.0, 2), "equity"
+    return round((realized_eff or 0.0) + (unrealized or 0.0), 2), "realized+mtm"
+
+
 def _account_daily(c: sqlite3.Connection, target: str) -> dict:
     """账户真实当日收益（跨日口径，equity_snapshots）：target 日末值 vs 前一交易日末值。
 
@@ -1411,6 +1456,20 @@ def _render_html(target: str, rep: dict) -> str:
     pos_cls = 'neg' if pnl['realized_total'] >= 0 else 'pos'
     eod_cls = 'neg' if eod['total_return_pct'] >= 0 else 'pos'
     tot_cls = 'neg' if rep.get('total_pnl', 0.0) >= 0 else 'pos'
+    # 【2026-11-04】live 的 risk.daily_pnl 是「总资产 − 当日开盘资产」，已含盯市，
+    # 不能再叫「已实现」，否则标签会指着一根权益曲线说这是已实现盈亏。
+    if rep.get("pnl_caliber") == "equity":
+        _pnl_caliber_txt = "组合总盈亏(当日权益变动，已含未平盯市)"
+        _pnl_parts_txt = (
+            f"当日权益变动(引擎 daily_pnl = 总资产 − 当日开盘资产) "
+            f"<b>{rep.get('realized_eff', 0.0):,.2f}</b> ｜ "
+            f"未实现(盯市，已含在上式中，勿重复相加) "
+            f"<b>{eod['unrealized']:,.2f}</b>")
+    else:
+        _pnl_caliber_txt = "组合总盈亏(已实现 + 未平盯市)"
+        _pnl_parts_txt = (
+            f"已实现(引擎累计 daily_pnl) <b>{rep.get('realized_eff', 0.0):,.2f}</b> ｜ "
+            f"未实现(盯市) <b>{eod['unrealized']:,.2f}</b>")
 
     html = f"""<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -1448,7 +1507,7 @@ code {{ background:#eef2f7; padding:1px 5px; border-radius:4px; }}
   <div class="kpi"><div class="v">{sig_n}</div><div class="l">信号笔数</div></div>
   <div class="kpi"><div class="v {pos_cls}">{pnl['realized_total']:,.2f}</div><div class="l">已实现盈亏(¥)</div></div>
   <div class="kpi"><div class="v {eod_cls}">{eod['unrealized']:,.2f}</div><div class="l">未实现盈亏(¥)</div></div>
-  <div class="kpi"><div class="v {tot_cls}">{rep.get('total_pnl', 0.0):,.2f}</div><div class="l">组合总盈亏(已实现+未平盯市)(¥)</div></div>
+  <div class="kpi"><div class="v {tot_cls}">{rep.get('total_pnl', 0.0):,.2f}</div><div class="l">组合总盈亏(¥)</div></div>
   <div class="kpi"><div class="v">{risk['halt_count']}</div><div class="l">风控熔断次数</div></div>
   <div class="kpi"><div class="v">{risk['max_consecutive_losses']}</div><div class="l">最大连亏</div></div>
 </div></div>
@@ -1464,9 +1523,9 @@ code {{ background:#eef2f7; padding:1px 5px; border-radius:4px; }}
 <p style="font-size:13px;color:#6b7280">EOD 总资产 <b>{eod['total_asset']:,.2f}</b> ｜ 现金 <b>{eod['cash']:,.2f}</b> ｜
 持仓市值 <b>{eod['market_value']:,.2f}</b> ｜ 未实现盈亏 <b>{eod['unrealized']:,.2f}</b> ｜
 当日收益(总资产) <b class="{eod_cls}">{eod['total_return_pct']:+.2f}%</b></p>
-<p style="font-size:13px;color:#374151">组合总盈亏(已实现 + 未平盯市) <b class="{tot_cls}">{rep.get('total_pnl', 0.0):,.2f}</b> ｜
-已实现(引擎累计 daily_pnl) <b>{rep.get('realized_eff', 0.0):,.2f}</b> ｜ 未实现(盯市) <b>{eod['unrealized']:,.2f}</b></p>
-<p style="font-size:12px;color:#888">口径：已实现优先取引擎 RiskManager 累计 daily_pnl（risk_snapshots，逐笔 SELL 时累加，准确）；fills 重放结果仅作回退。未平盯市 = 权益快照市值 − engine_state 成本。已默认剔除 {DIRTY_SAMPLE_CUTOFF} 之前的脏样本成交（修复前多进程遗留，不作收益基准）。</p>
+<p style="font-size:13px;color:#374151">{_pnl_caliber_txt} <b class="{tot_cls}">{rep.get('total_pnl', 0.0):,.2f}</b> ｜
+{_pnl_parts_txt}</p>
+<p style="font-size:12px;color:#888">口径：已实现优先取引擎 RiskManager 累计 daily_pnl（risk_snapshots）；fills 重放结果仅作回退。未平盯市 = 权益快照市值 − engine_state 成本。<b>live 模式下引擎 daily_pnl 已是「总资产 − 当日开盘资产」（2026-10-30 起 equity_daily_pnl=True），本身含盯市，故不再叠加未实现（否则双计，11-03 曾把 −2,134.29 记成 −4,268.58）；paper 模式仍是「已实现 + 未平盯市」。</b>已默认剔除 {DIRTY_SAMPLE_CUTOFF} 之前的脏样本成交（修复前多进程遗留，不作收益基准）。</p>
 </div>
 
 <div class="card"><h2>② 信号明细（BUY）</h2>
@@ -1641,13 +1700,21 @@ def main():
     }
 
     # 组合总盈亏 = 已实现 + 未平盯市（mark-to-market）。
-    # 已实现优先取引擎 RiskManager 累计的 daily_pnl（risk_snapshots，逐笔 SELL 时累加，
-    # 准确反映目标日真实已实现）；fills 重放结果(realized_total)仅作回退（建仓腿缺失
-    # 时会失真）。未平盯市 = 权益快照市值 − engine_state 成本（已在上面算好）。
+    # 已实现优先取引擎 RiskManager 累计的 daily_pnl（risk_snapshots）；fills 重放结果
+    # (realized_total)仅作回退（建仓腿缺失时会失真）。未平盯市 = 权益快照市值 −
+    # engine_state 成本（已在上面算好）。
+    # 【2026-11-04 修复】口径分流见 _compose_total_pnl：live 的 daily_pnl 已含盯市，
+    # 再加未实现即双计；paper 保持旧加法（逐位不变）。
     realized_eff = risk.get("last_daily_pnl")
     if realized_eff is None:
         realized_eff = pnl["realized_total"]
-    total_pnl = round((realized_eff or 0.0) + eod["unrealized"], 2)
+        # 回退值是 fills 重放的**纯已实现**，口径等同 paper ⇒ 必须加未实现
+        _eff_mode = "paper"
+    else:
+        _eff_mode = _day_exec_mode(c, target, fills)
+    total_pnl, pnl_caliber = _compose_total_pnl(
+        realized_eff, eod["unrealized"], _eff_mode)
+
 
     # best-effort 名称解析：本地动态候选池(JSON) + 全市场(Tushare, 离线则跳过)。
     # 使历史复盘里 name=code 的旧记录也能显示中文名。
@@ -1683,6 +1750,8 @@ def main():
         "pnl": pnl,
         "realized_eff": realized_eff,
         "total_pnl": total_pnl,
+        # 'equity' = 当日权益变动（live，已含盯市）；'realized+mtm' = 已实现+未平盯市
+        "pnl_caliber": pnl_caliber,
         "trades": trades,
         "risk": risk,
         "equity": equity,

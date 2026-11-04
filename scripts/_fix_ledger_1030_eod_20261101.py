@@ -58,6 +58,22 @@ def _rebuild(row: dict) -> dict:
     if "[2026-11-01 数据修正]" not in base_note:
         row["note"] = (base_note + " " + NOTE_APPEND).strip()
     row["fix"] = "ledger_eod_1030_close_recalc"
+    # 【2026-11-04 修复】修补行原先**没有** ``eod_ts`` / ``eod_is_close`` 键（键都不存在，
+    # 不是 None），而全账本唯一真出过「盘中值当收盘」事故的就是这一行。
+    # 消费端 ``row.get("eod_is_close", True)`` 取默认值 True ⇒ 把手工重算值当成
+    # 「15:00 后快照收盘值」，日收益被拿去与其它交易日直接比较。
+    #
+    # 这里显式标注第三态，且**不调用** ``annotate_eod_freshness``：后者会把当日
+    # 最后一条快照（11:29:43 盘中价 65,748.42 —— 正是本行要修掉的那个值）写成
+    # 本行 ``eod_ts``，并在 note 里断言「该 eod_asset 为盘中值」，与本行已修正为
+    # 63,684.42 的事实相反 ⇒ 会造出**来源错误的溯源**。
+    row["eod_ts"] = None          # 当日无 15:00 后快照可用（不猜）
+    row["eod_is_close"] = False   # 非快照收盘口径（按收盘价重算），勿与快照 EOD 混用
+    fresh = ("[EOD 新鲜度] 该日无 15:00 后快照（最后快照 11:29:43 为盘中值，已被本行"
+             "修正取代）；eod_asset 为按收盘价重算值，eod_is_close=False，"
+             "不得当作快照收盘口径与其它交易日直接比较。")
+    if fresh not in row["note"]:
+        row["note"] = (row["note"] + " " + fresh).strip()
     return row
 
 

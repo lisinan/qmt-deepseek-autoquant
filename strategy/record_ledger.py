@@ -513,6 +513,12 @@ def apply_mode_boundary(row: dict, path=None, ledger_rows=None) -> dict:
     row["daily_pnl"] = round(eod - prev, 2)
     row["daily_ret_pct"] = round((eod / prev - 1) * 100.0, 2)
     if base > 0:
+        # ⚠ 字段名陷阱（2026-11-04 钉死）：``range_pct`` 是**自模式断点基线起的
+        # 累计收益**（eod / base − 1），**不是日内振幅**。实盘铁证：11-03
+        # range_pct = −8.22%，而当日真实振幅 63,810.65 → 61,071.65 只有 −4.29%，
+        # 差近一倍（因为它跨了 11-02 的 −4.29%）。任何人拿它当「日内波动」去设
+        # 阈值/回撤预算都会错得离谱。改名会打断消费端，故此处只钉语义；
+        # 需要真日内振幅时另算（当日最高/最低快照或收盘/开盘），不要复用本字段。
         row["range_pct"] = round((eod / base - 1) * 100.0, 2)
     return row
 

@@ -131,3 +131,37 @@ def test_new_fields_do_not_change_existing_numbers():
     assert r30["prev_asset"] == 65748.42, r30["prev_asset"]
     assert r30["mode"] == "live", r30["mode"]
     assert r30["eod_is_close"] is False, "盘中价必须被标出，否则清理失效"
+
+
+# ---------------------------------------------------------------- ⑥ 修补路径
+
+def test_repair_path_carries_freshness_marker():
+    """★ 修补路径必须带新鲜度标记（2026-11-03 审计发现的第 6 条）。
+
+    全账本唯一真出过「盘中值当收盘」事故的就是 2026-10-30 这一行，而它恰恰是
+    唯一**连键都没有**的行 —— 因为 ``scripts/_fix_ledger_1030_eod_20261101.py``
+    手工改 EOD 时绕过了 ``annotate_eod_freshness``。消费端
+    ``row.get("eod_is_close", True)`` 会取默认 True，把重算值当成可信收盘值。
+
+    前 5 条用例只测生成端（build_row*），不测修补端 —— 这就是它们全绿却漏掉
+    这个缺陷的原因（「测了 A 路径，就以为 B 路径也被测了」）。
+    """
+    import importlib.util
+    p = ROOT / "scripts" / "_fix_ledger_1030_eod_20261101.py"
+    assert p.exists(), f"修补脚本不存在：{p}"
+    spec = importlib.util.spec_from_file_location("_fix1030", p)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    out = mod._rebuild({"date": "2026-10-30", "eod_asset": 65748.42, "note": ""})
+    assert "eod_ts" in out, "修补行缺 eod_ts ⇒ 消费端无法判来源"
+    assert "eod_is_close" in out, (
+        "修补行缺 eod_is_close 键 ⇒ row.get(..., True) 默认按「可信收盘」处理")
+    assert out["eod_is_close"] is False, \
+        "该日无 15:00 后快照 ⇒ 不得声称为可信收盘口径"
+    assert out["eod_ts"] is None, "当日无收盘快照 ⇒ 不得把 11:29 盘中快照伪造成 eod_ts"
+    assert "EOD 新鲜度" in out["note"], f"note 未说明来源：{out['note']}"
+    # 正向对照：标注字段不得改写任何既有数值
+    assert out["eod_asset"] == 63684.42, out["eod_asset"]
+    assert out["prev_asset"] == 66542.31, out["prev_asset"]
+    assert out["fix"] == "ledger_eod_1030_close_recalc", out["fix"]
