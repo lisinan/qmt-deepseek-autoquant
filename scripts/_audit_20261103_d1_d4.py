@@ -22,6 +22,10 @@ sys.path.insert(0, str(ROOT))
 
 LEDGER = ROOT / "logs" / "evolution_ledger.jsonl"
 
+# D4 日线查询窗口起点。**不得少于 60 个交易日**：bars 是窗口的函数，收窄会让
+# 「MA60 可行性」在数据没变的情况下翻脸（2026-11-04 审计官指出）。
+DAILY_WINDOW_START = "20250101"
+
 
 def d1() -> None:
     rows = [json.loads(l) for l in LEDGER.read_text(encoding="utf-8").splitlines() if l.strip()]
@@ -166,19 +170,42 @@ def _fetch_daily(codes, start: str, end: str, timeout: float = 20.0):
     return True, box["data"]
 
 
+def _probe_xtdata(timeout: float = 5.0) -> bool:
+    """只验证「xtdata 能不能取到数」，不 import engine。
+
+    为什么必须先探：``import engine.event_engine`` **本身就会连接 xtdata**
+    （实测 0.89s，并在 stdout 打连接横幅）—— 它是模块级 singleton 的副作用。
+    所以若先 import engine，xtdata 没开时会在那一行炸成 traceback，
+    ``[SKIP]`` 分支根本来不及执行，而且「行情没开 / xtquant 没装 / engine 有语法错」
+    三种情况长得一模一样 —— 恰是退出码契约要避免的不可区分。
+
+    ``from xtquant import xtdata`` 本身**不连接**（实测），连接发生在
+    ``get_local_data``。故用一次最小取数作为探针。
+    """
+    ok, _ = _fetch_daily(["000001.SH"], "20261101", "20261104", timeout)
+    return ok
+
+
 def d4() -> None:
     from datetime import datetime
     from collections import Counter
 
     print()
     print("=" * 96)
-    codes, parts = _subscription_codes()
     log_n = _log_subscription_count()
-    print(f"D4 xtdata 日线末端日期（订阅 {len(codes)} 只；引擎日志锚点 {log_n} 只）")
+    print(f"D4 xtdata 日线末端日期（引擎日志锚点 {log_n if log_n is not None else '?'} 只）")
     print("=" * 96)
+    # ① 先探行情：不可达 ⇒ 没跑（exit 3），且必须在 import engine 之前
+    if not _probe_xtdata():
+        print("  [SKIP] xtdata 不可达，D4 未执行（非健康）")
+        print(f"覆盖只数: 0 / {log_n if log_n is not None else '?'}（未执行）")
+        raise SystemExit(3)
+
+    # ② 行情可达 ⇒ 再取订阅清单（import engine 此时不会因「行情没开」而炸）
+    codes, parts = _subscription_codes()
     print(f"  构成：UNIVERSE={parts['UNIVERSE']} + VALIDATION={parts['VALIDATION']} "
           f"+ dynamic_active={parts['dynamic_active']} + 持仓={parts['positions']} "
-          f"⇒ 去重 {len(codes)}")
+          f"⇒ 去重 {len(codes)}（日志锚点 {log_n}）")
     if log_n is None:
         print("  [WARN] 日志里没有「分钟线预热完成…共 N 只」→ 无法交叉校验只数")
     elif len(codes) != log_n:
@@ -189,10 +216,12 @@ def d4() -> None:
 
     # 窗口要足够长：既判「末端是否新鲜」，也要能支撑 MA60 可行性判断。
     # 原来 start=20260901 只取到 ~40 根，读者会误以为「bars=40 ⇒ MA60 不可算」。
-    start, end = "20250101", "20261110"
+    # ⚠ 该常量**不得少于 60 个交易日**：否则「MA60 可行性」会在数据没变的情况下翻脸
+    #   （bars 是窗口的函数，不是数据质量的函数）。
+    start, end = DAILY_WINDOW_START, "20261110"
     ok, data = _fetch_daily(codes, start, end)
     if not ok:
-        print(f"  [SKIP] xtdata 不可达，D4 未执行（非健康）—— {data}")
+        print(f"  [SKIP] xtdata 取数失败，D4 未完成（非健康）—— {data}")
         print(f"覆盖只数: 0 / {len(codes)}（未执行）")
         raise SystemExit(3)
     cnt = Counter()

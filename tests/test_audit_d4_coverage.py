@@ -127,6 +127,7 @@ def test_d4_coverage_mismatch_is_not_exit_0():
 
     m = _mod()
     real = m._subscription_codes
+    m._probe_xtdata = lambda *a, **k: True          # 不连网
     m._subscription_codes = lambda: (["X.SH"], {"UNIVERSE": 1, "VALIDATION": 0,
                                                 "dynamic_active": 0, "positions": 0})
     m._log_subscription_count = lambda: 38
@@ -141,3 +142,36 @@ def test_d4_coverage_mismatch_is_not_exit_0():
         m._subscription_codes = real
     assert code == 2, f"覆盖率不符应 exit 2（实际 {code}）"
     assert "[FAIL]" in buf.getvalue()
+
+
+def test_probe_runs_before_engine_import():
+    """行情不可达时，**不得** import engine.event_engine。
+
+    `import engine.event_engine` 自身就会连接 xtdata（模块级 singleton 副作用，
+    实测 0.89s）。若先 import 再探活，xtdata 没开就会在 import 行炸成 traceback，
+    [SKIP] 分支永远执行不到，且「行情没开 / xtquant 没装 / 代码有错」不可区分。
+    本用例钉死顺序：probe=False ⇒ 直接 exit 3，`_subscription_codes` 一次都不许调用。
+    """
+    import contextlib
+    import io
+
+    m = _mod()
+    called = {"sub": 0}
+
+    def _boom(*a, **k):
+        called["sub"] += 1
+        raise AssertionError("行情不可达时不应去 import engine 取订阅清单")
+
+    m._probe_xtdata = lambda *a, **k: False
+    m._subscription_codes = _boom
+    buf = io.StringIO()
+    code = None
+    try:
+        with contextlib.redirect_stdout(buf):
+            m.d4()
+    except SystemExit as e:
+        code = e.code
+    assert code == 3, f"应为 3（没跑），实际 {code}"
+    assert called["sub"] == 0, "探活失败后仍调用了 _subscription_codes（顺序反了）"
+    out = buf.getvalue()
+    assert "[SKIP]" in out and "0 / " in out and "未执行" in out, out[-300:]
