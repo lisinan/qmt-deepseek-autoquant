@@ -113,6 +113,12 @@ def _collect_tests():
             #   连 fix / eod_basis 一起抹掉。而这条命令的典型动机正是
             #   「核对 10-30 为什么是 −4.29%」—— 审计动作本身销毁证据。
             "tests.test_ledger_repair_durability",
+            # 【2026-11-04】d4（日线末端新鲜度体检）覆盖率守卫：它 import 的是不存在的
+            #   顶层 `xtdata` + 不存在的 `DYNAMIC_UNIVERSE_CODES`（被 except 吞成 []）
+            #   ⇒ 整段从未跑通，即使跑通也只覆盖 13/38 只却「看起来健康」。
+            #   钉死：必须委托 EventEngine._subscribe_codes（单一事实源）+ 正确入口
+            #   + 锚点取日志「共 N 只」而非写死数字。
+            "tests.test_audit_d4_coverage",
             # 【2026-10-30 P1】持仓订阅 + 盯市价兜底：池外持仓（OWNER 手工建仓 /
             # 观察篮补买）原来收不到 tick，盯市价退回成本价 ⇒ 总资产低估 57.7%。
             "tests.test_position_subscription_mark",
