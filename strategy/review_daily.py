@@ -339,6 +339,52 @@ def _account_daily(c: sqlite3.Connection, target: str) -> dict:
         return {}
 
 
+def _day_chain(c: sqlite3.Connection, target: str, mode: str = "live") -> dict:
+    """跨日真实收益：**上一有快照交易日末 → 目标日末**，与账本 ``daily_ret_pct`` 同口径。
+
+    【2026-11-05 新增，DAILY-REVIEW G 块】动机是一个**当天就发生的口径分叉**：
+      当日引擎 ``daily_pnl = 总资产 − day_open_asset = +539.50``（+0.87%），
+      但账本跨日口径 ``66,411.12 → 62,409.60 = −4,001.52``（−6.03%）。
+      差 6.90pp 全部来自 **隔夜跳空**（开盘首笔估值 61,870.10 已含跳空）。
+      ``_account_daily`` 因硬编码 ``mode='paper'`` 在 live 下恒返回 ``{}``（见其 docstring，
+      修它属设计决策），于是报告头版只剩日内口径，「−6.03% 的一天」被显示成「+0.87%」。
+
+    ★ 本函数**不改任何既有字段**，只新增 ``rep["day_chain"]`` 一个块；
+      ``equity.daily_return_pct`` / ``account_*`` 全部保持原语义 ⇒ 既有测试逐位不变。
+
+    ★ 防「10-30 型假亏损」：若前一快照不在收盘附近（<14:30），
+      标 ``prev_is_close=False`` 并在报告里显式打星号 —— 不静默使用盘中值。
+    """
+    try:
+        prev = c.execute(
+            "SELECT ts, total_asset FROM equity_snapshots WHERE mode=? AND ts < ? "
+            "ORDER BY ts DESC LIMIT 1", (mode, target + "T")
+        ).fetchone()
+        cur = c.execute(
+            "SELECT ts, total_asset FROM equity_snapshots WHERE mode=? AND ts >= ? AND ts <= ? "
+            "ORDER BY ts DESC LIMIT 1", (mode, target + "T", target + "T23:59:59.999999")
+        ).fetchone()
+        if not prev or not cur:
+            return {}
+        p_ts, p_ta = str(prev[0]), float(prev[1] or 0.0)
+        c_ts, c_ta = str(cur[0]), float(cur[1] or 0.0)
+        if p_ta <= 0 or c_ta <= 0:
+            return {}
+        # 分位比较用字符串即可（ISO 定长），不引入时区/解析失败面
+        return {
+            "mode": mode,
+            "prev_ts": p_ts,
+            "prev_asset": round(p_ta, 2),
+            "eod_ts": c_ts,
+            "eod_asset": round(c_ta, 2),
+            "daily_pnl": round(c_ta - p_ta, 2),
+            "daily_ret_pct": round((c_ta / p_ta - 1) * 100, 2),
+            "prev_is_close": p_ts[11:16] >= "14:30",
+        }
+    except Exception:
+        return {}
+
+
 def _last_snapshot_positions_count(c: sqlite3.Connection, target: str):
     """当日最后一个权益快照里的持仓只数（用作交叉校验基准）。"""
     try:
@@ -1371,6 +1417,21 @@ def _render_html(target: str, rep: dict) -> str:
     _rng_disp = f"{_rng_pct:+.2f}%" if _rng_pct is not None else "—"
     _rec_disp = f"{_rec_pct:+.2f}%" if _rec_pct is not None else "—"
     _rng_cls = 'neg' if (_rng_pct or 0) >= 0 else 'pos'
+    # 【2026-11-05 新增】跨日口径卡（_day_chain）——日内口径会漏隔夜跳空，
+    # 当日实测差 6.90pp（+0.87% vs −6.03%），必须与 ⑥ 并列显示而不是只留一个。
+    _dc = rep.get("day_chain") or {}
+    _dc_ret = _dc.get("daily_ret_pct")
+    _dc_pnl = _dc.get("daily_pnl")
+    _dc_star = "" if _dc.get("prev_is_close") else " ⚠"
+    _dc_cls = 'neg' if (_dc_pnl or 0) >= 0 else 'pos'
+    _dc_kpi = ""
+    if _dc_ret is not None:
+        _dc_kpi = (
+            f"<div class='kpi'><div class='v {_dc_cls}'>{_dc_ret:+.2f}%{_dc_star}</div>"
+            f"<div class='l'>跨日真实收益（昨末 {_dc.get('prev_asset', 0):,.2f} → 今日末）</div></div>"
+            f"<div class='kpi'><div class='v {_dc_cls}'>{_dc_pnl:,.2f}</div>"
+            f"<div class='l'>跨日真实盈亏(¥)</div></div>"
+        )
     account_block = (
         f"<div class='card' style='background:#fff5f5;border-left:5px solid #c62828'>"
         f"<h2 style='border-left:none;padding-left:0;color:#b71c1c'>💰 账户真实收益（引擎权威账本 · 含隔夜重估）</h2>"
@@ -1381,10 +1442,13 @@ def _render_html(target: str, rep: dict) -> str:
         f"<div class='l'>区间收益({acct_rng.get('first_date','?')}→{acct_rng.get('last_date','?')})</div></div>"
         f"<div class='kpi'><div class='v {_rng_cls}'>{_rec_disp}</div>"
         f"<div class='l'>近{acct_rng.get('recent_days','?')}日收益</div></div>"
+        f"{_dc_kpi}"
         f"</div>"
         f"<p style='font-size:12px;color:#888;margin-top:8px'>基准：engine_state（引擎落盘账本）。"
-        f"右侧「⑥ 当日收益率」用 equity_snapshots 日内口径（{eod.get('total_return_pct', 0):+.2f}%）会漏隔夜跳空；"
-        f"此处用引擎 daily_pnl（含隔夜重估）的真实账户盈亏，二者差异即隔夜跳空/持仓重估亏损。</p>"
+        f"右侧「⑥ 当日收益率」为 equity_snapshots **日内**口径（{eod.get('total_return_pct', 0):+.2f}%），"
+        f"不含隔夜跳空；「跨日真实收益」= 上一快照日末 → 今日末，与账本 daily_ret_pct 同源同义。"
+        f"两者之差即隔夜跳空/持仓重估 — 2026-11-05 实测 +0.87% vs −6.03%（差 6.90pp）。"
+        f"{'' if _dc.get('prev_is_close', True) else ' ⚠ 前值为盘中快照（<14:30），跨日数仅供参照。'}</p>"
         f"</div>"
     )
 
@@ -1673,6 +1737,9 @@ def main():
     state_acct = _state_account(c)
     acct_daily = _account_daily(c, target)
     acct_range = _load_account_range(c)
+    # 【2026-11-05 新增】跨日真实收益（上一快照日末 → 目标日末），纯新增字段，
+    # 不改 `equity.daily_return_pct` 与 `account_*` 语义（见 _day_chain docstring）。
+    day_chain = _day_chain(c, target)
     # 【2026-11-04 DAILY-REVIEW 修复】`_day_exec_mode` 必须**在 c.close() 之前**调用。
     # 缺陷：原实现在 :1730 传的是已 close 的连接 ⇒ sqlite3.ProgrammingError 被函数内
     # `except Exception: pass` 静默吞掉 ⇒ 返回 '' ⇒ 回落到 paper 口径 ⇒ live 的
@@ -1803,6 +1870,8 @@ def main():
         "account_state": state_acct,
         "account_daily": acct_daily,
         "account_range": acct_range,
+        # 跨日口径（上一快照日末→目标日末），与账本 daily_ret_pct 同源同义
+        "day_chain": day_chain,
         "account_ret_pct": account_ret_pct,
         "account_pnl": _acct_pnl,
         "compare": cmp_,
@@ -1822,6 +1891,11 @@ def main():
     print(f"[复盘] HTML -> {html_path}")
     print(f"[复盘] 成交 {len(fills)} 笔 / 信号 {sig_n} 笔 / 已实现 ¥{pnl['realized_total']:,.2f} "
           f"/ 未实现 ¥{unrealized:,.2f} / 当日收益 {total_return_pct:+.2f}% / 熔断 {risk['halt_count']} 次")
+    # 【2026-11-05】跨日口径单独打一行 —— 只打日内口径会被误读成「当天没亏」。
+    if day_chain:
+        _s = "" if day_chain.get("prev_is_close") else " (前值为盘中快照，仅供参考)"
+        print(f"[复盘] 跨日真实收益 {day_chain['daily_ret_pct']:+.2f}% "
+              f"(¥{day_chain['daily_pnl']:,.2f}：{day_chain['prev_asset']:,.2f} → {day_chain['eod_asset']:,.2f}){_s}")
     return rep
 
 

@@ -73,6 +73,11 @@ def _collect_tests():
             #   （11-03 实测 −2,134.29 被记成 −4,268.58；正收益日则虚增一倍）。
             #   本模块钉死按 exec_mode 分流 + 标签诚实 + 未知模式回落旧口径。
             "tests.test_review_pnl_caliber",
+            # 【2026-11-05 P2 量测口径】跨日真实收益守卫（day_chain）。11-05 是隔夜
+            #   跳空日：引擎 daily_pnl +0.87%（分母 day_open_asset，跳空后）vs 账本
+            #   −6.03%（前收→今收），差 6.90pp。_account_daily 硬编码 paper 在 live
+            #   恒返回 {}，报告头版只剩日内口径 ⇒ 必须另给跨日口径并标 prev_is_close。
+            "tests.test_review_day_chain",
             "tests.test_batch_d_fixes",
             "tests.test_batch_b_t1",
             "tests.test_batch_b_minute",
