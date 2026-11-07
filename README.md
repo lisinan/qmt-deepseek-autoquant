@@ -7,9 +7,9 @@
 > 代价是单段回撤较深。真价值在**风控与不参与**，不在收益率数字（见 §四 `kpi4`）。
 
 ```text
-执行模式  live（真实资金）   │   数据源  xtdata             
-行情订阅  38 只              │   交易    xttrader           
-单元测试  680 例 / 全绿      │   费率    单边 0.15%         
+执行模式  live（真实资金）   │   数据源  xtdata
+行情订阅  38 只              │   交易    xttrader / 文件桥
+单元测试  942 例             │   费率    单边 0.15%
 基线      23 只 × 903 根     │   区间    20230208 → 20261029
 ```
 
@@ -92,6 +92,33 @@
 **为什么日线定方向、分钟线管执行**：日线信号慢但噪声小（决定「买不买」），
 分钟线快但假信号多（只管「怎么买 / 何时止损」）。混用会让两者互相污染。
 
+### 执行通道：两条路
+
+执行层有两条可切换通道，由 `trading_config.json` 的 `broker_qmt_mode` 决定
+（该文件 gitignored，仓库里只有 `core/broker.py` 中的默认值）：
+
+| 模式 | 实现 | 说明 |
+|---|---|---|
+| `"XtMiniQmt"`（默认） | `core/broker.py` → `XtQuantTrader` | 标准路径，进程外直连 |
+| `"bridge"` | `core/broker_bridge.py` → 文件桥 | 绕开 `xttrader`，下单由 QMT 内策略的 `passorder` 完成 |
+
+**什么时候需要文件桥**：QMT 升级后外部 python 被判 `illegal pid`，`xttrader` 连不上时。
+此时把执行动作交给 QMT 自己的策略进程（它天然在白名单内），本机只负责分析与发信号：
+
+```
+本机引擎 ──signal.json──▶ QMT 策略（passorder）──result.json──▶ 本机引擎
+```
+
+这是**全有或全无**的单开关：查询与下单同时换通道，没有「只切查询」的中间态。
+回滚＝改回 `"XtMiniQmt"` 并重启，零残留。
+
+> ⚠ **最关键的一项配置在 GUI 里改不到**：`config/indexUserConfig.xml` 的 `simpleRun`
+> 决定策略走「模型交易」（内嵌引擎，`init()` 会被调用、`passorder` 可用）还是
+> 「简单运行」（独立进程，`init()` **永不调用**）。设错时策略界面显示「运行中」
+> 但实际什么都没做。
+>
+> 安装、配置、验收与六个已知坑：[`docs/QMT_BRIDGE.md`](docs/QMT_BRIDGE.md)
+
 ---
 
 ## 四、基线表现（2026-10-29 实测）
@@ -138,8 +165,12 @@ qmtIDE-deepseek/
 │   ├── indicators.py           # SMA/EMA/RSI/MACD/KDJ/BOLL/ATR/VWAP（纯 Python）
 │   ├── qmt_client.py           # 行情（push + snapshot + K线 + mock 降级）
 │   ├── broker.py               # 交易（XtQuantTrader）
+│   ├── broker_bridge.py        # 交易（文件桥客户端，broker_qmt_mode="bridge" 时启用）
 │   ├── qmt_health.py           # 健康探针（引擎 / 行情 / 交易 / 风控）
 │   └── notices.py              # 耐久告警通道（logs/notices.log）
+├── qmt_bridge/
+│   ├── qmtide_bridge.py        # ★ QMT 侧执行器（唯一部署版本，passorder 在此）
+│   └── README_DEPLOY.md        # 部署步骤与「一点运行就停止」的真因
 ├── ai/
 │   ├── deepseek_client.py      # DeepSeek 客户端（主用）
 │   ├── openrouter_client.py    # OpenRouter（备用，默认禁用）
@@ -176,10 +207,15 @@ qmtIDE-deepseek/
 │   ├── health_check.py         # 存活检查 + 自启动（--start 才真拉起）
 │   ├── _recursive_self_improve.py  # ★ 二阶优化元审计（四层）
 │   ├── verify_northbound_boot.py   # 北向轴重启生效验证
+│   ├── deploy_bridge.py        # QMT 侧执行器部署（UTF-8 → GBK+CRLF，带回读校验）
+│   ├── qmt_set_simple_run.py   # 切换 indexUserConfig.xml 的 simpleRun（四重校验）
+│   ├── bridge_probe.py         # 文件桥只读联调探针（零下单风险）
+│   ├── _qmt_config_dump.py     # 只读导出 QMT 策略的 runMode / simpleRun 等开关
 │   └── startup_all.bat         # 开机自启编排
-├── tests/                      # 680 例离线测试（tests/run_all.py，无需 miniQMT/网络）
+├── tests/                      # 942 例离线测试（tests/run_all.py，无需 miniQMT/网络）
 ├── docs/
 │   ├── ARCHITECTURE.md         # 系统架构
+│   ├── QMT_BRIDGE.md           # ★ QMT 文件桥：关键配置 / 部署 / 六个坑
 │   ├── AUTOMATIONS.md          # 自动化权威清单 + 考核目标 + 晋升闸门
 │   └── RECURSIVE_SELF_IMPROVEMENT.md  # 二阶优化设计
 ├── reports/

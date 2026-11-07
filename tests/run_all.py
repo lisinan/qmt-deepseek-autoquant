@@ -49,6 +49,10 @@ _TMP = Path(tempfile.mkdtemp(prefix="qmt_tests_"))
 os.environ.setdefault("QMT_DB", str(_TMP / "test_qmt.db"))
 os.environ.setdefault("QMT_NOTICES_LOG", str(_TMP / "test_notices.log"))
 os.environ.setdefault("QMT_IGNORE_INTERPRETER_CHECK", "1")
+# 【2026-11-08】行情选源锁死为 xtdata：``core.qmt_client`` 有模块级单例，构造时
+# 会对各行情源探活一次。默认 auto 会连带探活 tushare（真实网络 + 最多 15s 超时），
+# 让整个测试套件依赖外网。测试里一律只要 xtdata，行为与引入 tushare 之前一致。
+os.environ.setdefault("QMT_QUOTE_SOURCE", "xtdata")
 
 
 def _collect_tests():
@@ -392,7 +396,34 @@ def _collect_tests():
             #   清空后策略会误判空仓 ⇒ max_positions 失效、可能重复买入。
             #   11-02 事故链的上游正是「一次 [] 就清账」。语义：连续
             #   SYNC_EMPTY_CONFIRM_N 轮空返回才确认；中途非空即清零重计。
-            "tests.test_sync_empty_confirm"]
+            "tests.test_sync_empty_confirm",
+            # 【2026-11-08】大 QMT 文件桥（QMT 2.1.32.0 框架白名单把外部 python
+            #   判成 illegal pid 后的交易通道）。此前只手工跑过，**未注册到本文件
+            #   ⇒ 整文件用例隐形未执行**（见顶部纪律）。含心跳新鲜度、字段映射、
+            #   error→None 与 []→[] 不混淆、超时判失败并触发 on_disconnect、
+            #   price<=0 拒单、QMT 侧 signal_id 幂等。
+            "tests.test_bridge_broker",
+            # 【2026-11-08】桥接**端到端**仿真：按真身加载 `qmt_bridge/qmt_executor.py`，
+            #   只把 QMT 运行时内建（passorder / cancel / get_trade_detail_data）
+            #   注入成桩，再用真实 BridgeBroker 驱动。此前 test_bridge_broker 用
+            #   手写 FakeQmt，只能验 broker 侧，验不到「真正发货的那份代码」。
+            #   钉死：passorder 实参(op=23/24, otype=1101, prtype=11)、signal_id
+            #   幂等不重复下单、price<=0 拒单、以及**委托号反查**
+            #   （passorder 无返回值时若拿不到 order_id，卖出会重复下单）。
+            "tests.test_bridge_executor_e2e",
+            # 【2026-11-08】QMT 侧**策略本体** qmt_bridge/qmtide_bridge.py 的端到端。
+            #   这是真正被部署到 C:\pazq_qmt\python\QMTIDE_BRIDGE.py 的那份文件，
+            #   此前零覆盖（test_bridge_executor_e2e 验的是另一份 qmt_executor.py）。
+            #   钉死三件事：① passorder 必须是官方示例的 11 参顺序，args[2] 是
+            #   资金账号而不是 "STOCK"（早期实现把 accountType 塞进账号位，后面
+            #   参数整体错位一格）；② 同一 signal_id 只执行一次（否则 100 股卖成
+            #   200 股）；③ 拿不到 passorder 时标 standalone 并干净退出，不留僵尸。
+            "tests.test_qmtide_bridge",
+            # 【2026-11-08】tushare 实时行情源（xtdata not authenticated 后的
+            #   行情通道）。钉死：字段映射 / time 为毫秒 epoch / 沪市 ETF 回落
+            #   新浪 / 限频不得突破 10 次每分钟 / 绝不返回空 / 绝不标 _mock /
+            #   data_mode="tushare" 不被 mock 闸门拦截。全离线，FakePro 不打网络。
+            "tests.test_tushare_quote"]
     tests = []
     import_errors = []
     for m in mods:

@@ -18,6 +18,283 @@
 
 ## OPEN（按优先级）
 
+- [P0] [SAFE] **「本机发信号 → QMT 执行 → 回结果」闭环已跑通**（2026-11-08 02:12）
+  — 判定线三条全部命中，`boot.log` 原文：
+  `[BRIDGE] poll #1 alive` / `[BRIDGE] file reader=ctypes 可用（上一次=<未定>）` /
+  `[BRIDGE] got signal_id=144133bb... action=PING reader=ctypes`，
+  `result.json` = `{"status":"ok","data":{"pong":...}}`；`scripts/bridge_probe.py`
+  四连请求 **4 ok / 0 timeout / 0 error**（PING / DUMP / QUERY_ASSET / QUERY_POSITION）。
+  **之前卡住的真因不是读链**：`02:09:13` 那轮 `_io_selftest()` 里的 socket 探针
+  两个阻塞 connect 各 0.5s，用户恰在那 1 秒内点「停止」⇒ `init` 被
+  `KeyboardInterrupt` 打断、**从未返回** ⇒ 已注册的 `run_time` 定时器永不调度 ⇒
+  `bridge_poll` 一次都没跑。日志铁证：该轮 selftest 打完 7 个路径就断、**连 socket
+  行都没有**，而 02:04 那轮（旧非阻塞探针、秒回）有。修法：自测移入后台 daemon
+  线程（诊断不是启动前置）+ 探针压到单端口 0.3s + 补 `poll #N alive` /
+  `got signal_id=` 两条观测日志（缺它们才把「poll 没跑」误读成「读不到」）。
+  — 证据：`C:\pazq_qmt_bridge\boot.log` / `result.json`；`qmt_bridge/qmtide_bridge.py:757,895`
+- [P0] [FORBIDDEN] **信号通道两个会「静默吞单 / 重复下单」的缺陷（已修，待重启生效）**
+  - **① 共享冲突吞掉整条信号**：`_read_bytes_ctypes` 只申请 `FILE_SHARE_READ`，
+    QMT 侧一持有 `signal.json` 句柄，本机 `os.replace` 就撞
+    `ERROR_SHARING_VIOLATION`，`BrokerBroker._request` 直接计 error 并
+    **return None 丢掉整条信号**（若为 SELL = 静默漏卖）。
+    2026-11-08 实测 **8 次请求里 1 次**触发，而 `bridge_probe` 把它误报成
+    「DUMP 超时」（`dump()` 返回 None 有超时/写失败两条路径，文案只写超时）
+    ⇒ 白查了一轮。修法：掩码改 `FILE_SHARE_READ|WRITE|DELETE`（`SHARE_ALL=0x7`）；
+    引擎侧 `_atomic_write_json` 对 replace 冲突重试 8 次（重写同一 signal_id，
+    桥接按 id 去重，不会重复下单）作纵深防御；探针文案按 stats 分流。
+    钉住：`tests/test_bridge_broker.py::test_ctypes_reader_shares_write_and_delete` /
+    `::test_atomic_write_retries_on_sharing_violation`
+  - **② QMT 重启会重放上一条信号**：`_processed` 只在内存，而 `signal.json` 长期
+    残留最后一条 ⇒ 重启后**再执行一遍**。2026-11-08 02:16 实证：重启后把上一轮
+    的 `QUERY_POSITION` 又跑了一次。查询无害，**但若那条是已成交的 BUY 就是重复
+    买入真实资金**。修法：已成功处理的 id 落盘 `processed_ids.json`，`init` 时
+    恢复，命中即回 `status="duplicate"` 且**不执行**；**失败信号不入黑名单**
+    （允许重启后重试）。钉住：`tests/test_qmtide_bridge.py::TestCrossRestartIdempotency`
+    三例（含「失败可重试」）。
+  — 证据：`qmt_bridge/qmtide_bridge.py::_read_bytes_ctypes/_load_seen/bridge_poll`；
+  `core/broker_bridge.py::_atomic_write_json`；`scripts/bridge_probe.py`
+- [P0] [FORBIDDEN] **bridge 的 `total_asset` 虚增 2.37 倍，切 `broker_qmt_mode="bridge"`
+  前必须确认已修 —— 否则 `max_drawdown` 熔断永久失效**（2026-11-08 02:20 已修，待重启生效）
+  — 实测：`QUERY_ASSET` 返 `total_asset=137,321.50`（取 `m_dTotalAsset` 不存在
+  ⇒ 静默回落 `m_dBalance`），而同一快照 `m_dAvailable`(11,611.49) +
+  `m_dInstrumentValue`(46,251.00) = **57,862.49**；引擎 xtquant 直连 11-06 收盘读到
+  **57,862.57**，差 0.08（佣金精度）⇒ `m_dBalance` 是坏值，137,321.50 用任何字段
+  组合都拼不出来。
+  **危害链**：`engine/event_engine.py:4612` 在 live 模式下**优先采用券商
+  `total_asset`**（`_broker_total_asset`，2026-10-30 P0 修复引入）⇒ 峰值虚高 2.37 倍
+  ⇒ 回撤恒为 ~0 ⇒ `max_drawdown_pct=-0.20` 永不触发；`risk_per_trade=0.040`
+  (5,493 vs 2,315)、`max_single_position_pct=0.40` (54,929 vs 23,145)、
+  `daily_stop_flatten_pct=-6%`(−8,239 vs −3,472 ⇒ 实际强平线挪到 −14.2%) 同步放大。
+  修法：`_total_asset_of()` 券商字段与「cash+市值」差 >1% 即判坏值并回落，同时记
+  一次日志。**这不是 2026-10-30 禁止的那种拼装**：此处 cash 与市值取自
+  **同一个 `get_trade_detail_data` 返回的同一个对象**，是同一时刻快照，
+  不存在跨查询的最终一致性窗口。由
+  `tests/test_qmtide_bridge.py::TestQueries::test_query_asset_rejects_insane_balance` 钉住。
+  **顺带修 DBL_MAX**：`_f()` 原先把 QMT 的「字段不适用」哨兵
+  `1.7976931348623157e+308` 当真值放行（实测 `m_dCurrMargin`/`m_dPreBalance`/
+  `m_dAvgOpenPrice`/`m_dStaticHoldMargin`/`m_dStockLastPrice` 全是它），
+  进入账本后任何运算都变 inf/nan。
+  — 证据：`qmt_bridge/qmtide_bridge.py:_f()` / `_total_asset_of()`；DUMP 原始字段见下条
+- [P1] [SAFE] **桥接两处修正（不改变当前生产，切 bridge 时才生效）**
+  - **幂等守卫的日志炸弹（我引入的，已修）**：`拒绝重放` 分支每 500ms 命中一次，
+    而我让它每次都写日志 + 重写 `result.json` ⇒ 7 分钟 **1,288 行**、把 `boot.log`
+    顶到 200KB 上限**轮转掉一轮诊断历史**（`boot.log.1` 已满 204,875 B）。
+    修法：按 id 去重只报一次；`result.json` 只在答案不同时写。
+    钉住 `test_duplicate_branch_logs_only_once`。
+    ⇒ 纪律：**凡在轮询路径上的日志，默认必须去重**。
+  - **`_q_orders` 的 side 是朝「卖」的 fail-open**：旧代码
+    `side = "BUY" if ot in (23,33,48,49) else "SELL"` —— 认不出就猜 SELL；
+    回落链里含 `m_nOrderPriceType`（**价格类型**）当方向用；且 49（平仓）被算成 BUY。
+    改为只认 `m_nOffsetFlag`，48/23/33→BUY、49/24/34→SELL、其余 `UNKNOWN`。
+    影响面已核：`get_orders` 仅被 `_attribute_order_id` 用于反查委托号，方向只是
+    加分项（`core/broker_bridge.py:344` 自述「宁可取同代码新委托号，胜过返回 None」）。
+    ⚠ 48/49 仍是猜测值，**必须在有真实委托时用 DUMP 校准**（周日 ORDER count=0）。
+- [P1] [INFO] **撤回上一条建议：`broker_qmt_mode` 没有「只切查询」的路径**
+  — `core/broker.py:536` 是**全有或全无**单开关（`"bridge"` / `"XtMiniQmt"`），
+  切了就是查询与下单同时换通道。若确实要「先只切查询」，需另加 flag，
+  属新增能力，需 OWNER 决定是否值得。
+- [P2] [INFO] **`equity_snapshots.drawdown_pct` 系统性低估回撤 3.74pp，且与熔断实际口径不是同一个峰值**
+  — 熔断判定走 `risk/manager.py:158` → `risk._peak_asset` = **67,453.62**
+  ⇒ 11-06 收盘真实回撤 **−14.22%**，距 `max_drawdown_pct=−0.20` 仅剩 **5.78pp**；
+  而权益快照走 `engine/event_engine.py:3889` → `_peak_equity` = **64,636.1**
+  ⇒ 落库 `drawdown_pct=−10.48%`。两个峰值字段差 **4,817 元 / 3.74pp**，
+  方向是「熔断更严、报表更乐观」⇒ **不是资金安全缺陷，但是观测误导**：
+  看快照会以为还有 9.5pp 缓冲。同一事实两份实现，建议统一或至少在快照里并列记录。
+  — 证据：`storage/qmt.db::engine_state(peak_asset,peak_equity)` 与
+  `equity_snapshots(id=10427, drawdown_pct=-0.10479)`；`risk/manager.py:158`、
+  `engine/event_engine.py:3889`
+- [P2] [INFO] **`runMode="1"`（另两个自建策略为 `0`）经交叉验证不是「模拟盘」开关，仍未动**
+  — bridge 读数与引擎 xtquant 直连读数在三项上吻合（现金 11,611.49 vs 11,611.57、
+  持仓数 2 vs 2、持仓市值 46,251.00），说明它连的就是实盘账户。
+  `accountType=2`（普通）而另两个是 `3`（信用），`runMode` 可能编码的是账户/模式组合，
+  语义未定性 ⇒ **保持原值，不试错**。`passorder` 是否真能落到实盘仍未经实单验证。
+- [P2] [INFO] **`m_nOffsetFlag` 的 23/24 买卖判定仍未经实测**：DUMP 时 `ORDER count=0`
+  （周末无在途单），没有可对照的样本。首次真实下单前必须再跑一次 DUMP 校准，
+  否则 `_q_orders` 的 side 可能整体判反。
+- [P2] [INFO] **桥接读到的持仓比 10-29 基线多一个**：现有 `510050.SH` 500 股
+  （成本 2.879、现价 2.902、市值 1,451）+ `300308.SZ` 100 股（成本 501.57、
+  市值 44,800）。引擎 11-06 心跳也是「持仓=2」⇒ 一致，是 11-05~11-06 期间建的仓，
+  不是 bridge 读到了别的账户。工作记忆里的 66,542.31 / 单持仓基线已过时。
+
+- [P0] [FORBIDDEN] **桥接已切到内嵌引擎（`simpleRun=0` 生效），但被「`sys` 无 `argv`」
+  和「`ContextInfo` 挂属性致重复下单」两处绊住，均已修**
+  — 生效证据：`boot.log` 出现 `name='_M_QMTIDE_BRIDGE_0003005' passorder=True
+  stdout=<PythonIOWrapper>`（非 `__main__` ⇒ 内嵌引擎；`passorder=True` ⇒ 已注入），
+  QMT 日志同步出现 `PythonFormula::loadArgvs ... argvs:[account:...,accountType:STOCK,...]`。
+  **致命坑**：`XtClient_Formula_20261108.log:773` —
+  `[pythonformula] run script failed!, msg: AttributeError: module 'sys' has no attribute 'argv'`
+  ⇒ QMT 内嵌解释器的 `sys` 是精简 shim、**没有 `argv`**；我的启动探针第 2 行就读它
+  ⇒ **模块加载中断、`def init` 都没定义到** ⇒ 策略显示「运行中」但什么都不做
+  （`boot.log` 只有 1 行、无 `heartbeat.json`）。修法：探针逐字段容错 + 模块级再加
+  一层 try/except —— 模块加载一抛错，QMT 只打一行 `pyerror` 就放弃。
+  **资金安全坑**：原 `_place_order` 在 `try` 里写 `ContextInfo._bridge_po_form = form`；
+  若 ContextInfo 是 C++ 绑定对象拒绝挂属性，异常会被外层 `except` 当成「这种 passorder
+  形式失败」⇒ 换下一种形式**再发一次单**。改为模块级 `_po_form` + `_set_po_form()`
+  吞异常，并由 `tests/test_qmtide_bridge.py::TestRigidContextInfo` 钉住。
+  **量测卫生坑**：`run_all.py:443` 用 `inspect.getmembers(mod, inspect.isfunction)`
+  ⇒ **只采集模块级 `test_*` 函数，TestCase 类不采集**。本轮 33 个类用例一度贡献 **0 条**
+  而 run_all 仍报绿（同 10-21「两个模块静默消失却全绿」同型）。已在文件末尾加
+  `_expose_case` 薄壳桥接，修后 930 total / 本模块 33 条全部纳入。
+  — 回归 **897 PASS / 33 FAIL / 930**（33 个全是 xtdata `not authenticated`）
+  — 发现于 手动排查 2026-11-08
+
+- [P0] [FORBIDDEN] **桥接「一点运行就停止」真因已定位：QMT 用独立进程方式跑，`init()` 从未被调用**
+  — `XtClient_20261108.log:11894-11902`：`doRun execude cmd: -u "…\QMTIDE_BRIDGE.py"` →
+  存活 **159ms** → `doRun return code:1`。用 QMT 自带 `bin.x64\pythonw.exe`（3.6.8）
+  按同样命令行实跑 **退出码 0**（250ms）；再用 ctypes 复刻「CreateProcess + 无标准句柄」
+  仍为 **0**（`scripts/_repro_qmt_launch.py`）⇒ **不是崩溃，是脚本跑完自己退了**。
+  QMT 有两种执行方式且不等价：A 内嵌引擎（模型交易，调 `init` + 注入 `passorder`）／
+  B 独立进程（`pythonw -u <脚本>`，`__name__='__main__'`、无 `passorder`、`sys.stdout=None`）。
+  本策略是给 A 写的，QMT 却按 B 拉起 ⇒ `C:\pazq_qmt_bridge\` 里连 `heartbeat.json` 都没有。
+  **判别依据**：`config/indexUserConfig.xml:242` 该策略 `simpleRun="1"`，而同目录下用户
+  自建的 4 个实盘策略（`GLM5日内回转`/`信用账户测试DOUBAO`/`日内回转加风险控制AMDLOCAL`/
+  `尾盘闲置资金自动逆回购`）全是 `simpleRun="0"`，只有 QMT 自带示例和本策略是 `1`。
+  **已落地（SAFE 部分）**：策略源码正式入库 `qmt_bridge/qmtide_bridge.py`（此前**未纳入
+  版本控制**，只存在于 QMT 目录）；部署改为 `scripts/deploy_bridge.py`（GBK+CRLF 写出，
+  不再被 QMT 改写成 583 个问号）；加 import 期启动自证 `boot.log` + `sys.excepthook` 落地
+  （pythonw 会丢 traceback）；新增 `tests/test_qmtide_bridge.py` **26/26**
+  （此前该文件零覆盖），`run_all` **864 PASS / 33 FAIL / 897**（33 个全是 xtdata
+  `not authenticated` 的环境失败，与本次无关）。
+  **需 OWNER 动作（FORBIDDEN 部分）**：把该策略运行方式从「简单运行」改成「模型交易/实盘」。
+  **2026-11-08 01:49 已由 OWNER 关停 QMT 后由我改配置**：`simpleRun="1"` → `"0"`
+  （`scripts/qmt_set_simple_run.py --apply QMTIDE_BRIDGE`；逐字节 diff 只变 1 个字节，
+  XML 仍合法，备份 `config/indexUserConfig.xml.bak-20261108-014909`）。
+  剩余动作只有一步：打开 QMT → 模型交易 → 点运行 → 看 `C:\pazq_qmt_bridge\boot.log`
+  是否出现 `[BRIDGE] MODE=embedded init() called`。
+  ⚠ 同一条目里 `runMode="1"`（另两个自建实盘策略都是 `0`）疑似「模拟/实盘」开关，
+  **未改** —— 若 simpleRun 改完仍是 standalone 或成交不下到真实账户，那才是下一个要动的开关。
+  — 发现于 手动排查 2026-11-08
+
+- [P0] [SAFE] **桥接 `passorder` 参数顺序错误：`accountType` 被塞进资金账号位，后面整体错位一格**
+  — 以 QMT 随附可跑示例 `C:\pazq_qmt\python\双均线实盘示例PY.py:77` 为准，正确形式是
+  **11 参、不含 accountType**：`passorder(op, otype, acct, code, prtype, price, vol,
+  name, 1, msg, ContextInfo)`。原实现 `atype_aid_qt` 传的是
+  `(op, otype, atype, aid, code, prtype, price, vol, name, 2, C)` ⇒ `args[2]` 是 `"STOCK"`
+  而不是账号 ⇒ 会在错误账号报单或直接废单。
+  **已修** `qmt_bridge/qmtide_bridge.py::_PASSORDER_FORMS`（改为 `aid_qt` 11 参优先，
+  再回落 12/10/10 参），并由 `tests/test_qmtide_bridge.py::test_sell_uses_11arg_form_
+  with_account_id_in_position_3` 断言 `args[2] == "000000000000"` 且 `!= "STOCK"`。
+  **未修**：`qmt_bridge/qmt_executor.py` 里仍是老写法（该文件**未部署**，仅参考）。
+  要启用它必须先同步本修正，并同步改 `tests/test_bridge_executor_e2e.py:317-321`
+  （`fail_forms` 与最终形式断言会随之变化）。
+  — 发现于 手动排查 2026-11-08
+
+- [P0] [SAFE] **桥接端到端仿真上线：发现并修复「卖出可能重复下单」的资金安全缺陷**
+  — 新增 `tests/test_bridge_executor_e2e.py`（**15/15**）：按**真身**加载
+  `qmt_bridge/qmt_executor.py`（只把 QMT 内建 `passorder`/`cancel`/
+  `get_trade_detail_data` 注入成桩），再用**真实** `BridgeBroker` 驱动 ⇒
+  覆盖的是「真正发货的那份代码」，而非手写 fake。
+  **抓到的缺陷**：`passorder` 没有返回值 ⇒ 执行器只能回 `{"order_id": None}`
+  ⇒ 引擎 `ok=True` 但拿不到委托号 ⇒ **不调用 `_register_pending_order`**
+  （`event_engine.py:3572/3748`）⇒ 卖出侧 `quantity` 不扣减、槽位不释放、
+  `_mark_sold_today` 不置位 ⇒ **下一轮对同一批股票再卖一次**，100 股可能卖成 200 股。
+  **修法**（`core/broker_bridge.py::place_order`）：下单前记 `QUERY_ORDER` 基线，
+  下单后 3s 内按「代码必匹配 + 方向/数量打分」反查新委托号；反查失败打 `ERROR`
+  并返回 None（不伪装成失败 —— 伪装失败会让引擎重发，变成真的重复下单）。
+  — 证据：`core/broker_bridge.py:305-395`、`tests/test_bridge_executor_e2e.py::test_order_id_attribution`
+  — 发现于 桥接部署 2026-11-08 [已修 + 已测]
+
+- [P1] [INFO] **QMT 侧部署已就绪，卡在最后 3 次鼠标点击（我无法代替操作 GUI）**
+  — 执行器已复制到 QMT 策略目录：`C:\pazq_qmt\python\qmtide_bridge.py`（18,602 B）；
+  共享目录 `C:\pazq_qmt_bridge\` 已创建；步骤见 `qmt_bridge/README_DEPLOY.md`。
+  **QMT 重启后策略不会自动恢复**（`Config.xml` 无 autostart 项，实测 grep 零命中）
+  ⇒ 每次重开 QMT 都要在模型交易里手动「运行」一次。
+  探针 `scripts/bridge_probe.py` 在心跳缺失时会直接给出这 3 步提示。
+  — 证据：`qmt_bridge/README_DEPLOY.md`、`scripts/bridge_probe.py:38-46`
+  — 发现于 桥接部署 2026-11-08 [待 OWNER 点 3 下]
+
+- [P0] [SAFE] **行情通道已修复：`TushareQuoteClient` 已落地（零成本方案），全量回归无新增失败**
+  — 新增 `core/tushare_quote.py`（与 `_XtdClient` 同接口）、`scripts/quote_probe.py`（只读探针）、
+  `tests/test_tushare_quote.py`（**29/29**）；`core/qmt_client.py` 降级链改为
+  **xtdata → tushare → mock**（原为 xtdata → mock，等于行情断供时直接落合成价）。
+  实测四只标的逐项对齐：300308 tick 448.0 == 日线 448.0；510050 由新浪兜底 2.902；
+  000001.SH 3649.177 / 000300.SH 4054.277（指数走 `index_daily`）。
+  **零配置生效**：不设 `QMT_QUOTE_SOURCE` 即 auto；`QMT_QUOTE_SOURCE=tushare|xtdata` 可强制。
+  — 证据：`core/tushare_quote.py:1-120`（设计依据）、`scripts/quote_probe.py` 实跑输出
+  — 发现于 行情源选型 2026-11-08 [已交付，待周一盘中验证实时性]
+
+- [P0] [FORBIDDEN] **⚠ 换源后 mock 闸门不再拦截成交，而券商通道仍是断的 ⇒ 周一若直接起引擎，所有买卖会「尝试后失败」**
+  — 判据是 `mock_trade_block_reason`：只有 `data_mode == "mock"` 才拦。
+  行情换到 tushare 后 `data_mode="tushare"` ⇒ **卖出链（含 −18% 硬止损）会真的发起委托**，
+  而 `broker_qmt_mode` 仍是 `"XtMiniQmt"`（xttrader 被 illegal pid 拒连）⇒ 每轮失败重试。
+  **不是资金风险**（下单必失败），但是「以为止损发得出去、其实没发」的假安全感。
+  建议：周一先跑 `scripts/bridge_probe.py` 的 S3 只读联调，通过后再切 `broker_qmt_mode="bridge"`；
+  在此之前**不要**让引擎在 live 下空转，或明确接受「订单失败」这一状态。
+  — 证据：`engine/event_engine.py:71-83`（闸门只认 mock）、`tests/test_tushare_quote.py::test_tushare_mode_passes_mock_gate`
+  — 发现于 行情源选型 2026-11-08 [待 OWNER 裁决]
+
+- [P0] [INFO] **tushare 有实时行情，且本 token 已能调 `rt_tick`（实测可用）；`rt_k` 明确无权限**
+  — 实测 `pro.rt_tick(ts_code='300308.SZ')` 返回当日完整累计 OHLC（open=433.5/high=463.33/
+  low=427.34/price=448/vol/amount），与 `pro.daily` 20261106 逐项吻合 ⇒ **可作 xtdata 日线 bar 替代**；
+  但 `pro.rt_k` 报「您没有接口(rt_k)访问权限」、`pro.rt_etf_k` 同样无权限。
+  实测频次：`rt_tick` **10 次/分钟**、`rt_min` **5 次/分钟**（两者均有访问权，非无权限）。
+  覆盖缺口：**沪市 ETF 不在 `rt_tick` 内**（510050/510300/512880 缺失，深市 159915 有）；
+  `ts.realtime_quote`（新浪源，免积分）可补齐 510050 且含完整当日 OHLC。
+  官方独立权限价目（与积分无关）：实时日线 `rt_k` **200 元/月**（50 次/分、单次全市场）、
+  ETF 实时日线 `rt_etf_k` **200 元/月**、指数实时日线 200 元/月、实时分钟 `rt_min` 1000 元/月。
+  — 证据：`https://tushare.pro/document/1?doc_id=290` 表二 — 发现于 行情源选型 2026-11-08
+  [已裁决：OWNER 选「一分钱不用花」＝ rt_tick + realtime_quote，不购 rt_k / rt_etf_k]
+
+- [P1] [INFO] **行情换源的落地成本已被压到最低：只需实现 4 个方法**
+  — `core/qmt_client.py` 把行情收敛在 `QMTClient` 一个类里，外部只依赖
+  `subscribe / get_ticks / download_history / get_history`（`:475/:478/:481/:491`）。
+  `rt_tick` 字段与 `_normalize()` 的输出契约（`:219-236`）几乎一一对应：
+  `price→lastPrice`、`open_price→open`、`high_price→high`、`low_price→low`、
+  `pre_price→lastClose`、`volume/amount` 同名 ⇒ 新增 `TushareQuoteClient` 即可 drop-in。
+  — 证据：`core/qmt_client.py:210-236,475-495` — 发现于 行情源选型 2026-11-08
+
+> **【2026-11-08 00:55 · 大 QMT 文件桥已交付（方案 A）· 待周一开盘只读联调】**
+> **新增**：`qmt_bridge/qmt_executor.py`（QMT 模型交易里跑，`passorder` 下单）＋
+> `core/broker_bridge.py`（与 `QMTBroker` 同接口）＋ `core/broker.py::_make_broker()` 分流
+> ＋ `tests/test_bridge_broker.py`（**16/16，连跑 3 轮稳定**）＋ `scripts/bridge_probe.py`（只读探针）。
+> **切换开关**（`trading_config.json`，gitignored）：`broker_qmt_mode: "XtMiniQmt" → "bridge"`。
+> **回滚**：改回 `"XtMiniQmt"` 并重启，零残留。
+> **S3 步骤（周一 09:31）**：① QMT 模型交易加载 `qmtide_bridge.py`、选自己的资金账号、实盘、
+> 看到 `[BRIDGE] init done` ② 跑 `python scripts/bridge_probe.py` ③ 先看 DUMP 的 `schema`
+> 校准字段名，再确认 `QUERY_ASSET` / `QUERY_POSITION` 非 None ④ 通了才改开关。
+> ---
+> **[P0] [FORBIDDEN] 提权复测已排除权限**：`admin=True` 仍 `illegal pid 3028`；官方
+> 「C 盘需管理员」那条对本案不适用。两条路都要券商侧动作，故走桥接。
+> **[P0] [INFO] 行情（xtdata）也断了**（00:50 实测）：`服务地址: None` /
+> `get_full_tick: not authenticated`；`~/.xtquant/` 下 6 个实例目录**全无 `xtdata.cfg`**。
+> 时间线：`XtMiniQmt.exe` 00:13:07 退出后，全客户端**不发布**发现配置。
+> ⇒ **桥接只解决交易，行情需另找来源**（`trading_config.json` 已有 tushare token 可作后备），
+> 这是 S3 之后紧接着要定的事。
+> **[P1] [INFO] 全量回归 803 PASS / 33 FAIL / 836**：33 个失败**全部归因环境**
+> （回测取不到数据 `KeyError 'total_return'` / `min() arg is empty`；引擎买入断言消息直书
+> 「行情源已降级为 mock ⇒ 全部买卖被禁止」；`test_qmt_health` 断言里带 `not authenticated` 原文）。
+> 13 个失败模块中 **10 个不引用 broker**（逐个 grep 确认）⇒ 结构上不可能由本次改动引入。
+> **不得拿这 33 个当成本次改动的回归责任。**
+
+
+> **【2026-11-08 00:25 · QMT 2.1.32.0 升级后 xttrader 全线不可用 · 根因已定位到「框架白名单」】**
+> **结论**：不是平安停用 miniQMT、不是模式选错、不是 xtquant 版本不匹配。是 2.1.32.0 新增的
+> **进程/框架白名单**把外部 python 判成 `illegal pid` 直接拒连。
+> **决定性证据**（`C:\pazq_qmt\userdata\log\XtClient_20261108.log`）：
+> `00:18:34 [TC::COrderServiceQuantAdaptor::onConnected] quant session 876636, illegal pid 22420`
+> `00:19:04 ... quant session 760421, illegal pid 15988` —— 两个 session 号与我两次实测逐位对应，
+> 说明**连接到达了服务端并被明确拒绝**（不是没连上、不是超时无响应）。
+> **佐证**：`OrderService.dll` 内含 `m_bUseWhiteList` / `m_bUsePrevWhitelist` / `queryFrameworkWhitelist` /
+> `onQueryFrameworkWhiteList` / `importwhitelist` / `sigFrameworkWhitelistChanged` / `quant session {0}, illegal pid {1}`。
+> **服务端确实在跑**：同一日志 `00:13:28 Allow the XtQuantServer to start.` /
+> `[orderservice] start quant server thread [C:\pazq_qmt\userdata]` / `[quant]XtQuantServer::start lock xtquant=0`，
+> 且 `userdata\` 下队列族完整（`up_queue_xtquant` 75,497,752B / `up_queue_win_xtquant` / `winsemaphore_flag_xtquant`）。
+> **权限未被收回**（推翻我 11-07 的误判）：11-07 23:54 与 11-08 00:10 两次 `[auth]success` 的
+> `m_userPermission` 串**逐字节相同**（2418 字符、50 项非零），含 `algoTrade=1`、`m_nResearchMiniQmt=1`、
+> `m_nLoginLiteMode=1`、`m_nXtTrader=1`、`m_nMiniPython=1`。
+> **「没有极简模式入口」不是缺陷**：`极简` 在 2.1.32.0 全部 UI 资源里**不存在**（扫 config/translations/bin.x64/
+> resource/indexConfig，GBK 与 UTF-8 双编码），该版本只有一个「独立交易」入口；miniQMT 改为由
+> `XtItClient.exe` 经 `CMultiClientManager::doStartProcess` 拉起 `XtMiniQmt.exe`（00:07:03 / 00:10:56 两条）。
+> **[P0] [FORBIDDEN] 需 OWNER 操作**：在 QMT 客户端里找到「白名单 / 框架白名单 / 策略白名单」并把
+> `C:\Users\lisinan\.conda\envs\qmt\python.exe` 加入。UI 里找不到就找平安客户经理要 2.1.17.0 安装包回滚
+> （手上只有 9 个 exe 备份，DLL 未备份，**不能完整回滚**）。
+> **[P1] [INFO] 数据目录已变**：全客户端把 xtquant 服务挂在 `C:\pazq_qmt\userdata`（而非 `userdata_mini`），
+> 且 00:10 那次 `XtMiniQmt.exe` 运行期间 `userdata_mini` **从未起过** xtquant 服务（日志无 `Allow the XtQuantServer`）。
+> ⇒ 白名单放行后，`QMT_USERDATA_PATH` 需指向 `C:\pazq_qmt\userdata`（可用同名环境变量覆盖，`settings.py:74` 支持，**不必改文件**）。
+> **仓位安全**：引擎已停，券商推送 `balance 57,862.49 = 11,611.49 + 46,251.00` 与 11-06 收盘逐项吻合。
+
+
+
 > **【2026-11-03 09:00 完整复盘 · DAILY-REVIEW（OWNER 手动触发，盘前）】** 详细证据见 `reports/DAILY_REVIEW_2026-11-03.md`。
 > 三源估值一致（券商/API **63,207.94** 逐位相同，DB 63,207.98 差 0.04）；昨日改动**四项全绿**（mtime 全部早于 pid 7336 启动 23:04:22，commit 链 `d52c569←60497d8←097b440←3457cb3` 完整）；11-02 心跳 **288 条零空档** ⇒ 排除整机休眠。
 > **本轮 4 个 P0 全部与「风险读数失真」相关**，且**互不重复**：① 止损价可能低报 4.7 倍（影响今日唯一一笔真实下单）② 账本盈亏归零 ③ 回撤预算可累加 ④ 闸门吃了坏指标。
