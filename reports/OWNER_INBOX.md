@@ -684,3 +684,66 @@
 - [P2] [FORBIDDEN] **【复现】510050.SH 日线停在 20261103，落后 3 个交易日，结构性断更确认**：根因仍是 `_daily_codes()` 不含 `VALIDATION_UNIVERSE`。今日零后果（豁免仓退出不走日线），但 `_mark_price_fallback` 第②档会拿 2.884 当日线兜底价，而真收盘 2.902（差 0.62%） — `engine/event_engine.py:671-691` — 发现于 DAILY-REVIEW 2026-11-06
 - [P2] [INFO] **【复现】研究面板末日 2026-10-28，落后 7 个交易日；moneyflow 缓存 2026-10-28、northbound 2026-09-19（≈7 周，snapshot `end_date=20260825 / guard_reason=stale`）** ⇒ 面板与本周边界（含 11-04 +8.74%、11-05/06 两连跌）完全不重叠 — `storage/hist_cache/` · `data/cache/` — 发现于 DAILY-REVIEW 2026-11-06
 - [P1] [INFO] **E 块口径提醒（次日直接可用）：`min_mom` 放到 0.00 也只有 1 只（603893 +4.77%），而它不在 `trend_up`（仅 2 只：002415 −5.9% / 603501 −3.4%）里 ⇒ 进场数仍为 0** ⇒ 双闸同闭，弱市绑定约束是 `trend_up` 不是动量闸门，**不要再提放宽 `min_mom`** — `reports/why_no_entry/DAILY_20261106.md` · `scripts/_why_no_entry_momentum.py` — 发现于 DAILY-REVIEW 2026-11-06
+
+### 2026-11-08 周度 SYNTHESIZE 发现追加
+- [P1] [INFO] **SYNTHESIZE 2026-11-08：全量复验受阻**——miniQMT 周日未登录 ⇒ `get_history` 降级 mock（750 根全戳 2026-11-08），`align_panel` 塌成 1 交易日，`run_backtest` 报 `data too short`。回测/WF 全链路本周不可跑，回测 KPI 沿用 2026-11-01 陈旧值（样本末日 20261030）。行情源恢复后须重跑 `strategy/_verify_live_quality.py`。
+- [P0] [INFO] **live 本周 −9.14%、累计 −13.04%、峰值回撤 −14.22%**：80% 集中 300308（豁免 downtrend，较 MA60 −33.8%），11-04/05/06 连续零成交零信号——D10「下降市不参与」的 live 实证；回撤走向由 OWNER 对 300308 豁免裁决决定。
+- [P0] [FORBIDDEN] **放开 510050 退出豁免**滞留 3 天（11-05→11-08）：`config/settings.py` 文件级写保护，Agent 落不了盘，需 OWNER 一条 `cp` + 重启（改动已备好并验证）。
+- [P2] [INFO] **北向缓存 stale 75 天（末端 2026-08-25）+ 研究面板 stale 7 周（末端 2026-10-28）**：09-19 落盘的 `northbound_mode="gate"` 跑在陈旧数据上；回测样本不含本周弱市段（含 11-04 +8.74%、11-05/06 连跌）。
+- [P2] [INFO] **归集后首整周循环质量**：DAILY-REVIEW 应跑 4（11-03/04/05/06，11-02 槽位早于任务建档不计漏跑）/ 实跑 4 / 停摆 0；无自我停机/未运行；INBOX 信息密度未降，归集未丢信息。
+
+### 2026-11-08 双功能区优化（OWNER 授权「区域二一定不要影响实盘」）
+
+- [P0] [INFO] **★ 明天（11-09）开盘 live 仍会零成交 —— 四个字段同时错，单独看每个都像小问题**：
+  `scripts/zone_preflight.py` 实跑照出 `data_mode=mock`（`mock_trade_block_reason()` 首行
+  `if data_mode != "mock": return None` ⇒ **mock 下所有买卖被拦**）、`broker_mode=disconnected`
+  （无法下单）、`halted=true`（`daily_stop -9.32%`）、`asset_trusted=false`（面板 100 万不是券商真值）。
+  四个里任意一个都足以让成交量为零，`halted` 即便明天按 `halt_recover_days` 自动翻转，前两个仍在。
+  ⇒ **要恢复 live 交易必须重启 live（OWNER 动作）**：miniQMT 登录 → 重启 → `preflight` 复验。
+  Agent 未动 live 任何配置、未重启 —— 依 OWNER「区域一不要影响」。
+  — 证据：`python scripts/zone_preflight.py`（PASS 19 / WARN 1 / **FAIL 4**，四条全在实盘区）
+  — 发现于 双功能区优化 2026-11-08 — `[待 OWNER]`
+
+- [P0] [SAFE] **[已修 b4f21d4] paper 确实在写 live 的文件 —— 候选池已被覆写（毫秒级实证）**：
+  `storage/dynamic_universe.json` mtime `2026-11-08 20:09:43.394506` 与 paper 日志
+  `20:09:43,394 DynamicUniverse 刷新完成` **毫秒级吻合** ⇒ paper 覆写了 live 的候选池。
+  `active_pool` 决定 live 评估/买入哪些票，而 paper 走 tushare、live 走 xtdata，两边池子本可不同；
+  一次 paper 刷新失败写半截 JSON，live 重启就读到空池/残池，**且日志不报任何错**。
+  根因：DB 分库只解决了 `engine_state`，缓存文件仍硬编码 `BASE_DIR/"storage"`。
+  已改 5 处走 `core/zone.py::zone_storage_dir()/zone_data_cache_dir()`，
+  **live 分支逐位等于改造前字面量**（`tests/test_zone_shared_paths.py` 7 例钉死）。
+  ⚠ 最隐蔽的是 `northbound_hsgt.json`（**单文件**，两进程同写会读到半截 JSON）。
+  — 证据：`docs/ZONE.md::七` · `data/{dynamic_universe,hist_cache,earnrev_cache,moneyflow_cache,northbound_cache}.py`
+  — 发现于 双功能区优化 2026-11-08 — `[已修 b4f21d4]`
+
+- [P1] [INFO] **修完越界后的功能回归：paper 候选池塌成 0 只，信号层直接空转（面板却显示「运行中」）**：
+  隔离后 paper 不再蹭 live 的池子，首启 `Tushare 返回空` ⇒ `动态候选池: 0 只活跃`。
+  已做一次性迁移 `storage/dynamic_universe.json → storage_paper/dynamic_universe.json`
+  （读 live、写 paper，live 文件 mtime 未变），实测恢复 `375 只 / 活跃 30`、漏斗 `37→3→0→0→8`。
+  `refresh()` 失败时**不清空已有池**（只在成功时赋值），所以一次有效缓存即可顶住。
+  ⇒ **若日后有人删掉 `storage_paper/dynamic_universe.json`，paper 会静默 0 只空转**，
+  `preflight` 的「候选池」检查就是为这个场景加的。
+  — 证据：`logs_paper/quant_system.log`（`动态候选池: 0 只活跃` → 迁移后 `30 只活跃`）
+  — 发现于 双功能区优化 2026-11-08 — `[已处置]`
+
+- [P1] [INFO] **paper 需要 OWNER 手动持久化启动（会话级后台任务会被回收）**：
+  当前 paper 由本会话的后台任务拉起（pid 28968 @5001）。会话结束后可能被回收 ⇒ 明天开盘
+  paper 不在。**明早 09:00-09:25 双击 `scripts\run_paper.bat`** 即可（自带 `QMT_ZONE=paper`、
+  独立 pid 文件；若已有实例在跑，新实例会被单例锁挡下退出，不会双开）。
+  ⚠ **绝不能给 paper 配 guardian**：`health_check.py:288` 只探 5000、只拉无参 `main.py --web`
+  ⇒ 会把 paper 拉成**第二个 live 引擎**。
+  — 证据：`scripts/run_paper.bat` · `docs/ZONE.md::三`
+  — 发现于 双功能区优化 2026-11-08 — `[待 OWNER]`
+
+- [P2] [INFO] **paper 重启后首个 `/api/snapshot` 耗时 13.6s（冷启动一次性），热身后 0.01s**：
+  冷启动要网络拉 37 只日线。看板 `SNAP_TIMEOUT=3s` ⇒ 重启后约 15 秒内 panel 会短暂显示
+  「区域离线」，属显示误判不是引擎故障。开盘前重启 paper 时请知悉这一点。
+  — 证据：`/api/snapshot` 连测（13.59s → 0.01/0.00/0.02/0.00s）
+  — 发现于 双功能区优化 2026-11-08 — `[跟踪中]`
+
+- [P2] [INFO] **live 在本轮优化中零改动（自证）**：未重启、未改 `config/settings.py`、
+  未切 `broker_qmt_mode`；`storage/qmt.db` 与 `storage/dynamic_universe.json` 的 mtime
+  全程未变（后者停在 20:09:43.394506），live pid 18256 与 5000 端口持续在线。
+  唯一对 live 的读取是 `mode=ro` 只读查询（看板与 preflight）。
+  — 证据：`stat` 前后对照 + `zone_preflight` 的「越界检查」行（live 池末次写入早于 paper 启动）
+  — 发现于 双功能区优化 2026-11-08 — `[已核实]`
