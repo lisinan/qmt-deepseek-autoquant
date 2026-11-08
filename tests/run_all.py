@@ -411,6 +411,14 @@ def _collect_tests():
             #   幂等不重复下单、price<=0 拒单、以及**委托号反查**
             #   （passorder 无返回值时若拿不到 order_id，卖出会重复下单）。
             "tests.test_bridge_executor_e2e",
+            # 【2026-11-08 zone】live / paper 双实例隔离守卫。此前 `_singleton_pid_path()`
+            #   硬编码 `BASE_DIR/"logs"`，与 `main.PID_FILE` 是同一事实的两份实现；
+            #   双实例下两者不同步的两种错配都是致命的（paper 起不来 / **实盘自杀**）。
+            #   钉死：live 分支逐项等于既有常量且只写 QMT_ZONE；paper 与 live 的
+            #   DB/日志/端口/复位目录互不相交；`QMT_ZONE=paper` 时 `_make_broker()`
+            #   构造期返回拒单桩且**不实例化** QMTBroker/BridgeBroker；桩的查询返回
+            #   None 而不是 []（[] 会清空本地账本）；zone 注入必须早于 engine 导入。
+            "tests.test_zone_isolation",
             # 【2026-11-08】QMT 侧**策略本体** qmt_bridge/qmtide_bridge.py 的端到端。
             #   这是真正被部署到 C:\pazq_qmt\python\QMTIDE_BRIDGE.py 的那份文件，
             #   此前零覆盖（test_bridge_executor_e2e 验的是另一份 qmt_executor.py）。

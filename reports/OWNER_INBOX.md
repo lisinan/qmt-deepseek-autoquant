@@ -18,6 +18,58 @@
 
 ## OPEN（按优先级）
 
+- [P0] [INFO] **live 引擎当前看不见真实持仓，账上凭空 100 万**（2026-11-08 19:50）
+  — `GET /api/snapshot` 实读 `total_asset=1000000.0 / cash=1000000.0 / positions={} /
+  exec_mode=live / data_mode=mock / broker_mode=disconnected`，同时
+  `risk.peak_asset=67453.62`、`risk.asset_trusted=false`、`risk.asset_basis=unknown`。
+  成因：live 不恢复本地账本（`event_engine.py:568-569` 传 `restore_ledger=False`），
+  `self._cash = INITIAL_CASH`（`:450`）之后再没被改写；券商断链时 `_total_asset()`
+  回落到本地拼装（`:4612-4615`）。**唯一护栏是 `asset_trusted=false` 那道自检**，
+  以及 `:2132 risk_asset is None ⇒ 跳过判定/不落盘`。
+  **今天没出事，是因为 `data_mode=mock` 让 mock 闸门拦住了买卖，不是因为它不想买。**
+  — 发现于 双实例可行性核查（主理人亲测）2026-11-08 — `[待 OWNER]`
+
+- [P0] [INFO] **live 引擎今日空转 10 小时，零交易能力**（2026-11-08 19:50）
+  — pid 18256 `python.exe main.py --web`，启动 `2026-11-08 09:39:42`，
+  **无 `--mode`、无 `--init-positions`** ⇒ 由 guardian 拉起而非 `run_live.bat`。
+  `XtMiniQmt.exe` **不在进程表**（只有 `XtItClient.exe` pid 3688）；日志
+  `Engine 启动: mode=single data=mock broker=disconnected exec=live codes=38`，
+  `XtQuantTrader.connect rc=-1` 第 580 次重连失败；`halted=true halt_reason="daily_stop -9.32%"`。
+  ⇒ **附带结论：live 靠 guardian 自愈重启会常态丢掉 `--init-positions`**。
+  — 发现于 双实例可行性核查 2026-11-08 — `[待 OWNER]`
+
+- [P0] [FORBIDDEN] **桥接已武装待命，但 `broker_qmt_mode` 仍是 `XtMiniQmt`**
+  （2026-11-08 19:50）
+  — `trading_config.json` mtime **2026-08-24 23:35**（从没改过），`broker_qmt_mode="XtMiniQmt"`
+  ⇒ `core/broker.py:613-622` 走 QMTBroker(xttrader) ⇒ 必 rc=-1；
+  而 `C:\pazq_qmt_bridge\boot.log` 显示 QMT 内已 `MODE=embedded init() called
+  (passorder available)`、account 已注入、心跳新鲜 ⇒ **真实资金通道是「武装待命」状态**。
+  ⇒ 今天唯一阻止它动真钱的是 `data_mode=mock`。
+  **切 `"bridge"` 需 OWNER 执行 + 重启**（改完重启窗口内 live 无监控）。
+  — 发现于 双实例可行性核查 2026-11-08 — `[待 OWNER]`
+
+- [P1] [FORBIDDEN] **`_shutdown()` 会把内存里的 100 万写进 `engine_state`**
+  （2026-11-08 19:55）
+  — `engine/event_engine.py:4707-4712` 无条件 `_save_engine_state()`，而当前 live 进程
+  内存里是 `cash=1,000,000 / positions=[]`。`peak_asset` 仍是 67,453.62 故不会假熔断，
+  但账本字段会被污染，之后任何 paper 若误连该库会继承它。
+  ⇒ **在 `QMT_DB` 分库 + 该缺陷修好之前，不要让当前 live 进程优雅退出。**
+  — 发现于 双实例可行性核查 2026-11-08 — `[待 OWNER]`
+
+- [P1] [SAFE] **zone 双实例隔离已落地并通过全量回归**（2026-11-08 20:00）
+  — `core/zone.py`（新）+ `main.py --zone` 注入（必须早于 engine 导入，因为
+  `event_engine.py:38` 是模块级 `from config.settings import LOG_DIR`、
+  `STOP_SENTINEL:1419` 是类属性导入时求值）+ `core/broker.py::_NoTradeBroker` 拒单桩
+  + `engine/event_engine.py:1436 _singleton_pid_path` 改走 `LOG_DIR`（原硬编码
+  `BASE_DIR/"logs"`，与 `main.PID_FILE` 是同一事实两份实现，不同步会导致**实盘自杀**）
+  + `:630` 复位标志改由 DB 路径推导（原 `Path(LOG_DIR).parent` 会落到 live 的 storage，
+  且同函数 `clear_equity_before()` 会删掉 live 的快照）+ `logs_paper/ storage_paper/` 忽略
+  + `scripts/run_paper.bat` + `tests/test_zone_isolation.py`（12 例，已注册 run_all）。
+  实测：`--zone paper --snapshot` ⇒ `exec_mode=paper / broker_mode=paper_no_trade /
+  cash=1000000 / data_mode=tushare`，而 `storage/qmt.db` 与 `logs/engine.pid` mtime
+  **一秒未动**、`logs/` 文件数不变（174）、live 5000 端口正常。
+  — 发现于 双实例改造 2026-11-08 — `[待重启生效]`
+
 - [P0] [SAFE] **「本机发信号 → QMT 执行 → 回结果」闭环已跑通**（2026-11-08 02:12）
   — 判定线三条全部命中，`boot.log` 原文：
   `[BRIDGE] poll #1 alive` / `[BRIDGE] file reader=ctypes 可用（上一次=<未定>）` /

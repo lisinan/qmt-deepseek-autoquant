@@ -1,0 +1,193 @@
+# 双功能区（zone）：live 实盘区 / paper 观察区
+
+> 2026-11-08 建立。OWNER 决定：项目分成两个功能区，**两个实例可同时在跑**，
+> 功能互相隔离。paper 区要真实行情，但绝不允许下真实单。
+
+---
+
+## 一、两个区各自是干什么的
+
+| | **live 区** | **paper 区** |
+|---|---|---|
+| 定位 | 唯一交易区，真实资金 | **AI 产业链热点/行业观察台** |
+| 起始资金 | 券商实际（当前 5.78 万） | **100 万**（`INITIAL_CASH`） |
+| 目的 | 执行策略、承担盈亏 | 看信号层跑得对不对、哪条细分链在走强、哪些标的在出信号 |
+| 下单 | 真实下单 | **结构上不可能**（三层阻断，见 §四） |
+| 行情 | xtdata → tushare → mock | 同一条链（刻意不设 mock：观察台必须在真实价上评估） |
+
+### 为什么 paper 用 100 万反而合理
+
+live 的真实行为被一条硬约束主导：**一手 100 股门槛**。5.78 万现金下 41 只候选
+只有 13 只买得起一手，这决定了候选池、决定了实际持仓数、决定了暴露。
+
+paper 在 100 万下**根本遇不到这个约束**，所以它能把 AI 链条上的标的都跑起来
+—— 这正是「观察台」要的。
+
+**代价（必须记住）**：paper 验证的是**信号层 / 逻辑层**，不是 live 的资金可执行性。
+绝对收益、持仓数量、暴露比例都**不可与 live 横比**，只能看比率的形状。
+
+---
+
+## 二、两个区的全部隔离点
+
+| 项 | live | paper | 由谁决定 |
+|---|---|---|---|
+| 账本 DB | `storage/qmt.db` | `storage_paper/qmt.db` | `core/zone.py` → `QMT_DB` |
+| 日志 | `logs/` | `logs_paper/` | `main.py` 注入 `config.settings.LOG_DIR` |
+| 系统提示 | `logs/notices.log` | `logs_paper/notices.log` | `QMT_NOTICES_LOG` |
+| 单例 pid | `logs/engine.pid` | `logs_paper/engine.pid` | `LOG_DIR` |
+| 停止哨兵 | `logs/STOP_ENGINE` | `logs_paper/STOP_ENGINE` | `LOG_DIR` |
+| Web 端口 | 5000 | 5001 | `--port` 默认随 zone 走 |
+| 交易通道 | 按 `trading_config.json` | `_NoTradeBroker` 拒单桩 | `QMT_ZONE` |
+| 复位标志 | `storage/.reset_paper.flag` | `storage_paper/.reset_paper.flag` | 由 DB 路径推导 |
+
+`engine_state` 是 `CHECK(id=1)` 单行表，**天然只能靠分库隔离**。
+
+### 为什么必须分库（资金安全级，不是洁癖）
+
+`engine_state` 是单行表，没有 mode 列。若共用库：
+
+```
+paper 的 peak_asset 量级        ≈ 1,000,000
+live 真值 total_asset           =    57,862.57
+live 下次重启在 event_engine.py:3943 读到 peak_asset = 1,000,000
+⇒ drawdown = (57,862.57 − 1,000,000) / 1,000,000 = −94.21%
+```
+
+`max_drawdown_pct = −0.20`，**−94.21% 直接击穿** ⇒ 熔断 + 强平真实持仓。
+而且 live 的恢复分支在 `event_engine.py:3969` 提前 `return`，**跳过了
+`:3995` 的 `_sanitize_restored_peaks()`** —— 没有任何夹紧保护。
+
+这正是 2026-10-29 切 live 时踩过的同一个机制（当时要手工重置 `peak_asset`
+并归档删除 paper 权益快照，否则首轮 −93% 回撤直接熔断卖掉真实持仓）。
+
+---
+
+## 三、怎么起、怎么停
+
+### 启动
+
+```bat
+:: live（原有方式不变；run_live.bat 不带 --zone，缺省就是 live）
+cmd /c C:\Users\lisinan\Desktop\qmtIDE-deepseek\scripts\run_live.bat
+
+:: paper（新增）
+cmd /c C:\Users\lisinan\Desktop\qmtIDE-deepseek\scripts\run_paper.bat
+```
+
+`run_paper.bat` 只设 `QMT_ZONE=paper` 与 `QMT_QUOTE_SOURCE=auto`，其余路径全部由
+`core/zone.py` 推导 —— **单一事实源，不在 bat 里重复写 `QMT_DB`**，避免两处漂移。
+
+**建议错峰**：首次预热 46 只 1m 历史约 7.5 分钟，两个实例同时预热会双倍 IO。
+建议 live 先起、预热完再起 paper。
+
+### 停止（只停一个，不互相影响）
+
+```bat
+:: 停 paper
+python.exe main.py --zone paper --stop
+
+:: 停 live
+python.exe main.py --stop
+```
+
+哨兵与 pid 都分别在各自的 zone 目录下，`--stop` 不会误杀另一个区。
+
+---
+
+## 四、paper 为什么不可能下真实单（三层，互相独立）
+
+1. **构造期换桩**：`core/broker.py::_make_broker()` 见到 `QMT_ZONE=paper`
+   直接返回 `_NoTradeBroker`，**连 `xtquant.xttrader` 都不 import**，也不会构造
+   `BridgeBroker`（不往 bridge root 写 `signal.json`）。该函数在模块导入期执行一次
+   （`qmt_broker = _make_broker()`），此后全进程共用 ⇒ 单点定型、无法中途翻案。
+2. **起动即拒**：`main.py` 在 `zone=paper` 下拒绝 `--mode live` 与 `--init-positions`，
+   并在缺省时**强制 `mode=paper`**（所以 `--zone paper` 单独用也安全）。
+3. **调用点本来就 live-gated**：`exec_mode != "live"` 时
+   `event_engine.py:3532`（BUY）/ `:3733`（SELL）的 `qmt_broker.place_order` 不执行，
+   走 `:3571` / `:3761` 的本地记账分支。
+
+桩还有两条硬约束，都能对应到真实事故口径：
+
+- 查询一律返回 **`None`** 而**不是 `[]`**。`[]` 在 `_sync_broker_positions` 里表示
+  「券商确认空仓」，会清空本地账本（2026-11-02 事故口径）；`None` 才表示「本轮不可用」。
+- `place_order` 永远 `ok=False` 且 `logger.error` 留证，可审计。
+
+---
+
+## 五、实现要点（改这块代码前必读）
+
+### 5.1 zone 注入必须早于 engine 导入
+
+`engine/event_engine.py:38` 是模块级 `from config.settings import ... LOG_DIR`；
+`STOP_SENTINEL`（`:1419`）是**类属性、导入时求值**；`web/routes.py:129` 也是
+`from config.settings import LOG_DIR`。
+
+⇒ 只有在 `from engine.event_engine import EventEngine` **之前**改写
+`config.settings.LOG_DIR`，才能让一个进程内的日志/哨兵/pid 整体落到 zone 目录。
+
+`tests/test_zone_isolation.py::test_main_applies_zone_before_importing_engine`
+用源码顺序把这个不变量钉住 —— 一旦有人把注入挪到 import 之后，代码照样能跑、
+测试照样绿，但 paper 的日志/哨兵会静默落回 live 目录。
+
+### 5.2 `_singleton_pid_path` 必须走 LOG_DIR（改错了会打死实盘）
+
+`engine/event_engine.py:1436` 原实现硬编码 `BASE_DIR/"logs"/"engine.pid"`，
+与 `main.py:78 PID_FILE` 是**同一事实的两份实现**。双实例下两种错配：
+
+| 改法 | 后果 |
+|---|---|
+| 只改 `main.PID_FILE` | paper 每轮读到 live 的 pid ⇒ 判定「我已非持有者」⇒ **paper 自己退出** |
+| 只改 `_singleton_pid_path` | paper 把自己的 pid 写进 `logs/engine.pid` ⇒ **live 下一轮主动退出（实盘自杀）** |
+| 两处都改 | 成立 |
+
+### 5.3 复位标志由 DB 路径推导，不是 LOG_DIR
+
+`_apply_pending_reset` 原用 `Path(LOG_DIR).parent / "storage"`，隐含假设
+「LOG_DIR 的父目录就是 BASE_DIR」。双实例下这会把 paper 的复位标志写进 **live 的**
+storage，而同一函数后半段的 `clear_equity_before()` 会**删掉 live 的权益快照**。
+已改为 `Path(self.storage.db_path).parent`（live 下逐位相同）。
+
+### 5.4 `bridge_root` 无法按实例隔离（已知限制）
+
+`QMT_BRIDGE_ROOT` 全仓唯一读取点是 `qmt_bridge/qmtide_bridge.py:77`（**QMT 进程内部**），
+引擎侧零引用。引擎侧读的是 `core/broker_bridge.py:94` 的 `cfg.get("bridge_root")`
+← `TRADING_CONFIG_FILE = BASE_DIR/"trading_config.json"`（`settings.py:110` 硬编码、无 env 覆盖）。
+
+⇒ 若两个实例都进 `broker_qmt_mode="bridge"`，**必然共用同一个 `signal.json`，无法隔离**。
+paper 靠 `_NoTradeBroker` 不从这条路过，所以当前不构成风险；将来若要让 paper 也走桥接，
+必须先给 `bridge_root` 加 per-instance 覆盖。
+
+---
+
+## 六、验收清单
+
+```
+1. curl 127.0.0.1:5001/api/snapshot  ⇒ exec_mode=paper / broker_mode=paper_no_trade
+2. curl 127.0.0.1:5000/api/snapshot  ⇒ exec_mode=live（不受影响）
+3. storage_paper/qmt.db 存在；storage/qmt.db 的 mtime 不变
+4. logs_paper/quant_system.log 在增长；logs/quant_system.log 只反映 live
+5. logs_paper/engine.pid 的 pid ≠ logs/engine.pid 的 pid
+6. python tests/run_all.py 全绿（除 xtdata 环境类失败）
+```
+
+---
+
+## 七、回滚
+
+代码层：`git revert` zone 相关 commit。live 分支零赋值，顺序无关。
+
+运行层：**不带 `--zone`** 启动即回到改造前行为（zone 缺省 live），
+然后删掉 `storage_paper/` 与 `logs_paper/` 两个目录即可。**不会影响 live 账本。**
+
+---
+
+## 八、已知未决
+
+| # | 内容 | 影响 |
+|---|---|---|
+| 1 | xtdata 双进程同时订阅未实测 | 若冲突，paper 自动退到 tushare（仍真实行情，代价是抢 live 的 token 频次） |
+| 2 | `scripts/reset_paper_account.py:31-32` 硬编码生产库与 `logs/engine.pid` | **不要对 paper 执行该脚本**，等它加 `--db/--pid` |
+| 3 | `health_check.py` 只探 5000、只拉起无参 `main.py --web` | guardian 看不见 paper。**不要给 paper 配 guardian**，否则会被拉成 live |
+| 4 | `ensure_engine()` 无条件 `return True`（`health_check.py:293`） | 「尝试启动」被当成「启动成功」，属既有缺陷 |
+| 5 | `_credible_peak_equity()` 与 `equity_snapshots` 的 `MAX(ts)` 无 mode 过滤 | 分库后不再互相污染，同库仍会 |

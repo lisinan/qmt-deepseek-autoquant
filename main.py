@@ -73,7 +73,29 @@ if not _interpreter_ok():
         "  （设置环境变量 QMT_IGNORE_INTERPRETER_CHECK=1 可跳过此检查）\n\n"
     )
 
-from engine.event_engine import EventEngine
+# ============================================================================
+# zone 解析 —— 必须早于 `from engine.event_engine import EventEngine`
+# ============================================================================
+# 为什么必须在这里：`engine/event_engine.py:38` 是模块级
+# `from config.settings import ... LOG_DIR`，`STOP_SENTINEL` 更是**类属性、
+# 导入时求值**（event_engine.py:1419）；`web/routes.py:129` 与
+# `engine/event_engine.py` 内部也都是 `from config.settings import LOG_DIR`。
+# 所以只有在 import engine **之前**改写 `config.settings.LOG_DIR`，才能让
+# 一个进程内的「日志 / 停止哨兵 / 单例 pid」整体落到 zone 目录。
+#
+# live 分支：`zone_config("live").log_dir` 与 settings 的 LOG_DIR 逐位相等，
+# 下面的 if 永不成立 ⇒ **live 的路径、日志、pid、哨兵全部逐位不变**。
+from core.zone import apply_zone, resolve_zone  # noqa: E402
+
+ZONE = resolve_zone()
+ZONE_CFG = apply_zone(ZONE)
+if Path(ZONE_CFG.log_dir) != Path(LOG_DIR):
+    import config.settings as _settings
+
+    _settings.LOG_DIR = Path(ZONE_CFG.log_dir)  # 供 engine/notices/web 的 from-import
+    LOG_DIR = Path(ZONE_CFG.log_dir)            # 本模块绑定（下面 78-79 行随之生效）
+
+from engine.event_engine import EventEngine  # noqa: E402
 
 PID_FILE = LOG_DIR / "engine.pid"
 STOP_SENTINEL = LOG_DIR / "STOP_ENGINE"
@@ -500,6 +522,11 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="qmtIDE-deepseek 量化交易入口")
     ap.add_argument("--ticks", type=int, default=0,
                     help="最多跑多少轮（0=无限）")
+    ap.add_argument("--zone", choices=["live", "paper"], default=None,
+                    help="实例分区：live=实盘（默认，真实资金）/ "
+                         "paper=平行观察台（独立 DB/端口/日志，禁止真实下单）。"
+                         "★ 必须在导入 engine 前确定，故由 main.py 顶部手工解析 argv；"
+                         "此处这个参数只用于与已解析值交叉校验。")
     ap.add_argument("--mode", choices=["paper", "live"], default=None,
                     help="执行模式（覆盖 EXECUTION_MODE）")
     ap.add_argument("--strategy", choices=["single", "portfolio"], default=None,
@@ -512,8 +539,8 @@ def main() -> int:
                     help="（与 --web 合用）不启动 engine，只跑 Web")
     ap.add_argument("--init-positions", action="store_true",
                     help="live 模式启动时从 broker 同步真实持仓")
-    ap.add_argument("--port", type=int, default=WEB_PORT,
-                    help="Web 端口")
+    ap.add_argument("--port", type=int, default=ZONE_CFG.web_port,
+                    help=f"Web 端口（默认 {ZONE_CFG.web_port}，随 zone 走）")
     ap.add_argument("--host", default=WEB_HOST,
                     help="Web 监听地址")
     ap.add_argument("--stop", action="store_true",
@@ -546,6 +573,32 @@ def main() -> int:
     if (args.db_stats or args.prune_db is not None or args.prune_db_before
             or args.purge_test_stubs or args.vacuum_db):
         return _db_maintenance(args)
+
+    # ------------------------------------------------------------------
+    # zone 一致性硬校验
+    # ------------------------------------------------------------------
+    # 设计取舍：宁可起动失败，也不要「以为在模拟、其实在实盘」。
+    # zone 已在 import engine 前定型（见文件顶部），argparse 的 --zone 只能核对，
+    # 不能用于重新决定 —— 否则 LOG_DIR / STOP_SENTINEL 已经绑死在旧 zone 上。
+    if args.zone and args.zone.lower() != ZONE:
+        ap.error(f"--zone={args.zone} 与进程已定型的 zone={ZONE} 不一致。"
+                 f"zone 必须在导入 engine 前确定，请只用 --zone 传参（不要再用环境变量覆盖）")
+    if ZONE == "paper":
+        if (args.mode or "").lower() == "live":
+            ap.error("zone=paper 禁止 --mode live：交易通道已被 _NoTradeBroker 硬阻断，"
+                     "起动没有意义且会污染实盘心智")
+        if args.init_positions:
+            ap.error("zone=paper 禁止 --init-positions：会把真实券商持仓灌进观察台账本")
+        if not args.mode:
+            # 让 `--zone paper` 单独使用也安全，不必依赖启动器记得补 --mode
+            args.mode = "paper"
+    elif (args.mode or "").lower() == "paper":
+        print(f"[zone] 警告：zone=live + --mode paper ⇒ 交易将以 mode=PAPER 写进"
+              f" **生产库**（{ZONE_CFG.db_path}）。要做平行观察台请改用 --zone paper。",
+              file=sys.stderr)
+    if ZONE == "paper" and args.web and args.port == WEB_PORT:
+        ap.error(f"zone=paper 不能占用 live 端口 {WEB_PORT}；"
+                 f"请用 --port {ZONE_CFG.web_port}（或省略，默认已随 zone 走）")
 
     # 单实例互斥：只有真正会长跑的模式才需要（快照是一次性的）
     long_running = not args.snapshot

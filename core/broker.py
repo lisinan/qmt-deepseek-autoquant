@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import threading
 import time
 from pathlib import Path
@@ -103,6 +104,82 @@ class _BrokerDisconnectCallback:
 
     def on_cancel_error(self, cancel_error):
         pass
+
+
+class _NoTradeBroker:
+    """zone=paper 的拒单桩：接口与 QMTBroker / BridgeBroker 齐平，行为是「一律不下单」。
+
+    为什么要它，而不是「靠 exec_mode 约定」：`exec_mode=paper` 时
+    `engine/event_engine.py:3532` / `:3733` 的两处 `qmt_broker.place_order` 本来就不
+    执行，所以桩在功能上是第二道闸。但第二道闸的价值在于**它把闸门从「调用点」搬到
+    「构造点」**：桩一旦就位，本进程连 `xtquant.xttrader` 都不会 import，也不会有
+    任何代码路径能把单子送进券商或文件桥。这消除的是「日后有人在 paper 分支里加一句
+    下单」这类回归风险。
+
+    三条硬约束，每条都对应一次真实事故口径：
+
+    1. ``place_order`` **永远**返回 ``ok=False``，并 logger.error 留证（可审计）。
+    2. ``get_positions`` / ``get_trades`` / ``get_orders`` / ``get_asset`` 一律返回
+       ``None``（查询失败），**绝不返回 ``[]``**。
+       为什么关键：``[]`` 在 ``_sync_broker_positions`` 里表示「券商确认空仓」，
+       会销毁本地账本（2026-11-02 事故口径，见 ``broker.py`` 的 SYNC_EMPTY_CONFIRM
+       注释）；``None`` 才表示「本轮查询不可用，不要动账本」。
+       实际上 ``is_connected`` 恒为 False 已让 ``_sync_broker_positions`` 在
+       ``event_engine.py:4194`` 早退，这里是双保险。
+    3. ``connect()`` 返回 False 且不 import xtquant。
+    """
+
+    def __init__(self, reason: str = "zone=paper: 真实下单被硬阻断") -> None:
+        self._reason = reason
+        self._on_disconnect = None
+        self._on_reconnected = None
+        logger.warning("[BROKER] zone=paper：交易通道=%s（本进程不可能下真实单）",
+                       reason)
+
+    # ---- 状态 ----
+    @property
+    def is_connected(self) -> bool:
+        return False
+
+    @property
+    def mode(self) -> str:
+        return "paper_no_trade"
+
+    # ---- 生命周期 ----
+    def connect(self, force: bool = False) -> bool:
+        return False
+
+    def disconnect(self) -> None:
+        return None
+
+    def set_on_disconnect(self, cb) -> None:
+        self._on_disconnect = cb
+
+    def set_on_reconnected(self, cb) -> None:
+        self._on_reconnected = cb
+
+    # ---- 交易（一律拒绝，且留证）----
+    def place_order(self, code, side, quantity, price, account="cash", **kw):
+        logger.error("[BROKER] zone=paper 拦截下单 %s %s ×%s @%s（未发出）",
+                     code, side, quantity, price)
+        return {"ok": False, "reason": self._reason, "order_id": ""}
+
+    def cancel_order_stock(self, account="cash", order_id=None, **kw):
+        logger.error("[BROKER] zone=paper 拦截撤单 %s（未发出）", order_id)
+        return {"ok": False, "reason": self._reason}
+
+    # ---- 查询（返回 None = 不可用，绝不用 [] 冒充「确认空仓」）----
+    def get_asset(self, account="cash"):
+        return None
+
+    def get_positions(self, account="cash"):
+        return None
+
+    def get_trades(self, account="cash"):
+        return None
+
+    def get_orders(self, account="cash"):
+        return None
 
 
 class QMTBroker:
@@ -529,6 +606,13 @@ class QMTBroker:
 #
 # 回滚：把 trading_config.json 的 broker_qmt_mode 改回 "XtMiniQmt" 并重启。
 def _make_broker():
+    # ★ zone=paper：交易通道在**构造期**就被换成拒单桩 —— 连 xtquant.xttrader 都
+    #   不会 import，也不会构造 BridgeBroker（不往 bridge root 写 signal.json）。
+    #   行情走的是另一条链（core/qmt_client.py::xtdata），不受此处影响。
+    #   为什么在这里而不是在调用点：本函数在模块导入期执行一次
+    #   （`qmt_broker = _make_broker()`），此后全进程共用该对象 ⇒ 单点定型、无法中途翻案。
+    if (os.environ.get("QMT_ZONE") or "").strip().lower() == "paper":
+        return _NoTradeBroker()
     try:
         cfg = _load_config()
     except Exception:

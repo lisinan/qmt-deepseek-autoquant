@@ -627,7 +627,13 @@ class EventEngine:
         会被覆盖。用「启动期一次性标志」复位，就不用强求「先停引擎再改库」的时序，
         无论何时重启都能确保复位生效一次。
         """
-        flag = Path(LOG_DIR).parent / "storage" / ".reset_paper.flag"
+        # 【2026-11-08 zone】原实现 ``Path(LOG_DIR).parent / "storage"`` 隐含假设
+        # 「LOG_DIR 的父目录就是 BASE_DIR」。双实例下这个假设会把它指到 **live 的**
+        # storage：paper 的复位标志写进 live 目录，而本函数后半段的
+        # ``clear_equity_before()`` 会**删掉 live 的权益快照**。
+        # 改为从 DB 路径推导，使「账本 / 复位标志 / 快照清理」三者同库同目录；
+        # live 下 db_path 就是 BASE_DIR/storage/qmt.db，拼出的路径与旧值逐位相同。
+        flag = Path(self.storage.db_path).parent / ".reset_paper.flag"
         if not flag.exists():
             return
         import json as _json
@@ -1433,7 +1439,23 @@ class EventEngine:
     # ----- 单实例自愈（防重复引擎抢 CPU / 并发交易）-----
 
     def _singleton_pid_path(self) -> Path:
-        return Path(__file__).resolve().parent.parent / "logs" / "engine.pid"
+        """本进程的单实例 pid 文件路径。
+
+        【2026-11-08 zone】原实现硬编码 ``BASE_DIR/"logs"/"engine.pid"``，与
+        ``main.py:78 PID_FILE = LOG_DIR/"engine.pid"`` 构成**同一事实的两份实现**。
+        单实例时两者恰好相等，一旦要跑 live/paper 双实例就出现两种致命错配：
+
+          · 只改 ``main.PID_FILE`` 不改这里 ⇒ 第二个实例每轮仍去读第一个实例的
+            pid 文件，``_verify_singleton_holder()`` 判定「我已非持有者」⇒
+            第二个实例起不来（每轮自杀一次）；
+          · 只改这里不改 ``main.PID_FILE`` ⇒ 第二个实例把自己的 pid 写进第一个
+            实例的 pid 文件 ⇒ **第一个实例（实盘）下一轮主动退出**。
+
+        改为统一走 ``LOG_DIR``，让两个实现收敛到同一个可被 zone 重绑的变量。
+        live 下 ``LOG_DIR == BASE_DIR/"logs"``，拼出的路径字符串逐位相同，
+        行为不变；测试重绑 ``engine.event_engine.LOG_DIR`` 后也随之隔离。
+        """
+        return Path(LOG_DIR) / "engine.pid"
 
     def _verify_singleton_holder(self) -> bool:
         """本进程是否仍是注册的单实例持有者。
