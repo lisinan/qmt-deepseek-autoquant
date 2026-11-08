@@ -230,7 +230,7 @@ QMT 用 `1.7976931348623157e+308` 表示「该字段不适用」（实测 `m_dCu
 | 项 | 状态 |
 |---|---|
 | 信号 → 执行 → 回结果闭环 | ✅ 已跑通 |
-| `QUERY_ASSET` / `QUERY_POSITION` | ✅ 与 `xtquant` 直连读数交叉验证一致（差 0.08，佣金精度） |
+| `QUERY_ASSET` / `QUERY_POSITION` | ✅ 已实测（差异见 §八.1，必须用持仓汇总口径） |
 | 跨重启不重放 | ✅ 已实现并验证 |
 | `m_nOffsetFlag` 的 23/24 买卖判定 | ❌ **未实测**（`ORDER count=0`，无在途单样本） |
 | `passorder` 能否落实现货账户 | ❌ **未实测**（需一笔真实委托） |
@@ -238,11 +238,46 @@ QMT 用 `1.7976931348623157e+308` 表示「该字段不适用」（实测 `m_dCu
 切换开关在 `trading_config.json`（gitignored）：
 
 ```json
-{"broker_qmt_mode": "XtMiniQmt"}   // 改成 "bridge" 即切到文件桥
+{"broker_qmt_mode": "bridge"}      // 2026-11-08 21:35 已切；回滚改回 "XtMiniQmt"
 ```
 
 **这是全有或全无的单开关**（`core/broker.py:_make_broker`）：查询与下单同时换通道，
 没有「只切查询」的中间态。回滚＝改回 `"XtMiniQmt"` 并重启，零残留。
+
+### 八.1 ★★ 总资产口径：ACCOUNT 与 POSITION 的市值不是同一个价格
+
+2026-11-08 21:30 实测（**同一轮 QUERY、同一账号**，300308.SH 当日跌 −9.18%）：
+
+| 来源 | 数值 | 拆解 | 用的是哪天的价 |
+|---|---|---|---|
+| `ACCOUNT.m_dInstrumentValue` | 50,798.00 | 493.33×100 + 2.93×500 | **11-05 收盘**（上一交易日） |
+| `POSITION.m_dMarketValue` 汇总 | 46,251.00 | 448.00×100 + 2.902×500 | **11-06 收盘**（最新） |
+
+差额 **4,547.00** 与账本 11-06 的 `daily_pnl = −4,547.03` 分毫不差，
+tushare 日线独立复核：`20261105 close=493.33`、`20261106 close=448.00`。
+
+⇒ 若用 ACCOUNT 口径当 `_broker_total_asset`：总资产 62,409.49（真值 57,862.49），
+回撤从 **−14.2%** 变成 **−7.5%**，熔断缓冲凭空多出 **6.7pp**。当前账本距 −20%
+只剩 **5.78pp** ⇒ 这个误差足以决定熔断是否触发。
+
+现实现（`_q_account`）：
+
+1. 先查持仓汇总 `pos_mv`，`pos_mv > 0` 时**以它为准**（它带最新价）；
+2. 持仓查询返回 `None` ⇒ 回落 ACCOUNT 口径（宁可口径旧一天，也不凭空造数）；
+3. `pos_mv == 0` 而 ACCOUNT 有市值（矛盾态）⇒ **保留 ACCOUNT，绝不清零**
+   （清零会让 total_asset 瞬间少掉全部持仓 ⇒ 假回撤 ⇒ 假熔断）。
+
+### 八.2 版本戳 `CODE_REV`：部署 ≠ 生效
+
+QMT 只在「运行策略」时加载 `.py`。只跑 `deploy_bridge.py` 而不在 QMT 里重新运行，
+QMT 会一直跑内存里的旧代码 —— 文件是新的、`boot.log` 里也有历史记录，但改动完全没生效。
+
+所以 `CODE_REV` 会写进三个地方：`PING`/`DUMP` 的返回、`heartbeat.json` 的 `rev`、
+`boot.log` 的 `init done ... rev=`。检查方式（被动，不碰下单通道）：
+
+```bash
+python scripts/iface_probe.py    # C 段「代码版本」：QMT rev ≠ 仓库 rev ⇒ FAIL
+```
 
 ---
 

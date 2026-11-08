@@ -854,3 +854,101 @@
   日亏强平都不作用）。明早 `iface_probe.py` 的「引擎持仓 vs 账本」一条会直接回答：
   若仍报「账本有、引擎内存为空」，说明券商没连上，当日不能交易。
   — 证据：`scripts/iface_probe.py` D 段 — 发现于 2026-11-08 夜 — `[跟踪中]`
+
+- [P1] [INFO] **活性 L3 把「讨论停机」当成「真的停机」——本任务今晚把自己判成了 ②（误报）**：
+  `halt_hits()` 直接正则 memory 末条原文，而 11-01 的记忆正文在**描述**这批标记
+  （引用了 `[MODE-ALERT]` / `整体停机` 字样）⇒ 判据命中自身文档。同一任务还有第二个自伪：
+  产物名固定 `reports/meta/RSI_META_LATEST.md`，本周重跑把上周证据覆盖掉了，
+  于是「11-01 明明产出了 431 行模块 + 报告」仍被判「窗口内无产物」。
+  后果：任何一个任务只要在记忆里复盘「今天差点撞门禁」，下周就会被判 ②。
+  ⇒ 下一轮第一顺位（改法方向：标记只认「结论位置」或排除引用；产物改当日归档快照）。
+  — 证据：`scripts/_loop_liveness.py:241,245` · `reports/meta/RSI_META_LATEST.md` §三 —
+  发现于 RSI 2026-11-08
+
+- [P1] [INFO] **`tests/run_all.py` 现在给不出绿灯：33 项失败全是环境性，但会淹没真回归**：
+  今晚实测 989 PASSED / 33 FAILED / 1022。失败集中在需要日线的回测套件
+  （`test_span_measure` / `test_exit_next_open_proxy` / `test_conviction_boost` / …）
+  与 `test_qmt_health` 两条。根因：`load_daily('300308.SZ',200)` 只返回 **6 根 bar**
+  （数据源未认证，回测返回空 dict ⇒ `KeyError: 'total_return'`；health 面板直接报
+  `miniQMT probe failed: not authenticated`）。**不是代码回归**：改前/改后失败集合
+  `diff` 完全一致（984/1017 → 989/1022，+5 = 本轮新测试）。
+  ⇒ 需要一条「环境红灯」与「回归红灯」的分离判据，否则「全绿」这一纪律事实上已失效。
+  — 证据：`/tmp/runall_verify2.txt` · `strategy/backtest_daily.load_daily` — 发现于 RSI 2026-11-08
+
+- [P2] [SAFE] **已修：L2「P0 基线漂移」判据二态 → 三态（一致 / 已声明分歧 / ★漂移）**：
+  `manual_entry_codes`（回测 `()` / 生产 `['510050.SH']`，510050 是 live 链路探针）
+  早在 `tests/test_evolve_baseline_sync.py::KNOWN_DIVERGENCE` 登记为刻意差异，
+  但审计脚本自带一份「不相等即漂移」的判据 ⇒ R49/R50 连续两轮把它报成 **P0 首位**，
+  且它**修不了**（修＝污染 P0 基线或丢对账对象）。现两侧同 import
+  `config/_baseline_divergence.py`，豁免**只对逐位相同的登记值**生效。
+  结果：`[基线漂移] 漂移 0 项 / 已声明分歧 1 项`，P0 首位让回给真漂移。
+  — 证据：`config/_baseline_divergence.py:97` · `scripts/_recursive_self_improve.py:295` ·
+  `docs/AUTOMATION_CONTRACT.md:98`（§3.4）— 发现于 RSI 2026-11-08 — `[已修]`
+
+---
+
+## 2026-11-08 21:45 · 大 QMT 方案核查：桥已通、开关已切、**但 QMT 里跑的还是旧代码**
+
+### 一、历史核查结论（你问的「之前是不是已经让你换掉 miniQMT」）
+是，方案是你定的，也已经建完并入库，但**开关一直没拨**，所以「替换」严格说从未生效：
+
+| 时间 | 事件 |
+|---|---|
+| 11-07~11-08 | 按你的指令落地文件桥：`qmt_bridge/qmtide_bridge.py` + `core/broker_bridge.py` + 部署器 + 三份测试（commit `3768b1e`） |
+| 11-08 01:43 | `simpleRun` 由 `1`→`0`，QMT 侧确认 `MODE=embedded`、`passorder=True`（内嵌引擎，能下单） |
+| 11-08 02:35 | 桥接策略正式入库；`trading_config.json` **保持 `XtMiniQmt`**（当时约定：探针通过才切） |
+| 11-08 21:25 | 桥仍活着：pid 29664、心跳新鲜、`QUERY 4/4 ok` |
+| 11-08 21:35 | **本次**把 `broker_qmt_mode` 切成 `"bridge"`（已备份 `trading_config.json.bak-20261108-2135`） |
+
+⇒ 也就是说：**代码与桥都早就绪，只差「拨开关 + 重启引擎」这一步**，而这两步一直没做。
+`trading_config.json` 的 mtime 停在 2026-08-24 就是证据（今晚之前从未被改过）。
+
+### 二、今晚现场实测（不是推断）
+`python scripts/bridge_probe.py` —— **只读，只发 PING/DUMP/QUERY_***：
+
+```
+QUERY_ASSET    → cash 11,611.49  market_value 50,798.00  total_asset 62,409.49
+QUERY_POSITION → 510050.SH 500股 @2.879 (mv 1,451) + 300308.SZ 100股 @501.5679 (mv 44,800)
+stats          → requests 4 / ok 4 / timeout 0 / error 0
+```
+
+### 三、★★ 顺带查出一个会直接歪曲熔断的缺陷（已修，需重跑策略才生效）
+同一轮查询里，**ACCOUNT 与 POSITION 的市值不是同一个价格**：
+
+| 来源 | 数值 | 用的是哪天的价 |
+|---|---|---|
+| `ACCOUNT.m_dInstrumentValue` | 50,798.00 = 493.33×100 + 2.93×500 | **11-05 收盘**（落后一天） |
+| `POSITION.m_dMarketValue` 汇总 | 46,251.00 = 448.00×100 + 2.902×500 | **11-06 收盘**（最新） |
+
+差额 **4,547.00** 与你账本 11-06 的 `daily_pnl −4,547.03` 分毫不差；
+tushare 日线独立复核：`20261105 close=493.33` / `20261106 close=448.00`。
+若直接用 ACCOUNT 口径：总资产 62,409.49（真值 57,862.49）⇒ 回撤显示 **−7.5%**
+而非 **−14.2%**，熔断缓冲凭空多 **6.7pp**，而你现在距 −20% 只剩 **5.78pp**。
+已改为「持仓汇总优先」（查询失败才回落 ACCOUNT；矛盾态不清零，避免假回撤）。
+— 证据：`qmt_bridge/qmtide_bridge.py::_q_account` · `tests/test_qmtide_bridge.py`（+4 例）
+— `019836c`
+
+### 四、另一条真实事故：VPN 关了就把行情打死（已修）
+09:40 引擎由 guardian 拉起，继承 `HTTP_PROXY=127.0.0.1:7897`，而当时 VPN 没开
+⇒ `tushare` 全部 `ProxyError`（日志 `WinError 10061`）⇒ 行情源按
+`xtdata → tushare → mock` 降到 **mock** ⇒ `mock_trade_block_reason` 当日禁掉**所有**买卖。
+即：**一个跟行情无关的环境变量，让一个交易日零成交**。
+已改为只给 tushare 域名加 `NO_PROXY`（不动全局代理，GitHub 仍走代理）。
+— 证据：`core/tushare_quote.py::bypass_proxy_for_tushare` · `tests/test_tushare_proxy_bypass.py`（4 例）
+
+### 五、★ 明早顺序**不能颠倒**（顺序错了会带着错口径开盘）
+1. **先在 QMT 里重新运行策略**（QMT → 策略 → 停止 → 运行）。
+   验证：`C:/pazq_qmt_bridge/heartbeat.json` 里出现
+   `"rev": "2026-11-08T21:31-mv-from-positions"`；`boot.log` 出现 `init done ... rev=...`。
+   ⚠ **不重跑策略，新代码就不生效** —— 部署看起来成功、boot.log 有历史记录，但跑的是旧代码。
+2. 再重启引擎（硬杀：`taskkill /F /PID 18256`，原因见本轮上一条 P0：优雅停止会覆盖账本）。
+3. 起来后跑 `python scripts/iface_probe.py`，C 段必须看到
+   `✓ 代码版本  QMT 在跑 '2026-11-08T21:31-mv-from-positions'`；
+   若仍报 old/None ⇒ 第 1 步没做成。
+4. 校验数据：`total_asset` 应约 **57,862**（不是 62,409），`positions` 应有 2 只。
+5. miniQMT 不必再装/再登（行情走 tushare、交易走大 QMT）—— 但**若你想用 xtdata 行情，
+   仍需要 miniQMT 登录**；两者可共存，`QMT_QUOTE_SOURCE=auto` 会优先 xtdata。
+
+### 六、回滚（一条命令，零残留）
+`trading_config.json` 里 `"broker_qmt_mode": "bridge"` → `"XtMiniQmt"`，重启引擎。
+备份就在同目录 `trading_config.json.bak-20261108-2135`。
