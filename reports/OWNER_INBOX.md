@@ -747,3 +747,59 @@
   唯一对 live 的读取是 `mode=ro` 只读查询（看板与 preflight）。
   — 证据：`stat` 前后对照 + `zone_preflight` 的「越界检查」行（live 池末次写入早于 paper 启动）
   — 发现于 双功能区优化 2026-11-08 — `[已核实]`
+
+### 2026-11-08 接口能力预验证 + 白名单审计（OWNER 指令「原有白名单股票数据不要出错」）
+
+- [P0] [INFO] **★ live 引擎内存里持仓是 0 只，但账本里有 2 只 —— 现有仓位不受任何退出逻辑管理**：
+  `/api/snapshot.positions = {}`，而 `engine_state.positions` 有 `300308.SZ` + `510050.SH`。
+  成因是 live 不恢复本地账本（`restore_ledger=False`），持仓只能靠 `_sync_broker_positions`
+  从券商回灌；而当前 `broker_mode=disconnected` ⇒ 回灌从未发生 ⇒ **−18% 硬止损、趋势破位、
+  日亏强平这些退出逻辑，对这 2 只真实仓位全部不生效**（它们不是「被豁免」，是「不存在」）。
+  一旦券商连上会自动回灌，所以这不是账本损坏，而是**断链期间的管理真空**。
+  同日另一条：引擎自报 `total_asset=1,000,000`（=INITIAL_CASH）vs 账本末值 `57,862.57`
+  ⇒ 偏离 **+1628.23%**，`asset_trusted=false`。
+  ⇒ 恢复顺序必须是：miniQMT 登录 → 重启 live → 券商回灌持仓 → 再做任何数据判断。
+  — 证据：`scripts/iface_probe.py` 的「D 数据准确性」段（引擎持仓 vs 账本 / 引擎 vs 账本）
+  — 发现于 接口预验证 2026-11-08 — `[待 OWNER]`
+
+- [P0] [SAFE] **[已修] 白名单加了「值级别」钉子，此前只有行为测试 —— 名单被改短时测试全绿**：
+  审计结论：**白名单本身未被改动**。`config/settings.py` git diff 为空；
+  `STRATEGY_PARAMS.exit_exempt_codes = ["300308.SZ","510050.SH"]`、
+  `manual_entry_codes = ["510050.SH"]` 与基线逐项一致；`UNIVERSE 16 / STOCK_CODES 12 /
+  VALIDATION_UNIVERSE 1` 未变；live 内存池（09:40 加载）与磁盘文件**逐位一致**（30 只、顺序相同）。
+  但仓库里所有白名单测试钉的都是**行为**（声明了就豁免 / 豁免仓不被硬止损打掉），
+  没有一份钉「到底是哪几只票」—— 名单被改短时行为不变、测试全绿，而实盘那只票会在下次强平里被卖。
+  已新增 `tests/test_whitelist_pin.py`（11 例）逐项钉死，并加「两条名单不得合并」断言
+  （合并会产生「豁免→被强平→次日自动补买→判据复活」的自反恢复）。
+  — 证据：`tests/test_whitelist_pin.py` · `tests/run_all.py` 注册项
+  — 发现于 接口预验证 2026-11-08 — `[已修]`
+
+- [P1] [INFO] **接口能力实测（2026-11-08 20:41，休市）：PASS 21 / WARN 4 / FAIL 3 / SKIP 1**：
+  · 行情 FAIL：`xtdata.get_full_tick` → `not authenticated`；白名单两只日线末根均不可读
+  · 交易 FAIL：引擎自报 `broker_mode=disconnected connected=False 重连=0`
+  · 交易 PASS：`XtQuantTrader` / `order_stock` / `cancel_order_stock` / `query_stock_asset` /
+    `query_stock_positions` / `query_stock_orders` 六个 API 面全部存在；`broker_qmt_mode=XtMiniQmt`；
+    `accounts` 2 个；`tushare_token` 已配置
+  · 文件桥 PASS：`C:/pazq_qmt_bridge` 7 个条目（signal/result/processed_ids/heartbeat/boot.log）；
+    `QMTIDE_BRIDGE.py` 已部署 43,443 字节（mtime 11-08 02:38）
+  ⇒ 结论：**代码与配置都就绪，唯独「认证 + 券商连接」两件事没到位**，两者都需要 OWNER 侧动作。
+  — 证据：`scripts/iface_probe.py`（新增，纯只读）— 发现于 接口预验证 2026-11-08 — `[跟踪中]`
+
+- [P1] [INFO] **已排 2026-11-09 09:35 一次性自动化做同样验证**（`df5eb9ad`）：
+  跑 `zone_preflight.py` + `iface_probe.py`，逐条判定七个关键字段并追加本文件。
+  若届时有 FAIL，说明 live 当天不可能正常交易，需 OWNER 在开盘前处理。
+  — 发现于 接口预验证 2026-11-08 — `[跟踪中]`
+
+- [P2] [INFO] **白名单查找陷阱：`exit_exempt_codes` 不是模块常量，而是 `STRATEGY_PARAMS` 的键**：
+  `getattr(config.settings, "exit_exempt_codes", [])` 会**静默返回空**（我第一版预验证脚本
+  就这么写错了一次，把两条真实豁免报成了「不在白名单」）。正确读法是
+  `settings.STRATEGY_PARAMS.get("exit_exempt_codes")`（`settings.py:613/723`）。
+  — 证据：`config/settings.py:613,723` — 发现于 接口预验证 2026-11-08 — `[已修]`
+
+- [P2] [INFO] **候选池文件与 git 快照差 4 只票，属正常换手、不是本次改动引入**：
+  当前 375/30 vs HEAD(2026-10-21) 374/30，新增 `000977/301165/603893/688036`、
+  移除 `002281/300857/688498/688702`。判据：**live 内存池（09:40 从文件加载）与当前磁盘文件
+  逐位一致**（30 只、顺序也相同）⇒ paper 20:09 那次写没有改变内容；这 4 只是 10-21 以来
+  live 自己每日刷新造成的正常换手。
+  — 证据：`/api/snapshot.dynamic_universe.active_pool` 与 `storage/dynamic_universe.json` 对比
+  — 发现于 接口预验证 2026-11-08 — `[已核实]`

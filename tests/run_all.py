@@ -429,6 +429,15 @@ def _collect_tests():
             #   paper 全部落在 storage_paper/ 且与 live 零交集、五个模块不得回退成硬编码、
             #   候选池路径必须是调用时求值的函数（常量会在 import 时定死成 live）。
             "tests.test_zone_shared_paths",
+            # 【2026-11-08 OWNER 指令「原有白名单股票数据不要出错」】**值级别**白名单钉子。
+            #   此前所有白名单测试钉的都是**行为**（声明了就豁免、豁免仓不被硬止损打掉），
+            #   没有一份钉「生产配置里到底是哪几只票」—— 于是「名单被改短」时测试全绿，
+            #   而实盘里那只票会在下一次强平里被卖掉。本模块逐项钉死：
+            #   UNIVERSE / STOCK_CODES / INDEX_CODES / VALIDATION_UNIVERSE、
+            #   STRATEGY_PARAMS.exit_exempt_codes = [300308, 510050]、
+            #   manual_entry_codes = [510050]，以及两条名单不得合并（合并会产生自反补仓）。
+            #   动态池只钉不变量（每日会变）：长度/行业合计/非空/paper 独立文件。
+            "tests.test_whitelist_pin",
             # 【2026-11-08 zone】双功能区**统一看板**（scripts/zone_dashboard.py）。
             #   看板是独立进程 + 纯只读，不进引擎、不碰 config.settings，所以它
             #   出错的方式只有「悄悄偏离事实」：ZONES 里硬编码的 5000/5001 与两个

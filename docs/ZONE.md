@@ -288,6 +288,26 @@ python scripts/zone_preflight.py --quiet   # 只看问题
 其中一条是运行时越界断言：`storage/dynamic_universe.json` 的 mtime 必须**早于**
 `logs_paper/engine.pid` 的 mtime，否则说明 paper 启动后又写过 live 的候选池。
 
+### 接口能力预验证（`scripts/iface_probe.py`）
+
+```bash
+python scripts/iface_probe.py            # 全量
+python scripts/iface_probe.py --json     # 机器可读
+python scripts/iface_probe.py --quiet    # 只看问题
+```
+
+五段：A 行情（xtdata 认证 / `get_full_tick` / 白名单逐只日线末根）· B 交易（API 面 +
+配置 + **以引擎自报为准的连通性**）· C 文件桥（桥目录 / `QMTIDE_BRIDGE.py` 部署情况）·
+D 数据准确性（引擎自报 vs 账本末值 vs `engine_state`，含持仓对账）· E 白名单完整性。
+
+**★ 一条硬约束：不建立第二个交易会话。** `xttrader` 的 session 按账号独占，
+脚本再 `connect()` 会和引擎抢同一个 `session_id`（`trading_config.json`），轻则引擎被踢
+下线，重则下单通道错乱 —— 对真实资金不可接受。所以交易侧只验 API 面与配置，
+**连通性一律读 `/api/snapshot.broker_mode / broker_connected`**，并把「下单实测」明确标 SKIP。
+
+⚠ 白名单不在模块常量里，而是 `STRATEGY_PARAMS` 字典的键（`settings.py:613/723`）。
+`getattr(settings, "exit_exempt_codes")` 会**静默拿到空**，踩过一次。
+
 ---
 
 ## 八、验收清单
