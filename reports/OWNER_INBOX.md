@@ -803,3 +803,54 @@
   live 自己每日刷新造成的正常换手。
   — 证据：`/api/snapshot.dynamic_universe.active_pool` 与 `storage/dynamic_universe.json` 对比
   — 发现于 接口预验证 2026-11-08 — `[已核实]`
+
+---
+
+## 2026-11-08 夜 · 明早（11-09）执行清单 + 两笔已修
+
+### ★ 明早开盘前，请按此顺序做（前四条必须做，否则 live 当日零成交）
+1. **登录 miniQMT**（现在 `xtdata.get_full_tick` 报 `not authenticated`，行情/日线全不可读）。
+2. **重启 live 引擎**（`data_mode=mock` / `broker=disconnected` / `halted=true` 三项只有重启才会变）。
+   ⚠ **今天停 live 只能用硬杀，不能用 `--stop`**，原因见下面 P0 第一条：
+   `taskkill /F /PID 18256`（先 `tasklist /FI "PID eq 18256"` 确认）。
+   重启后新代码生效，之后才可以用优雅停止。
+3. **09:00–09:25 双击 `scripts\run_paper.bat`**（paper 现在是会话级后台任务，会话回收就没了）。
+4. **09:35 前后看一眼收件箱**：一次性自动化 `df5eb9ad` 会自动跑 `zone_preflight.py` + `iface_probe.py`，
+   逐条判定 data_mode / broker / halted / asset_trusted / 候选池 / 白名单 / 持仓对账。
+5. 09:30 后打开 <http://127.0.0.1:5002> 看双区看板（live 左 / paper 右，同屏对照）。
+
+---
+
+- [P0] [SAFE] **live 断链期「优雅停止」会把真实账本覆盖成构造初值 —— 已修，但今日进程还没加载新代码**：
+  live 走 `restore_ledger=False`，内存里只有 `cash=1,000,000.0` / `positions={}`
+  （2026-11-08 20:47 `/api/snapshot` 实测），而 `storage/qmt.db::engine_state` 是 11-06 收盘的
+  真实账本：`cash=11,611.57` / 2 只持仓 / `day_open_asset=62,409.6` / `peak_asset=67,453.62`。
+  `_shutdown()`（`:4729`）里 `_save_engine_state()` 是**无条件**调用，而 `main.py --stop`
+  正是写哨兵 → 主循环退出 → `_shutdown()`（`:1421`）⇒ **一次优雅停止 = day_open_asset 变 None、
+  持仓清零、cash 变 100 万**，次日日内跌幅基准全错、熔断口径失真。
+  已加闸门（`abb13e7`）：`exec_mode=="live"` 且 `_broker_total_asset<=0`（整个进程从未拿到
+  券商总资产）时不落盘；券商连上后照常落盘；paper 不受影响。
+  **验证**：`tests/test_live_state_save_guard.py` 5 例（真 sqlite，不是打桩）；
+  **正向对照已做** —— 去掉闸门后断言必红（实测 `cash 11,611.57 → 1,000,000.0`）；
+  全量回归 **984 PASS / 33 FAIL / 1017 TOTAL**，失败集合与基线逐模块一致（xtdata 未认证级联）。
+  ⚠ **生效条件**：需下一次重启（即明早第 2 步）。在那之前，pid 18256 跑的仍是旧代码
+  ⇒ **今天停 live 请用 `taskkill /F`，不要用 `python main.py --stop`**。
+  — 证据：`engine/event_engine.py:4079` 起（闸门）· `tests/test_live_state_save_guard.py`
+  — 发现于 2026-11-08 夜 — `[已修，待重启生效]`
+
+- [P0] [SAFE] **含明文券商账号的一次性探针脚本已挡住（仓库是 public）**：
+  `scripts/_probe_xttrader_admin.py` 第 19 行曾硬编码真实 12 位券商账号。已核实
+  **从未进入 git 历史**（`git log --all -S<账号>` 为空）、**从未被 track**
+  ⇒ 没有任何一次 push 泄露过。已做两件事：① 脚本内改为
+  `os.environ.get("QMT_ACCOUNT_ID", "000000000000")`，与 `settings.py` 口径一致；
+  ② `.gitignore` 单列 4 个一次性探针产物（`_probe_xttrader_admin.py` / `_probe_admin.bat` /
+  `_probe_admin_result.txt` / `_repro_qmt_launch.py`），`git check-ignore` 已验证命中。
+  ⇒ 现在任何一次 `git add -A` 都带不走账号。
+  — 证据：`.gitignore` 尾部区块 · commit `230c557` — 发现于 2026-11-08 夜 — `[已修]`
+
+- [P1] [INFO] **明早第一件要盯的事：券商连上后 2 只真实仓位会不会被回灌**：
+  现在 `snapshot.positions={}` 而账本有 `300308.SZ` + `510050.SH`。这两只在
+  `_sync_broker_positions` 回灌之前**不受任何退出逻辑管理**（−18% 硬止损 / 趋势破位 /
+  日亏强平都不作用）。明早 `iface_probe.py` 的「引擎持仓 vs 账本」一条会直接回答：
+  若仍报「账本有、引擎内存为空」，说明券商没连上，当日不能交易。
+  — 证据：`scripts/iface_probe.py` D 段 — 发现于 2026-11-08 夜 — `[跟踪中]`
