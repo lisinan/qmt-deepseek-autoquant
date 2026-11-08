@@ -993,3 +993,21 @@ tushare 日线独立复核：`20261105 close=493.33` / `20261106 close=448.00`�
      「live 自己写 live 的文件」误判成 paper 越界（22:00 实测踩到）；
   ② paper 冷启动第一包实测 15.4s，原 6s 超时必然误报「不可用」⇒ 单独放宽到 30s（live 仍 6s）。
   ③ `halted` / `asset_trusted` 按冷却天数与会话状态分级，不再每天报同一个假警报。
+
+---
+
+## 2026-11-08 22:40 · 挂起项（OWNER：明天交易日后再评估）
+
+- [P2] [INFO] **两处 11-04 遗留的未提交文档改动，暂不提交，待交易日后再评估**：
+  · `docs/AUTOMATION_CONTRACT.md`（+40 行：KPI 口径表的表格分隔符改动 + 新增一节）
+  · `reports/DAILY_REVIEW_20261104_SUPPLEMENT.md`（+14 行）
+  与 11-08 本轮改动无关，工作树里保留原样；本次推送（`4ac84f0`）刻意没带上它们。
+  — 证据：`git diff --stat` 显示 2 files / +52 −2 — 发现于 主理人 2026-11-08 — `[挂起，等 OWNER]`
+
+- [P2] [INFO] **待 OWNER 一句话决定：paper 区与看板是否做「每交易日 09:05 自动启动」**：
+  现在 `scripts/startup_all.bat` 只拉 QMT + guardian + 引擎（live）。
+  2026-11-08 22:02 整机重启实测：paper `5001` 与看板 `5002` 都不会自启，需人工拉起。
+  若要自动化，必须建成「只拉 `--zone paper`、启动后自检 5001 端口与 `storage_paper/` 库路径」的形式，
+  绝不能出现指向 5000 的兜底 —— 那会把观察区拉成第二个 live。
+  — 证据：`scripts/startup_all.bat`（无 paper 分支）· `scripts/run_paper.bat`
+  — 发现于 主理人 2026-11-08 — `[挂起，等 OWNER]`
