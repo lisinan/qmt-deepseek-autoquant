@@ -34,7 +34,7 @@ import sqlite3
 import sys
 import urllib.error
 import urllib.request
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parents[1]
@@ -44,6 +44,10 @@ from core.zone import zone_config  # noqa: E402
 
 DASH_PORT = 5002
 HTTP_TIMEOUT = 6.0
+# paper 区冷启动第一包要拉 37 只日线，实测 13~15s（2026-11-08 15.4s）；
+# 用 live 的 6s 超时会把「正在预热」误判成「不可用」，于是每次刚启动都报 FAIL。
+# live 的 /api/snapshot 一直是毫秒级，不需要放宽 —— 保持 6s 才能真发现它卡死。
+HTTP_TIMEOUT_PAPER = 30.0
 
 PASS, WARN, FAIL = "PASS", "WARN", "FAIL"
 _ICON = {PASS: "✓", WARN: "!", FAIL: "✗"}
@@ -55,14 +59,15 @@ def add(level: str, zone: str, item: str, detail: str) -> None:
     _rows.append((level, zone, item, detail))
 
 
-def _get_json(url: str) -> dict:
-    with urllib.request.urlopen(url, timeout=HTTP_TIMEOUT) as r:
+def _get_json(url: str, timeout: float | None = None) -> dict:
+    with urllib.request.urlopen(url, timeout=timeout or HTTP_TIMEOUT) as r:
         return json.loads(r.read().decode("utf-8", "replace"))
 
 
 def _snapshot(port: int) -> dict | None:
+    t = HTTP_TIMEOUT_PAPER if port != 5000 else HTTP_TIMEOUT
     try:
-        return _get_json(f"http://127.0.0.1:{port}/api/snapshot")
+        return _get_json(f"http://127.0.0.1:{port}/api/snapshot", timeout=t)
     except Exception:                                  # noqa: BLE001
         return None
 
@@ -74,7 +79,8 @@ def _listening(port: int) -> bool:
             return r.status == 200
     except Exception:                                  # noqa: BLE001
         try:
-            _get_json(f"http://127.0.0.1:{port}/api/snapshot")
+            _get_json(f"http://127.0.0.1:{port}/api/snapshot",
+                      timeout=HTTP_TIMEOUT_PAPER if port != 5000 else HTTP_TIMEOUT)
             return True
         except Exception:                              # noqa: BLE001
             return False
@@ -149,19 +155,61 @@ def check_zone(key: str, snap: dict | None) -> None:
             add(PASS, label, "broker_mode", f"{broker_mode}（已连接）")
 
     # ---- 熔断
+    # 要点：`halted=true` 不一定是坏事 —— 非回撤类熔断有冷却期（`halt_recover_days=1`），
+    # 冷却已满时引擎会在开盘首轮自动解除。把它无脑判 FAIL 会造成「每天都在报同一个假警报」，
+    # 久了就没人看了（这比不报更危险）。所以：冷却已满 ⇒ WARN + 写清后果；
+    # 冷却未满或回撤类熔断 ⇒ FAIL。
     if _pick(snap, "risk.halted"):
-        add(FAIL, label, "熔断",
-            f"halted=true 原因={_pick(snap, 'risk.halt_reason')}")
+        reason = str(_pick(snap, "risk.halt_reason") or "")
+        halt_day = _engine_state_halt_day()
+        recover_days = 1          # = settings["halt_recover_days"]；max_drawdown 另算
+        held = ((date.today() - halt_day).days if halt_day else 0)
+        if reason.startswith("max_drawdown") or held < recover_days:
+            add(FAIL, label, "熔断",
+                f"halted=true 原因={reason} 冷却 {held}/{recover_days} 日 ⇒ 未解除，无法开仓")
+        else:
+            add(WARN, label, "熔断",
+                f"halted=true 原因={reason}（{halt_day} 触发），冷却 {held}/{recover_days} 日已满 "
+                f"⇒ 开盘首轮自动解除；注意解除时会把 peak_asset 重置为当日资产，"
+                f"回撤预算从当日重新起算（不是漏洞，是既有设计：避免解除后立刻再次熔断）")
     else:
         add(PASS, label, "熔断", "未熔断")
 
     # ---- 总资产可信度（live 专用：回落 INITIAL_CASH 会伪装成 100 万）
     if key == "live":
+        trading_now = bool(_pick(snap, "session.trading_now"))
         if _pick(snap, "risk.asset_trusted") is False:
-            add(FAIL, label, "总资产口径",
-                f"asset_trusted=false ⇒ 面板上的 {snap.get('total_asset')} 不是券商真值")
+            if not trading_now:
+                # 休市时引擎在时段守卫里休眠，`_run_once` 不跑 ⇒ `_risk_total_asset()`
+                # 从未被调用 ⇒ asset_trusted 保持初值 false。这不是故障。
+                add(WARN, label, "总资产口径",
+                    f"asset_trusted=false，但当前休市（session={_pick(snap,'session.state')}）"
+                    f"⇒ 引擎未跑轮次，首轮后才会更新；券商口径已可取："
+                    f"total_asset={snap.get('total_asset')}")
+            else:
+                add(FAIL, label, "总资产口径",
+                    f"asset_trusted=false ⇒ 面板上的 {snap.get('total_asset')} 不是券商真值")
         else:
             add(PASS, label, "总资产口径", "可信")
+
+
+def _engine_state_halt_day() -> date | None:
+    """从 `engine_state.risk_state` 里取熔断触发日（用于算冷却天数）。"""
+    db = zone_config("live").db_path
+    if not db.exists():
+        return None
+    try:
+        conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=5)
+        try:
+            row = conn.execute("select risk_state from engine_state where id=1").fetchone()
+        finally:
+            conn.close()
+        if not row or not row[0]:
+            return None
+        hd = (json.loads(row[0]) or {}).get("halt_day") or ""
+        return datetime.strptime(hd, "%Y-%m-%d").date() if hd else None
+    except Exception:
+        return None
 
     # ---- 候选池（0 只 = 信号层空转，最容易漏看）
     pool = (snap.get("dynamic_universe") or {}).get("active_pool") or []
@@ -190,29 +238,66 @@ def check_zone(key: str, snap: dict | None) -> None:
         add(PASS, label, "账本", f"{n} 条快照，末条 {ts}，今日成交 {fills}")
 
 
+def _pool_refresh_ts(log_path: Path) -> float | None:
+    """从引擎日志里取最后一次「动态候选池刷新完成」的时间戳（epoch 秒）。
+
+    为什么要按日志归属写入者，而不是比 mtime 大小：
+      旧判据是「live 候选池 mtime 晚于 paper 启动时刻 ⇒ 判定 paper 越界」。
+      2026-11-08 22:00 实测它是**假阳性** —— 整机重启后 live 引擎自己在 21:59:55
+      正常刷新了候选池，而 paper 根本没启动（pid 文件还是 20:28 的残留），
+      于是「live 写了 live 的文件」被判成越界。
+      新判据：谁在**同一秒**说自己刷新过，就算谁写的 —— 日志是行为证据，mtime 只是结果。
+    """
+    try:
+        txt = log_path.read_text(encoding="utf-8", errors="replace")
+    except Exception:
+        return None
+    last = None
+    for line in txt.splitlines():
+        if "动态候选池刷新完成" not in line:
+            continue
+        ts = line[:19]
+        try:
+            last = datetime.strptime(ts, "%Y-%m-%d %H:%M:%S").timestamp()
+        except Exception:
+            continue
+    return last
+
+
 def check_isolation() -> None:
     """运行时越界断言：paper 不得写过 live 的文件。
 
-    判据：`storage/dynamic_universe.json` 的 mtime 必须**早于** paper 进程启动时刻
-    （以 `logs_paper/engine.pid` 的 mtime 近似）。若晚于，说明当前这轮 paper 在跑
-    之后又写过 live 的候选池 —— 那正是 2026-11-08 20:09 发生过的越界。
+    证据链：`storage/dynamic_universe.json` 的 mtime 必须能对上 live 自己日志里
+    「动态候选池刷新完成」的时刻。对不上、却对得上 paper 的那条 ⇒ 真越界。
     """
     live_file = BASE_DIR / "storage" / "dynamic_universe.json"
     paper_pid = BASE_DIR / "logs_paper" / "engine.pid"
-    if not live_file.exists() or not paper_pid.exists():
-        add(WARN, "隔离", "越界检查", "缺少文件，跳过")
+    if not live_file.exists():
+        add(WARN, "隔离", "越界检查", "live 候选池不存在，跳过")
         return
     live_mtime = live_file.stat().st_mtime
-    paper_start = paper_pid.stat().st_mtime
-    if live_mtime > paper_start + 1.0:
+    mtime_s = datetime.fromtimestamp(live_mtime).strftime("%m-%d %H:%M:%S")
+
+    live_ts = _pool_refresh_ts(BASE_DIR / "logs" / "quant_system.log")
+    paper_ts = _pool_refresh_ts(BASE_DIR / "logs_paper" / "quant_system.log")
+    tol = 5.0
+
+    if live_ts is not None and abs(live_ts - live_mtime) <= tol:
+        add(PASS, "隔离", "越界检查",
+            f"live 候选池末次写入 {mtime_s} 与 live 自己的刷新日志对得上 "
+            f"⇒ 是 live 写的，不是 paper 越界")
+    elif paper_ts is not None and abs(paper_ts - live_mtime) <= tol:
         add(FAIL, "隔离", "越界检查",
-            f"live 候选池在 paper 启动后又被写过 "
-            f"({datetime.fromtimestamp(live_mtime):%H:%M:%S} > "
-            f"{datetime.fromtimestamp(paper_start):%H:%M:%S}) ⇒ paper 在写 live 的文件")
+            f"live 候选池末次写入 {mtime_s} 只对得上 **paper** 的刷新日志 "
+            f"⇒ paper 在写 live 的文件（2026-11-08 20:09 那个缺陷复发）")
+    elif paper_pid.exists() and (paper_ts is None or paper_ts < live_mtime):
+        add(WARN, "隔离", "越界检查",
+            f"live 候选池末次写入 {mtime_s}，但 live / paper 日志都对不上这一秒 "
+            f"⇒ 写入者不明，需人工确认（paper 日志末端 "
+            f"{datetime.fromtimestamp(paper_ts).strftime('%m-%d %H:%M') if paper_ts else '无'}）")
     else:
         add(PASS, "隔离", "越界检查",
-            f"live 候选池末次写入 {datetime.fromtimestamp(live_mtime):%m-%d %H:%M:%S}"
-            f" 早于 paper 启动 {datetime.fromtimestamp(paper_start):%m-%d %H:%M:%S}")
+            f"live 候选池末次写入 {mtime_s}，无 paper 写入证据")
 
     # paper 必须有自己的池子（否则就是又去蹭 live 的）
     paper_file = BASE_DIR / "storage_paper" / "dynamic_universe.json"

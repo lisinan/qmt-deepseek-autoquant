@@ -952,3 +952,44 @@ tushare 日线独立复核：`20261105 close=493.33` / `20261106 close=448.00`�
 ### 六、回滚（一条命令，零残留）
 `trading_config.json` 里 `"broker_qmt_mode": "bridge"` → `"XtMiniQmt"`，重启引擎。
 备份就在同目录 `trading_config.json.bak-20261108-2135`。
+
+---
+
+## 2026-11-08 22:05 · 重启后复核：**如期**，自检 PASS 16 / WARN 2 / FAIL 0
+
+### 一、最担心的一件事：账本没被关机污染
+| 字段 | 值 | 判定 |
+|---|---|---|
+| `engine_state.ts` | 2026-11-06T15:04:54 | 关机没写库 |
+| `cash` | 11,611.57 | 未被写成 1,000,000 |
+| `day_open_asset` | 62,409.6 | 未被写成 NULL |
+| `peak_asset` | 67,453.62 | 保留 |
+| 持仓 | 2 只 | 未清零 |
+| `storage/qmt.db` mtime | 11-08 02:13:46 | 全程未变 |
+
+⇒ Windows 关机是 TerminateProcess，没有走 `finally: _shutdown()`。之前那条「优雅停止会覆盖账本」的闸门（`abb13e7`）现在也已随重启生效，以后 `--stop` 也安全了。
+
+### 二、桥与行情都自己起来了（这次没让人动手）
+- `BridgeBroker 已连接（root=C:/pazq_qmt_bridge, heartbeat_age=0.3s）` @21:59:55
+- `Engine 启动: mode=single data=tushare broker=bridge exec=live codes=38`
+- QMT 重启后**策略自动恢复运行**，心跳 `pid=13768 rev=2026-11-08T21:31-mv-from-positions` ⇒ 新代码在跑
+- 券商口径回灌：`cash 11,611.49 / 总资产 57,862.49 / 持仓 2 只`（300308 −10.68%、510050 +0.80%）⇒ 与账本 57,862.57 差 **0.08**（佣金精度）
+- `data_mode=tushare`（不是 mock）⇒ **NO_PROXY 修复生效**：VPN 没开也能取到真实行情
+
+### 三、两个 WARN 都将在周一开盘首轮自动消失
+1. **熔断 `halted=true`（daily_stop −9.32%，11-06 触发）**：`halt_recover_days=1`，已冷却 2 日
+   ⇒ 开盘首轮 `_maybe_recover()` 自动解除。
+   ★ **但要知道代价**：解除时 `peak_asset` 会被**重置为当日资产（≈57.8k）**，
+   回撤预算从当日重新起算 ⇒ 之前的「距 −20% 只剩 5.78pp」在开盘后**不再成立**，
+   新地板约 46.3k（旧地板 53.96k）。这是既有设计（避免解除后立刻再熔断），不是本周改动引入。
+2. **`asset_trusted=false`**：休市时引擎在时段守卫里休眠，`_run_once` 不跑 ⇒
+   `_risk_total_asset()` 从未被调用。开盘首轮变 true。**不是故障。**
+
+### 四、已补的启动/自检缺口（本次重启暴露的）
+- **paper 区与看板不会自启**（`startup_all.bat` 只拉 QMT + guardian + 引擎）⇒ 本次已手动拉起：
+  paper `5001` pid 5416（`paper_no_trade` 拒单桩）、看板 `5002` pid 23128。
+- `zone_preflight.py` 两处假阳性已修（`a4ee7f5` 之后的新 commit）：
+  ① 越界判据改为「谁在**同一秒**说自己刷新过候选池」——按 mtime 比较会把
+     「live 自己写 live 的文件」误判成 paper 越界（22:00 实测踩到）；
+  ② paper 冷启动第一包实测 15.4s，原 6s 超时必然误报「不可用」⇒ 单独放宽到 30s（live 仍 6s）。
+  ③ `halted` / `asset_trusted` 按冷却天数与会话状态分级，不再每天报同一个假警报。
