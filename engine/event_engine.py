@@ -252,6 +252,43 @@ def sanitize_peak_equity(stored_peak, credible_max) -> float:
     return min(stored, cred)
 
 
+def _read_last_timeline_date(path: Path) -> str:
+    """读 gate_timeline.jsonl **最后一行**的 date；文件不存在/损坏返回 ""。
+
+    为什么需要它（2026-11-08）：去重标志 ``_gate_timeline_date`` 只活在内存里，
+    盘中重启即丢，重启后同一交易日会被再追加一遍 —— ``logs/gate_timeline.jsonl``
+    里已经有 2026-10-29(×3) / 10-30(×2) / 11-03(×2) 共 6 行重复，前端热力矩阵
+    会把这些天画成多个格子、横向日期错位。修法与 ``open_date`` 的
+    「DB→内存回灌」同源：先看文件里最后一行是哪天，再决定要不要写。
+
+    只读、绝不抛：任何异常都退化为 ""（= 当作没写过，宁可多写一行也不要中断主循环）。
+    """
+    try:
+        if not path.exists():
+            return ""
+        # 文件可能很大（872 行 / 280KB，长期会更大），只读尾部 8KB 找最后一行。
+        with path.open("rb") as f:
+            f.seek(0, 2)
+            size = f.tell()
+            f.seek(max(0, size - 8192))
+            tail = f.read().decode("utf-8", "replace")
+        lines = [ln for ln in tail.splitlines() if ln.strip()]
+        if not lines:
+            return ""
+        # 尾部切片可能把第一行切成半截 —— 从后往前找第一条能解析且有 date 的。
+        for ln in reversed(lines):
+            try:
+                row = json.loads(ln)
+            except Exception:
+                continue
+            d = row.get("date") if isinstance(row, dict) else None
+            if isinstance(d, str) and len(d) == 10:
+                return d
+    except Exception:
+        return ""
+    return ""
+
+
 class EventEngine:
     # ---- 决策频率控制（2026-09-02 #E 路径）----
     # Live 不再每 tick 调 TrendStrategy.on_bars（其本质是 minute-bar 评分，
@@ -3925,11 +3962,16 @@ class EventEngine:
         try:
             if is_trading_day(date.today()):
                 row = self.gate_timeline_row()
-                if row.get("universe_n") and row["date"] != getattr(
-                        self, "_gate_timeline_date", ""):
-                    # LOG_DIR 调用时解析（测试会 patch engine.event_engine.LOG_DIR）
-                    import engine.event_engine as _ee_mod
-                    p = Path(_ee_mod.LOG_DIR) / "gate_timeline.jsonl"
+                # LOG_DIR 调用时解析（测试会 patch engine.event_engine.LOG_DIR）
+                import engine.event_engine as _ee_mod
+                p = Path(_ee_mod.LOG_DIR) / "gate_timeline.jsonl"
+                # 跨重启去重：标志只在内存，重启即丢 ⇒ 先看文件尾是哪天（见
+                # _read_last_timeline_date 的说明）。首次调用才回灌，之后走内存。
+                last = getattr(self, "_gate_timeline_date", "")
+                if not last:
+                    last = _read_last_timeline_date(p)
+                    self._gate_timeline_date = last
+                if row.get("universe_n") and row["date"] != last:
                     with p.open("a", encoding="utf-8") as f:
                         f.write(json.dumps(row, ensure_ascii=False) + "\n")
                     self._gate_timeline_date = row["date"]

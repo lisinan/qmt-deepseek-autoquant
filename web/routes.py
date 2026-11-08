@@ -123,6 +123,14 @@ def api_gate_timeline():
     """闸门卡点时间线：最近 N 天每日 7 条件通过数（gate_timeline.jsonl 尾部）。
 
     文件不存在 / 解析失败一律降级为空 rows + 完整 conditions，绝不 500。
+
+    【2026-11-08 两处修】
+    1) **按 date 去重**：去重标志 ``_gate_timeline_date`` 原先只在引擎内存里，
+       盘中重启会把同一交易日再追加一次 —— 历史文件里已有 2026-10-29 三行、
+       10-30 两行、11-03 两行。读端不去重，热力矩阵就会把这些天画成多个格子、
+       日期横向错位。同一 date 取**最后一条**（后写的更接近完整轮次的结果）。
+    2) **空态可解释**：``rows=[]`` 时返回 ``hint``，前端直接显示，省得看到空图表
+       还要翻日志才知道「是坏了，还是本来就没有」。
     """
     from flask import request
     from pathlib import Path
@@ -132,19 +140,50 @@ def api_gate_timeline():
     except (TypeError, ValueError):
         days = 120
     rows: list = []
+    error = None
+    file_label = None
     try:
         p = Path(LOG_DIR) / "gate_timeline.jsonl"
+        file_label = f"{Path(LOG_DIR).name}/{p.name}"
         if p.exists():
             with p.open("r", encoding="utf-8") as f:
                 lines = [ln for ln in f if ln.strip()]
-            for ln in lines[-days:]:
-                row = json.loads(ln)
+            by_date: dict = {}
+            for ln in lines:
+                try:
+                    row = json.loads(ln)
+                except Exception:
+                    continue
                 if isinstance(row, dict) and row.get("date"):
-                    rows.append(row)
+                    # 同一天后写的覆盖先写的 —— 重启后追加的那行通常在日内更晚、
+                    # 行情更完整，用最后一条比用第一条更贴近当日真实收盘状态。
+                    by_date[str(row["date"])] = row
+            rows = [by_date[d] for d in sorted(by_date)][-days:]
+        else:
+            error = "时间线文件尚未生成"
     except Exception as exc:  # 观测接口失败不得影响主页面
         logger.debug("gate_timeline 读取失败: %s", exc)
         rows = []
-    return jsonify({"rows": rows, "conditions": GATE_TIMELINE_CONDITIONS})
+        error = f"{type(exc).__name__}: {exc}"
+
+    hint = None
+    if not rows:
+        hint = (
+            "本区尚无闸门时间线数据。该文件由引擎在每个交易日的运行轮次里追加一行，"
+            "非交易日（周末/节假日）与新建区首次启动前都不会产生。"
+            "首个交易日开盘后会自动出现第一行；"
+            "若要立刻拿到与实盘区同口径的历史对照，可跑 "
+            "scripts/seed_zone_timeline.py --to paper --apply"
+        )
+
+    return jsonify({
+        "rows": rows,
+        "conditions": GATE_TIMELINE_CONDITIONS,
+        "file": file_label,
+        "n_days": len(rows),
+        "error": error,
+        "hint": hint,
+    })
 
 
 @bp.route("/api/signals")

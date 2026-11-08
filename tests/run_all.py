@@ -491,7 +491,18 @@ def _collect_tests():
             #   钉死：测试与审计引用**同一张表**（`is` 同一性）；豁免只对登记的
             #   具体值生效（生产多一只 / 回测把探针抄进基线都必须回到 ★漂移）；
             #   表里的生产值 = 现网真实值；登记字段不得与 MUST_MATCH 双归类。
-            "tests.test_rsi_baseline_declared"]
+            "tests.test_rsi_baseline_declared",
+            # 【2026-11-08】闸门卡点时间线：跨区 source / 跨重启去重 / 空态诊断 /
+            #   历史共享脚本。登记理由同上一条：本 runner 用显式清单，不写进来
+            #   就永远不执行。它守的三件真事全在生产上发生过：
+            #   ① `gate_timeline_row()` 的 source 曾硬编码 "live"，paper 写出的行
+            #      也自称 live，两区日志无法区分来源；
+            #   ② `_gate_timeline_date` 只在引擎内存，盘中重启即丢 ⇒ 同一交易日被
+            #      重复追加（logs/gate_timeline.jsonl 已有 10-29×3 / 10-30×2 /
+            #      11-03×2 共 6 行重复，热力矩阵同日画成多个格子、日期错位）；
+            #   ③ 读端 `/api/gate_timeline` 不按 date 去重、空态无 hint，
+            #      观察区新建当晚只显示一句「暂无时间线数据」，看不出是故障还是空。
+            "tests.test_gate_timeline_zone"]
     tests = []
     import_errors = []
     for m in mods:

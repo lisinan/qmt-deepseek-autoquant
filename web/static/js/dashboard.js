@@ -953,7 +953,12 @@
     if (!box) return;
     var rows = (data && data.rows) || [];
     if (!rows.length) {
-      box.innerHTML = '<div class="muted tl-empty">暂无时间线数据（等待每日回填/实时追加）</div>';
+      // 空态必须同时回答「为什么空」和「什么时候会有」：观察区（paper）是新建库、
+      // 又赶上休市，原来那句「等待每日回填/实时追加」在页面上看就像故障。
+      // 后端 /api/gate_timeline 现在会返回 hint（含文件名与处置命令），优先用它。
+      var hint = (data && data.hint)
+        ? data.hint : '暂无时间线数据（等待每日回填/实时追加）';
+      box.innerHTML = '<div class="muted tl-empty">' + esc(hint) + '</div>';
       if (scale) scale.innerHTML = '';
       return;
     }

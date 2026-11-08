@@ -401,6 +401,16 @@ class Observability:
             # min_passing_candidates（默认 2）只同时够格才放行。
             if all(r.get(k) for k in keys):
                 all_pass_n += 1
+        # source 标记这一行是谁写出来的：live 引擎写 "live"、观察区写 "paper"。
+        # 【2026-11-08 修】原先是硬编码 "live"，导致 paper 区写出的行也自称 live，
+        #   两区日志一旦合并/对照就无法区分来源。回填脚本
+        #   （scripts/_res_gate_timeline_backfill.py）靠 source=="live" 保留行，
+        #   而 live 引擎的 exec_mode 恒为 "live"，故此改动对 live 逐位不变。
+        #   测试替身（SimpleNamespace 无 exec_mode）与非字符串值一律回落 "live"，
+        #   保持 tests/test_gate_detail.py:155 的既有断言不变。
+        src = getattr(self._owner, "exec_mode", None)
+        if not isinstance(src, str) or not src:
+            src = "live"
         return {
             "date": _date.today().isoformat(),
             "universe_n": len(rows),
@@ -408,7 +418,7 @@ class Observability:
             "trend_up": trend_up,
             "all_pass_n": all_pass_n,
             "best": self._pick_best_candidate(rows),
-            "source": "live",
+            "source": src,
         }
 
     @staticmethod

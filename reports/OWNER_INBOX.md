@@ -1011,3 +1011,118 @@ tushare 日线独立复核：`20261105 close=493.33` / `20261106 close=448.00`�
   绝不能出现指向 5000 的兜底 —— 那会把观察区拉成第二个 live。
   — 证据：`scripts/startup_all.bat`（无 paper 分支）· `scripts/run_paper.bat`
   — 发现于 主理人 2026-11-08 — `[挂起，等 OWNER]`
+
+---
+
+## 2026-11-08 23:00 · 「观察区没有数据」根因核查（只读实测）
+
+**结论：观察区没坏。它在线、快照完整，是账本里一行数据都没有 —— 因为库是今晚新建的，且今天是周日休市。**
+
+### 一、三层证据（同一时刻实测）
+
+| 层 | 实测值 | 含义 |
+|---|---|---|
+| 进程 | pid **5416** 存活，124 MB | 引擎活着 |
+| HTTP | `GET /api/snapshot` → **200 / 0.08s** | 取数正常，**不是超时** |
+| 快照 | `exec_mode=paper` `data_mode=tushare` `broker=paper_no_trade`，候选池 30 只 | 身份/通道/池都对 |
+| 会话 | `state=closed_non_trading_day` `trading_now=false` **`tick=0`** | 主循环在守卫里休眠，**一轮都没跑过** |
+| **账本** | `storage_paper/qmt.db` 10 张表：`equity_snapshots` **0**、`signals` **0**、`sector_recommendations` **0**、`fills` **0**、`orders` **0** | **空的** |
+| 对比 live | `storage/qmt.db` `equity_snapshots` **1,216 行 / 244 点** | live 有历史，paper 没有 |
+
+`tick=0` 是铁证：`event_engine.py:1396` 的 `_tick_count += 1` 在守卫 `continue` **之后**，
+所以「从未进入交易时段」必然表现为 `tick=0`。这不是主循环挂掉。
+
+### 二、为什么 live 有、paper 没有
+
+- **分库不继承**：zone 隔离后 paper 用 `storage_paper/qmt.db`（11-08 19:57 新建），
+  live 的 6,629 条历史一条都没迁过来。看板 `_read_series()` 有「窗口空则退回全表末 N 行」的兜底，
+  但全表也是 0 行 ⇒ 曲线 0 点、板块/个股/信号 0 条 ⇒ 页面显示「该区尚无板块数据（交易日盘中产生）」。
+- **写入只在轮次里**：`equity_snapshots` 由 `_save_equity_with_ledger()`（`event_engine.py:3914`）
+  在**每轮**写、**60 秒**节流；`sector_recommendations` 每 **5 tick** 写。跑 0 轮 ⇒ 写 0 行。
+
+### 三、之前怀疑的 3 秒超时已排除
+
+`scripts/zone_dashboard.py:67 SNAP_TIMEOUT=3.0`，而 22:00 首次实测 5001 根路径 15.36s ——
+曾怀疑是超时。**现在实测 0.079s**，看板 `_read_series` 对 paper 库 `error=None`（能读，只是 0 行）。
+15.36s 只是**首次冷启动预热**（补拉 38 只日线 + 5,579 只名称缓存），之后常驻热。此怀疑作废。
+
+### 四、明天开盘会发生什么（无需人工干预）
+
+- `event_engine.py:1394` 每 `IDLE_REFRESH_INTERVAL` 秒醒来问一次 `is_trading_time()`，
+  09:30 自动破守卫 ⇒ `tick` 从 0 开始涨。
+- **首轮就写第一条 `equity_snapshots`**，之后约每分钟一点；`sector_recommendations` 第 5 tick 起有行。
+- 09:30 后约 5 分钟，看板观察区的曲线/板块/个股/信号应全部出现。
+
+### 五、[P1] 需要 OWNER 知道的一个真实风险
+
+**paper 区从建库至今从未跑过任何一轮**（`tick=0`）⇒ **明天 09:30 是观察区的首次实跑**。
+tushare 行情 → 评分 → 漏斗 → `paper_no_trade` 拒单桩这条链路，在 paper 区**一次都没验证过**。
+live 侧链路是通的（今天已验），但 paper 是独立进程、独立库、独立风控状态，不能假定等同。
+建议明天开盘后 5 分钟看一次 5001 的 `tick` 与 `storage_paper/qmt.db` 的 `equity_snapshots` 行数。
+
+— 证据：`storage_paper/qmt.db`（10 表全 0，`engine_state` 初始值）· `curl 5001/api/snapshot`（`tick=0`）·
+`event_engine.py:1394/3914/4474` · `scripts/zone_dashboard.py:67/95-140`
+— 发现于 主理人 2026-11-08 — `[INFO，无需处置；第五节是明天的观察点]`
+
+---
+
+## 2026-11-08 23:10 · 观察区「闸门卡点时间线」空 —— 根因 + 已修四处 + 已播种历史
+
+**结论：不是故障，但确实有三个真缺陷被它掩盖着。已修完并给观察区补上 868 行同口径历史。**
+
+### 一、空的三层原因
+
+1. **文件根本没生成**：`logs_paper/gate_timeline.jsonl` 不存在（live 的是 `logs/gate_timeline.jsonl`，872 行）。
+   该文件由引擎在**交易日**的轮次里追加，今天周日 + paper 区 `tick=0`（从未跑过轮次）⇒ 一行没有。
+2. **分库把「市场属性」也分了**：`gate_timeline` 记的是「固定 23 只宇宙里，每天 7 个条件各有几只通过」，
+   只取决于那天的日线与固定宇宙 —— 与账户/持仓/执行模式**无关**，两区算出来的行本就该相等。
+   但它跟着 `LOG_DIR` 一起分区，于是观察区新建后从零累积。这是**分库设计的一个疏漏**，已写进 `docs/ZONE.md §7.x`。
+3. **空态没有解释**：前端只显示「暂无时间线数据（等待每日回填/实时追加）」，
+   看不出是坏了还是本来就没有 —— 所以你才需要问这一句。
+
+### 二、顺带查出的三个真缺陷（都已修）
+
+| # | 缺陷 | 生产上的实证 |
+|---|---|---|
+| 1 | `gate_timeline_row()` 的 `source` **硬编码 `"live"`** | paper 写出的行也自称 live，两区日志无法区分来源 |
+| 2 | 去重标志 `_gate_timeline_date` **只在内存**，盘中重启即丢 | `logs/gate_timeline.jsonl` 已有 `10-29`×3、`10-30`×2、`11-03`×2 共 **6 行重复** |
+| 3 | 读端 `/api/gate_timeline` **不按 date 去重** | 重复日会在热力矩阵里画成多个格子、**日期横向错位**（末 8 天里 10-30 与 11-03 各出现两次） |
+
+修法：
+1. `source` 改取 `owner.exec_mode`，无该属性时回落 `"live"`（保住 `test_gate_detail.py:155` 的既有断言）。
+2. 首次调用时读文件尾回灌 `_read_last_timeline_date()`（与 `open_date` 的「DB→内存回灌」同源）。
+3. 读端按 date 去重（同日保留**最后一条**），并返回 `hint` / `file` / `error` 供空态显示。
+
+### 三、已做的处置：给观察区播种 868 行同口径历史
+
+```
+python scripts/seed_zone_timeline.py --to paper            # dry-run
+python scripts/seed_zone_timeline.py --to paper --apply    # 实际写（幂等）
+```
+
+- 实测结果：`logs_paper/gate_timeline.jsonl` **868 行**（2023-04-07 → 2026-11-06），
+  每行带 `origin_zone="live"` 标明**不是本区跑出来的**。
+- **live 文件逐位未动**：仍是 872 行、mtime `2026-11-06 09:30`。
+- 幂等已验证：再跑一次输出「无需写入」。
+- 安全边界：`--to live` 直接拒绝（退出码 2）；目标文件按 date 升序**整体重写**而非 append
+  （append 会让「补更早的日期」破坏单调性 —— 这是写完第一版才发现的真 bug，已改）。
+- **观察区 5001 无需重启就已生效**（只是文件存在了）：实测 `--days 5` 返回
+  11-02/11-03/11-04/11-05/11-06 五行。
+
+### 四、需要你决定/执行的两件事
+
+1. **[需重启] paper 进程重启后**，空态文案与「按 date 去重 / hint」才生效（现在跑的是旧代码）。
+   **不重启也能看**，只是 live 侧那 6 行重复还会画成多格。
+2. **[需重启] live 进程重启后**，读端去重才生效 —— 现在 live 页面末 8 天里
+   10-30 与 11-03 各画了两次（数据没错，只是格子多）。改动不影响下单路径，可以等下次自然重启。
+
+### 五、验证
+
+- 新增 `tests/test_gate_timeline_zone.py` **15 例**（含正向对照：把 `source` 改回硬编码 `"live"` 必须变红）。
+- 已登记进 `tests/run_all.py` 的显式清单（**不登记就永远不执行** —— 这个坑 runner 注释里写过）。
+- 全量回归：**1012 PASS / 33 FAIL / 1045**（997+15 新增全绿；33 个失败与基线逐一致，全是 xtdata `not authenticated` 环境级联）。
+- 隔离自检 `zone_preflight.py`：**PASS 16 / WARN 2 / FAIL 0**，与重启后一致，未见新越界告警。
+
+— 证据：`logs_paper/gate_timeline.jsonl`（868 行）· `logs/gate_timeline.jsonl`（872 行，未改）·
+`engine/observability.py:404-421` · `engine/event_engine.py:255-291,3946-3970` · `web/routes.py:121-192`
+— 发现于 主理人 2026-11-08 — `[已修，两处重启后生效]`

@@ -274,6 +274,45 @@ logs_paper/quant_system.log     2026-11-08 20:09:43,394   DynamicUniverse 刷新
 2026-11-08 已做一次性迁移：`storage/dynamic_universe.json` → `storage_paper/dynamic_universe.json`
 （读 live、写 paper，live 文件 mtime 不变）。之后 paper 刷新成功会用自己的数据覆盖。
 
+### 7.x 但日志分两类：账户属性 vs 市场属性
+
+`LOG_DIR` 整体跟着 zone 走（`logs/` ↔ `logs_paper/`）是对的，但**日志里混着两种东西**，
+不能一律当作「本区私有」：
+
+| 文件 | 属性 | 跨区可共享？ |
+|---|---|---|
+| `quant_system.log` / `notices.log` / `engine.pid` | **账户属性**：本进程的日志与单实例锁 | ❌ 绝不能 |
+| `gate_timeline.jsonl` | **市场属性**：固定 23 只宇宙里，每天 7 个条件各有几只通过 | ✅ 同口径可共享 |
+
+`gate_timeline` 的值只取决于「那天的日线和固定宇宙」——`Observability._fixed_universe()`
+是常量集合、`gate_detail()` 读同一份日线。**两个区算出来的行本该相等**，与账户、持仓、
+执行模式全无关。所以它跟着 zone 分文件之后，观察区新建当晚就只剩空表：
+`logs/gate_timeline.jsonl` 有 872 行历史，`logs_paper/gate_timeline.jsonl` 一行都没有。
+
+处置（2026-11-08）：`scripts/seed_zone_timeline.py` 把源区已有日期补进目标区，
+**只补缺失、绝不覆盖**，每行加 `origin_zone` 字段标明不是本区跑出来的。
+
+```bash
+python scripts/seed_zone_timeline.py --to paper            # dry-run，只报会补几行
+python scripts/seed_zone_timeline.py --to paper --apply    # 实际写（幂等）
+```
+
+- 方向固定「读 live → 写 paper」，`--to live` 直接被拒（退出码 2）。
+- 目标文件按 date 升序**整体重写**（不是 append）——否则补更早的日期会破坏单调性。
+- 建议在目标区引擎未运行时执行，避免与它的追加写并发。
+
+配套修好的三处（`tests/test_gate_timeline_zone.py` 15 例钉死）：
+
+1. `Observability.gate_timeline_row()` 的 `source` 原为**硬编码 `"live"`** ⇒
+   paper 写出的行也自称 live，两区日志无法区分。改为取 `owner.exec_mode`，
+   无该属性时回落 `"live"`（保住 `tests/test_gate_detail.py:155` 的既有断言）。
+2. 去重标志 `_gate_timeline_date` 只在内存 ⇒ 盘中重启后同一天被重复追加。
+   生产文件里已有 `2026-10-29`×3、`10-30`×2、`11-03`×2 共 6 行重复。
+   改为首次调用时读文件尾回灌（`_read_last_timeline_date`）。
+3. `/api/gate_timeline` 读端不按 date 去重 ⇒ 重复日会在热力矩阵里画成多个格子、
+   日期横向错位；且空态只有一句「暂无时间线数据」，看不出是故障还是本来没有。
+   现在按 date 去重（保留最后一条）并返回 `hint` / `file` / `error`。
+
 ### 开盘自检
 
 ```bash
