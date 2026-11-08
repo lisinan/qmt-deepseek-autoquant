@@ -432,7 +432,12 @@ class Observability:
         """决策可观测的降级状态（C8）：元素为简短中文串，可安全 JSON 序列化。"""
         o = self._owner
         degraded: list = []
-        if o.data_mode != "xtdata":
+        # 【2026-11-08】tushare 是**真实数据**的替代源，不是合成行情。
+        # 单列一条是为了让页面诚实显示「刷新粒度变粗」，而不是让人误以为
+        # 引擎在用假价下单。
+        if o.data_mode == "tushare":
+            degraded.append("行情源为 tushare 替代源（数据真实，刷新约 8s）")
+        elif o.data_mode != "xtdata":
             degraded.append(f"行情源非 xtdata（{o.data_mode}）")
         try:
             if o.risk.is_halted:

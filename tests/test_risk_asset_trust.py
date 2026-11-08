@@ -30,6 +30,7 @@ import os
 import sys
 import tempfile
 import time
+import types
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -88,7 +89,14 @@ def test_live_uses_broker_value_not_assembled():
 # ------------------------------------------------ 2. 不可用 ⇒ 跳过（核心防线）
 
 def test_live_untrusted_returns_none_never_falls_back():
-    """券商值刚过期 / 为 0 ⇒ 必须返回 None，绝不能拿拼装值开火。"""
+    """券商值刚过期 / 为 0 ⇒ 必须返回 None，绝不能拿拼装值开火。
+
+    ⚠️ 覆盖边界（2026-11-05 审计标注）：本用例**刻意只取两端** `age=0` 与 `age=300`。
+    120s 附近的整个区间 `age ∈ (120, 300]` 不在本用例射程内 —— 那一带的覆盖责任在
+    `test_trust_and_total_asset_are_exact_complements_across_age()`。
+    标注理由：**没有被标注的覆盖缺口会被后来人当成已覆盖**，那比没有测试更危险
+    （同型教训：`record_ledger` 的 `cnt<2` 短路，见 P3）。
+    """
     for age, total in ((0.0, 0.0), (300.0, BROKER_TOTAL)):
         eng = _engine("live")
         _feed(eng, total, age_sec=age)
@@ -223,3 +231,131 @@ def test_never_judged_is_unknown_and_not_trusted():
     assert snap_ok["asset_basis"] == "broker"
     assert snap_ok["asset_trusted"] is True
     assert snap_ok["risk_asset_used"] > 0
+
+
+# ------------------------------------------------ 8. 补集关系跨 age 轴（2026-11-05 审计新增）
+
+# 刻意让「本地拼装」与「券商值」不相等：否则无法分辨 _total_asset() 到底走了哪一支，
+# 断言会变成恒真（这正是本文件里最容易犯的错 —— 用一个恰好相等的数去测分歧）。
+LOCAL_CASH = 20_000.0
+LOCAL_MV = 30_000.0
+LOCAL_ASSEMBLED = LOCAL_CASH + LOCAL_MV        # = 50,000（不可信时 _total_asset() 的值）
+SPLIT_BROKER = 100_000.0                       # 与 LOCAL_ASSEMBLED 刻意不等
+
+
+def _engine_split():
+    """券商不可用时的本地拼装 = LOCAL_ASSEMBLED(50,000)，可与券商值区分。"""
+    eng = _engine("live")
+    eng._cash = LOCAL_CASH
+    eng._positions[CODE].quantity = 100
+    eng._positions[CODE].last_price = LOCAL_MV / 100.0      # market_value = 30,000
+    eng._broker_total_asset = 0.0
+    eng._broker_total_ts = 0.0
+    return eng
+
+
+def _feed_at(eng, total, ts):
+    """显式时间戳喂券商值 —— **不走真实时钟**，因此 ε 恒为 0。
+
+    既有夹具 `_feed`（:71-73）是 `eng._broker_total_ts = time.time() - age_sec`，
+    那会让「夹具读时钟」与「被测代码读时钟」成为两次独立读取：age=120.0 这个边界
+    样本会因两次读取之间的 ε 偶发落在 `<=120` / `>120` 两侧。
+    这里两边都以同一个字面量 T0 为基准，边界样本变成**确定**样本。
+    """
+    eng._broker_total_asset = float(total)
+    eng._broker_total_ts = float(ts)
+
+
+def _freeze_engine_time(t0):
+    """只替换 `engine.event_engine` **模块命名空间里的** `time`，不动全局 `time` 模块。
+
+    该模块对 time 的真实依赖只有 `time.time`（34 处）与 `time.sleep`（1 处）——
+    其余 grep 得到的 `time.now` / `time.fromisoformat` / `time.combine` /
+    `time.fromtimestamp` 全部是 `datetime.*` 的子串误命中（2026-11-05 逐条核过）。
+    所以 shim 只需这两个方法即可。
+
+    为什么不 patch 全局 `time.time`：那会波及 sqlite / logging / 其他线程，
+    而本测试只需要让**这两次调用**读到同一个时钟，没必要扩大影响面。
+
+    为什么手工 save/restore 而不用 `monkeypatch` 夹具
+    --------------------------------------------------
+    `tests/run_all.py:434` 是 `fn()` —— 本仓的收集器**直接无参调用**，
+    不做 fixture 注入。带 `monkeypatch` 参数的用例在 pytest 下绿、在
+    `run_all` 下报 `TypeError: missing 1 required positional argument`
+    （2026-11-05 实测：826 总数里唯一的 FAILED 就是这条，自伤型红灯）。
+    ⇒ 返回 `restore()`，由调用方 `try/finally` 还原。
+    """
+    saved = EE.time
+    EE.time = types.SimpleNamespace(time=lambda: t0, sleep=lambda _s: None)
+
+    def restore():
+        EE.time = saved
+    return restore
+
+
+def test_trust_and_total_asset_are_exact_complements_across_age():
+    """`_risk_total_asset() is None` ⟺ `_total_asset()` 落到本地拼装，跨整个 age 轴。
+
+    为什么需要这条（而不是再加一个 age=200 的定点点测试）
+    ----------------------------------------------------
+    `engine/event_engine.py:2197 if risk_asset is not None: self._persist_equity(total_asset)`
+    的整条安全性，建立在两处判据**互为补集**之上：
+      · `:4613` `if bt > 0 and (time.time() - ts) <= 120: return bt`   （可信 ⇒ 返回券商值）
+      · `:4664` `if bt <= 0 or (time.time() - ts) > 120: … return None`（不可信 ⇒ None）
+    这个等价关系**没有任何一行代码声明**，只靠两处字面量恰好相同。
+
+    已验证的失效模式（不是假设）：把 `:4664` 的 120 改成 300（`:4613` 仍 120）⇒
+    age=200 时 `_total_asset()` 返回**本地拼装**、而 `risk_asset is not None`
+    ⇒ `:2197` 闸门放行 ⇒ **一条 mode="live" 的脏 EOD 落库**。而本文件原有 5 个用例
+    的取点只有 age=0 与 age=300 ⇒ 两端全绿，age=200 完全不可见。
+    （反向改 `:4613`→300 是安全的：ra 为 None ⇒ 不写行，只是缺行。）
+    ⇒ 所以扫 age 轴能同时给两个方向报警，代价与一个定点测试相同。
+
+    为什么不写成「断言两处共用同一常量 120」：那是钉实现。将来把窗口
+    120→180（两处一起改，完全合理）也会红，然后一定被人加 `# noqa` 或直接删掉。
+    契约是**补集关系**，不是**常量相等**。
+    """
+    T0 = 1_700_000_000.0                    # 固定字面量时钟基准（不用真实时钟）
+    ages = (0.0, 60.0, 119.0, 119.9, 120.0, 120.1, 121.0, 200.0, 300.0, 3600.0)
+
+    for age in ages:
+        # 引擎用真实时钟构造：init 期间可能有内部计时/线程，不冻结更安全
+        eng = _engine_split()
+        restore = _freeze_engine_time(T0)        # 只冻结 event_engine 模块的 time
+        try:
+            _feed_at(eng, SPLIT_BROKER, T0 - age)   # 显式 ts：两边同基准，ε = 0
+            ra = eng._risk_total_asset()
+            ta = eng._total_asset()
+        finally:
+            restore()                            # 还原，下一轮重新构造
+
+        trusted = ra is not None
+        fell_back = abs(ta - LOCAL_ASSEMBLED) < 1e-9
+        assert trusted != fell_back, (
+            f"age={age}s 时补集关系被破坏：risk_asset={ra!r}（可信={trusted}）、"
+            f"total_asset={ta!r}（落到本地拼装={fell_back}）。"
+            f"两者必须严格互为补集 —— 一旦「可信」却能拿到拼装值，"
+            f"engine/event_engine.py:2197 的闸门就会把脏 EOD 以 mode='live' 落库。")
+
+        # 正向取值：可信时必须真的是券商值，不可信时必须真的是拼装值
+        if trusted:
+            assert abs(ta - SPLIT_BROKER) < 1e-9, (
+                f"age={age}s 判为可信，但 total_asset={ta} 不是券商值 {SPLIT_BROKER}")
+        else:
+            assert ra is None and fell_back, f"age={age}s 判为不可信，却未回落到拼装值"
+
+
+def test_complement_holds_for_zero_broker_value_any_age():
+    """券商值 = 0 时，无论多新都必须不可信（`bt > 0` 与 `bt <= 0` 的另一半）。
+
+    与上一条配对：上一条扫时间轴，这一条扫「券商值塌成 0」——事故形态
+    （2026-11-02 那次持仓表被空返回清空）正是 bt=0 而本地拼装还在。
+    """
+    for age in (0.0, 1.0, 119.0):
+        eng = _engine_split()
+        _feed_at(eng, 0.0, time.time() - age)   # 券商值塌成 0
+        assert eng._risk_total_asset() is None, (
+            f"券商值=0 且 age={age}s 时必须返回 None，不得放行")
+        assert abs(eng._total_asset() - LOCAL_ASSEMBLED) < 1e-9, (
+            "本地拼装值应仍可算出（用作对照），但不得被当作可信")
+        assert eng._risk_asset_basis == "untrusted"

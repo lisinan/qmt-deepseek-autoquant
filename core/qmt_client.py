@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import math
+import os
 import random
 import sys
 import threading
@@ -364,6 +365,48 @@ class QMTClient:
         if ok:
             self._mode_since = time.time()
 
+    # ======================================================== 构造 / 选源
+
+    # 【2026-11-08】行情源优先级。xtdata 断供（QMT 2.1.32.0 框架白名单把外部
+    # python 判成 illegal pid ⇒ ~/.xtquant/*/xtdata.cfg 不再生成 ⇒ not
+    # authenticated）时，原实现直接落 mock，而 mock 会让
+    # ``ALLOW_MOCK_TRADING=False`` 下的整条卖出链静默禁用（含 −18% 硬止损）。
+    # 现在中间插一层 tushare 真实行情，见 core/tushare_quote.py。
+    #
+    # 强制指定（诊断/回归用）：
+    #   QMT_QUOTE_SOURCE=xtdata   只试 xtdata（保持旧行为）
+    #   QMT_QUOTE_SOURCE=tushare  只试 tushare
+    #   QMT_QUOTE_SOURCE=auto     默认：xtdata → tushare → mock
+    @staticmethod
+    def _preferred_sources() -> List[str]:
+        pref = (os.environ.get("QMT_QUOTE_SOURCE") or "auto").strip().lower()
+        if pref in ("xtdata", "qmt", "miniqmt"):
+            return ["xtdata"]
+        if pref in ("tushare", "ts"):
+            return ["tushare"]
+        return ["xtdata", "tushare"]
+
+    def _build_impl(self):
+        """按优先级构造行情实现。成功返回 ``(impl, mode)``，全失败 ``(None, "")``。
+
+        xtdata 分支保留原有的 ``UnicodeError`` 重试语义：控制台编码异常不代表
+        xtdata 本体不可用，重试一次（此时 stdio 已按 ASCII 安全路径处理）。
+        """
+        for name in self._preferred_sources():
+            try:
+                if name == "xtdata":
+                    try:
+                        return _XtdClient(), "xtdata"
+                    except UnicodeError:
+                        return _XtdClient(), "xtdata"
+                if name == "tushare":
+                    from core.tushare_quote import TushareQuoteClient
+                    return TushareQuoteClient(), "tushare"
+            except Exception as e:  # noqa: BLE001 - 单源失败继续试下一个
+                self._record_probe(False, f"{name}: {type(e).__name__}: {e}")
+                logger.warning("行情源 %s 不可用: %s: %s", name, type(e).__name__, e)
+        return None, ""
+
     def __init__(self):
         self._impl = None
         self._mode = "mock"
@@ -378,31 +421,22 @@ class QMTClient:
         self._probe_err: str = ""
         self._probe_n: int = 0
         self._mode_since: float = time.time()
-        try:
-            self._impl = _XtdClient()
-            self._mode = "xtdata"
+
+        impl, mode = self._build_impl()
+        if impl is not None:
+            self._impl = impl
+            self._mode = mode
             self._record_probe(True)
             # 用 ASCII-safe 消息，避免 cp1252 编码失败
-            logger.info("QMTClient: connected to miniQMT (xtdata)")
-        except UnicodeError:
-            # 控制台编码异常不算 xtdata 不可用，重试一次（先 ASCII 输出）
-            try:
-                self._impl = _XtdClient()
-                self._mode = "xtdata"
-                self._record_probe(True)
-                logger.info("QMTClient: connected to miniQMT (xtdata)")
-            except Exception as e:
-                self._record_probe(False, f"{type(e).__name__}: {e}")
-                logger.warning("QMTClient: xtdata unavailable, fallback to mock (%s: %s)",
-                               type(e).__name__, e)
-                self._impl = _MockClient()
-                self._mode = "mock"
-        except Exception as e:
-            self._record_probe(False, f"{type(e).__name__}: {e}")
-            logger.warning("QMTClient: xtdata unavailable, fallback to mock (%s: %s)",
-                           type(e).__name__, e)
-            self._impl = _MockClient()
-            self._mode = "mock"
+            logger.info("QMTClient: quote source = %s", mode)
+            return
+
+        self._impl = _MockClient()
+        self._mode = "mock"
+        self._record_probe(False, getattr(self, "_probe_err", "") or "no quote source")
+        logger.warning(
+            "QMTClient: 真实行情源均不可用，降级 mock（合成行情，%s）",
+            "全部买卖将被禁止")
 
     def health(self) -> dict:
         """探活与模式的自述快照（Web 面板用；绝不抛异常、绝不发起网络/IO）。
@@ -450,14 +484,11 @@ class QMTClient:
         ``qmt_client.get_ticks`` 转发，无需重绑定引用），失败保持 mock 不变。
         返回是否成功。零风险：仅在明确调用时执行，不影响既有启动路径。
         """
-        if self._mode == "xtdata":
+        if self._mode in ("xtdata", "tushare"):
             return True
-        try:
-            impl = _XtdClient()
-        except Exception as e:  # noqa: BLE001 - 探活失败即保持 mock
-            self._record_probe(False, f"{type(e).__name__}: {e}")
-            logger.info("行情源重连未成功，继续 mock: %s: %s",
-                        type(e).__name__, e)
+        impl, mode = self._build_impl()
+        if impl is None:
+            logger.info("行情源重连未成功，继续 mock（各源探活均失败）")
             return False
         try:
             old_codes = getattr(self._impl, "subscribed", None)
@@ -466,10 +497,10 @@ class QMTClient:
         except Exception:  # noqa: BLE001 - 订阅失败不影响数据源已切换
             pass
         self._impl = impl
-        self._mode = "xtdata"
+        self._mode = mode
         # 【2026-10-29】探活档案：成功即记录并清空历史失败原因
         self._record_probe(True)
-        logger.info("行情源已重连至 miniQMT(xtdata)，退出 mock 模式")
+        logger.info("行情源已重连至 %s，退出 mock 模式", mode)
         return True
 
     def subscribe(self, codes: Iterable[str]) -> None:

@@ -308,10 +308,19 @@ def _verdict(session, market, trading) -> Dict[str, Any]:
                        "msg": "引擎未接入 ⇒ 行情陈旧度 / 1m 缓冲 / 风控 / 保证金系数"
                               "均为未知，本面板的绿色不代表正常"})
 
-    if mode and mode != "xtdata":
+    # 【2026-11-08】"xtdata" 不是唯一的「真实行情」。tushare 替代源
+    # （core/tushare_quote.py）给的是真实成交数据，只是刷新粒度约 8s、
+    # 无五档深度 —— 报成「合成行情 ⇒ 全部买卖被禁止」是**假的致命告警**，
+    # 会把 OWNER 引导去查根本不存在的故障。
+    REAL_DATA_MODES = ("xtdata", "tushare")
+    if mode and mode not in REAL_DATA_MODES:
         issues.append({"level": "bad", "tag": "数据源",
                        "msg": f"行情源已降级为 {mode}（合成行情）⇒ 全部买卖被禁止。"
                               f"最近探活失败：{client.get('probe_err') or '未知'}"})
+    elif mode == "tushare":
+        issues.append({"level": "warn", "tag": "数据源",
+                       "msg": "行情源为 tushare 替代源（xtdata 断供）。数据真实、"
+                              "可正常成交，但刷新粒度约 8s 且无五档深度。"})
     if trading.get("mock_block"):
         issues.append({"level": "bad", "tag": "成交闸门",
                        "msg": f"引擎当前会拦截全部成交：{trading.get('mock_block')}"})

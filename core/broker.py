@@ -14,7 +14,7 @@ import logging
 import threading
 import time
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from config.settings import QMT_USERDATA_PATH, TRADING_CONFIG_FILE
 
@@ -27,6 +27,8 @@ _DEFAULT_CONFIG = {
     "broker_qmt_mode": "XtMiniQmt",
     "accounts": {"cash": "", "credit": ""},
     "auto_subscribe": True,
+    # 文件桥共享目录（仅 broker_qmt_mode="bridge" 时使用）
+    "bridge_root": r"C:\pazq_qmt_bridge",
 }
 
 
@@ -116,6 +118,43 @@ class QMTBroker:
 
     # ---------- 连接 ----------
 
+    def _probe_account(self) -> Tuple[bool, str]:
+        """用一次真实账户查询证实交易通道可用。返回 (ok, reason)。
+
+        为什么必须有这一层：``XtQuantTrader.connect()`` 在「QMT 已启动但账号
+        未登录」「xtquant 与 QMT 版本不匹配」两种情况下同样返回 **-1**，与
+        「重复 connect」在返回值上**完全无法区分**。原实现把 ``rc == -1`` 直接
+        当成功 ⇒ 引擎以为自己有通道，实际一条账户数据都取不到。
+
+        2026-11-07 23:33 实测（QMT 升到 2.1.32.0、xtquant 仍是 250516）：
+            connect()              -> True    ← 假阳性
+            is_connected           -> True
+            query_stock_asset      -> None    ← 唯一可靠的失败信号
+            get_asset()            -> {cash:0, total_asset:0, ...}（被伪装成"没钱"）
+        后果：``_sync_broker_positions`` 收到 cash=0 / 持仓 0 只，300308 的
+        −18% 硬止损从此**没有监控对象**。
+
+        判据取 ``query_stock_asset() is None``：未就绪时实测为 None，正常登录后
+        返回真实对象。**不校验 total_asset > 0** —— 结算/盘前时段该值可能为 0，
+        但通道本身是好的，不应据此阻断引擎启动。
+
+        xtquant 自身语义亦支持此判据：``xttrader.py`` 中
+        ``connect()`` 写的是 ``self.connected = (result == 0)``，
+        ``query_stock_asset()`` 在响应为空时明确 ``return None``。
+        """
+        if self._trader is None:
+            return False, "trader 未创建"
+        acc = self._account_obj("cash") or self._account_obj("credit")
+        if acc is None:
+            return False, "accounts 未配置可用账户"
+        try:
+            a = self._trader.query_stock_asset(acc)
+        except Exception as e:
+            return False, f"query_stock_asset 异常: {e}"
+        if a is None:
+            return False, "query_stock_asset 返回 None（QMT 未登录/xtquant 版本不匹配）"
+        return True, ""
+
     def connect(self, force: bool = False) -> bool:
         # 1) 已连且非强制 → 直接返回（幂等，避免自伤重连）
         with self._lock:
@@ -154,15 +193,22 @@ class QMTBroker:
             with self._lock:
                 self._connected = False
             return False
+        # 【2026-11-07 P0】rc=-1 必须再做一次真实账户查询才能定性 ——
+        # 「重复 connect」与「QMT 未就绪 / xtquant 版本不匹配」返回的是同一个 -1。
+        # 锁外执行：query_stock_asset 是阻塞 IO，在锁内跑会卡住回调线程。
+        probe_ok, probe_why = False, "connect rc=%s 非 0/-1" % rc
+        if rc == 0 or rc == -1:
+            probe_ok, probe_why = self._probe_account()
+
         with self._lock:
-            if rc == 0 or rc == -1:
+            if (rc == 0 or rc == -1) and probe_ok:
                 self._connected = True
                 if rc == 0:
                     logger.info("XtQuantTrader 已连接 (path=%s, session=%s)",
                                 self._cfg["userdata_path"], self._cfg["session_id"])
                 else:
-                    logger.info("XtQuantTrader.connect rc=-1（已连接/重复 connect，按已连处理）"
-                                " (path=%s, session=%s)",
+                    logger.info("XtQuantTrader.connect rc=-1（重复 connect）且账户探测通过，"
+                                "按已连处理 (path=%s, session=%s)",
                                 self._cfg["userdata_path"], self._cfg["session_id"])
                 # 【2026-09-16 优化】交易连接（重）建立后，通知上层恢复行情订阅与持仓同步。
                 # 行情(xtdata)与交易(XtQuantTrader)是两个独立连接：交易端断连恢复不会
@@ -174,7 +220,12 @@ class QMTBroker:
                     except Exception as e:
                         logger.debug("on_reconnected 回调异常(忽略): %s", e)
                 return True
-            logger.warning("XtQuantTrader.connect rc=%s", rc)
+            if rc == 0 or rc == -1:
+                logger.warning("XtQuantTrader.connect rc=%s 但账户探测失败（%s）⇒ 判为**未连接** "
+                               "(path=%s, session=%s)", rc, probe_why,
+                               self._cfg["userdata_path"], self._cfg["session_id"])
+            else:
+                logger.warning("XtQuantTrader.connect rc=%s", rc)
             self._connected = False
             return False
 
@@ -344,8 +395,16 @@ class QMTBroker:
             return None
         try:
             raw = self._trader.query_stock_positions(acc)
+            # 【2026-11-07 P0】None 必须原样上抛，不得伪装成「确认无持仓」。
+            # 原实现 `for p in raw or []` 把 None 吞成 []，直接穿透上游
+            # event_engine.py:4207 的 `if raw is None`（该防护正是为区分
+            # 「查询失败」与「真空仓」而写），再经 SYNC_EMPTY_CONFIRM_N 两轮
+            # 确认后就把本地账本清零 —— 止损失去监控对象。
+            if raw is None:
+                logger.warning("query_stock_positions 返回 None（QMT 未就绪），按查询失败处理")
+                return None
             out = []
-            for p in raw or []:
+            for p in raw:
                 out.append({
                     "code": getattr(p, "stock_code", ""),
                     "quantity": int(getattr(p, "volume", 0) or 0),
@@ -367,8 +426,12 @@ class QMTBroker:
             return None
         try:
             raw = self._trader.query_stock_orders(acc)
+            # 【2026-11-07 P0】同 get_positions：None ≠ 无委托（见该处说明）。
+            if raw is None:
+                logger.warning("query_stock_orders 返回 None（QMT 未就绪），按查询失败处理")
+                return None
             out = []
-            for o in raw or []:
+            for o in raw:
                 out.append({
                     "order_id": str(getattr(o, "order_id", "")),
                     "code": getattr(o, "stock_code", ""),
@@ -392,8 +455,12 @@ class QMTBroker:
             return None
         try:
             raw = self._trader.query_stock_trades(acc)
+            # 【2026-11-07 P0】同 get_positions：None ≠ 无成交（见该处说明）。
+            if raw is None:
+                logger.warning("query_stock_trades 返回 None（QMT 未就绪），按查询失败处理")
+                return None
             out = []
-            for t in raw or []:
+            for t in raw:
                 out.append({
                     "order_id": str(getattr(t, "order_id", "")),
                     "code": getattr(t, "stock_code", ""),
@@ -434,6 +501,13 @@ class QMTBroker:
             return None
         try:
             a = self._trader.query_stock_asset(acc)
+            # 【2026-11-07 P0】None 必须原样上抛，绝不能伪装成「账户全 0」。
+            # getattr(None, "cash", 0) 返回 0.0，于是「查不到账户」被引擎读成
+            # 「账户真的没钱」⇒ _cash=0 / _broker_total_asset=0，风控拿它算
+            # dlp 直接失真；同时穿透上游 event_engine.py:4194 的 `if asset:`。
+            if a is None:
+                logger.warning("query_stock_asset 返回 None（QMT 未就绪），按查询失败处理")
+                return None
             return {
                 "cash": float(getattr(a, "cash", 0) or 0),
                 "frozen": float(getattr(a, "frozen_cash", 0) or 0),
@@ -446,4 +520,29 @@ class QMTBroker:
 
 
 # 模块级单例
-qmt_broker = QMTBroker()
+#
+# 【2026-11-08】交易通道分流。
+# 背景：QMT 2.1.32.0 之后外部 python 经 xttrader 连接被判 ``illegal pid``
+# （提权后仍拒），userdata_mini 又缺 up_queue_xtquant ⇒ 两条路都要券商侧动作。
+# 走 ``broker_qmt_mode="bridge"`` 时改用文件桥（下单由 QMT 内策略的 passorder
+# 执行，不经过 xttrader），引擎其余代码零改动。
+#
+# 回滚：把 trading_config.json 的 broker_qmt_mode 改回 "XtMiniQmt" 并重启。
+def _make_broker():
+    try:
+        cfg = _load_config()
+    except Exception:
+        cfg = {}
+    mode = str(cfg.get("broker_qmt_mode") or "").strip().lower()
+    if mode in ("bridge", "qmt_bridge", "file_bridge"):
+        try:
+            from core.broker_bridge import BridgeBroker
+            logger.warning("交易通道 = BridgeBroker（文件桥；xttrader 未启用）"
+                           " root=%s", cfg.get("bridge_root"))
+            return BridgeBroker(cfg=cfg)
+        except Exception as e:
+            logger.exception("BridgeBroker 初始化失败，回退 QMTBroker: %s", e)
+    return QMTBroker()
+
+
+qmt_broker = _make_broker()

@@ -578,8 +578,12 @@ class EventEngine:
         （实测 2026-09-29 21:56），此时 miniQMT 探活失败 ⇒ 整个次日交易时段都用
         合成价，实盘铁证见 settings 注释表。此处补一次重连机会。
         """
-        if qmt_client.mode == "xtdata":
-            self.data_mode = "xtdata"
+        # 【2026-11-08】tushare 也是**真实行情**（非合成），必须与 xtdata 同等对待。
+        # 只认 "xtdata" 会让换源后每轮都走到下面那条告警分支，打出
+        # 「行情源重连失败：仍处于 mock（合成行情），本时段全部买卖已禁用」
+        # —— 而实际 data_mode="tushare" 时 mock 闸门根本不生效，是纯粹的假警报。
+        if qmt_client.mode in ("xtdata", "tushare"):
+            self.data_mode = qmt_client.mode
             return True
         try:
             ok = qmt_client.reattach()
@@ -590,7 +594,7 @@ class EventEngine:
         if ok:
             system_notice(
                 "SUCCESS", "系统",
-                "行情源已重连 miniQMT(xtdata)，退出 mock 模式，恢复正常交易。")
+                f"行情源已重连 {self.data_mode}，退出 mock 模式，恢复正常交易。")
         else:
             system_notice(
                 "ERROR", "风控",

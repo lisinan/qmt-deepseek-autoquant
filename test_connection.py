@@ -89,13 +89,18 @@ def main() -> int:
 
     # 4) 总结
     print("\n" + "=" * 60)
-    if qmt_client.mode == "xtdata" and qmt_broker.mode == "xttrader":
-        print("✅ 全连接成功")
+    # 【2026-11-08】"xtdata" 不再是唯一真实行情源：xtdata 断供时由
+    # core/tushare_quote.py 顶上（真实数据、约 8s 刷新、无五档）。交易侧同理，
+    # "bridge" 是大 QMT 文件桥（passorder），与 xttrader 等效可用。
+    real_quote = qmt_client.mode in ("xtdata", "tushare")
+    real_trade = qmt_broker.mode in ("xttrader", "bridge")
+    if real_quote and real_trade:
+        print(f"✅ 全连接成功（行情={qmt_client.mode} 交易={qmt_broker.mode}）")
         return 0
-    if qmt_client.mode == "xtdata":
-        print("⚠ 行情已连，交易未连（minibroker 未启）")
+    if real_quote:
+        print(f"⚠ 行情已连（{qmt_client.mode}），交易未连（{qmt_broker.mode}）")
         return 0
-    print("ℹ miniQMT 未运行，已自动降级 mock（可开发/测试）")
+    print("ℹ 真实行情源均不可用，已自动降级 mock（可开发/测试，但禁止成交）")
     return 0
 
 
