@@ -4077,7 +4077,20 @@ class EventEngine:
                 setattr(self, attr, new)
 
     def _save_engine_state(self) -> None:
-        """持久化当前 paper 账本（节流由调用方控制，约 60s 一次 + 优雅退出时）。"""
+        """持久化当前账本（节流由调用方控制，约 60s 一次 + 优雅退出时）。"""
+        # 【2026-11-08 P0】live 且**整个进程从未拿到券商总资产**时禁止落盘。
+        # live 走 restore_ledger=False ⇒ 内存里的 cash/positions 只是构造初值
+        # （2026-11-08 实测：内存 cash=1,000,000、positions={}，而 DB 里是
+        #   cash=11,611.57 + 2 只持仓 + day_open_asset=62,409.6）。
+        # 一旦在断链期落盘（尤其 _shutdown 的优雅退出），会把真实账本覆盖成垃圾：
+        # day_open_asset 变 None、cash 变 1,000,000、持仓清零 ⇒ 次日日内跌幅基准
+        # 全错，熔断口径直接失真。paper 不受影响（永远有本地账本）。
+        # 正常情形下 live 连上券商后 _broker_total_asset>0，照旧落盘（C6 语义不变）。
+        if getattr(self, "exec_mode", "paper") == "live" and \
+                float(getattr(self, "_broker_total_asset", 0.0) or 0.0) <= 0.0:
+            logger.debug("live 尚未拿到券商总资产，跳过账本落盘"
+                         "（防止构造初值覆盖真实账本）")
+            return
         try:
             positions = [{
                 "code": p.code, "name": p.name, "quantity": p.quantity,

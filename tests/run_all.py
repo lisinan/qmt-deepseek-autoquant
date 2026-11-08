@@ -455,6 +455,14 @@ def _collect_tests():
             #   heat_delta 同名校验且 prev_day 缺该板块为 None、空表/缺表/缺库分层降级
             #   不拖垮其它区块、非法 zone ⇒ 400、TTL 60s 内不重复查库。
             "tests.test_zone_hot",
+            # 【2026-11-08】live 断链期**禁止**用构造初值覆盖真实账本（资金安全级）。
+            #   live 走 restore_ledger=False ⇒ 内存只有 cash=1,000,000 / positions={}，
+            #   而 DB 里是 11-06 收盘的真实账本；`_shutdown()` 无条件落盘
+            #   ⇒ 任何一次优雅停止都会把 day_open_asset 写成 None、持仓清零，
+            #   次日日内跌幅基准全错、熔断口径失真。钉死：断链期不写、连上券商照写、
+            #   paper 不受影响、落盘调用点（_persist_equity 60s / _shutdown）不得被删。
+            #   已做正向对照：去掉闸门后该测试必红（cash 11,611.57 → 1,000,000）。
+            "tests.test_live_state_save_guard",
             # 【2026-11-08】QMT 侧**策略本体** qmt_bridge/qmtide_bridge.py 的端到端。
             #   这是真正被部署到 C:\pazq_qmt\python\QMTIDE_BRIDGE.py 的那份文件，
             #   此前零覆盖（test_bridge_executor_e2e 验的是另一份 qmt_executor.py）。
