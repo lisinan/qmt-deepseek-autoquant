@@ -160,7 +160,59 @@ paper 靠 `_NoTradeBroker` 不从这条路过，所以当前不构成风险；�
 
 ---
 
-## 六、验收清单
+## 六、统一看板（一个界面看两个区）
+
+`scripts/zone_dashboard.py` —— **独立进程、纯只读**，默认 `127.0.0.1:5002`。
+
+```bash
+python scripts/zone_dashboard.py                 # 起服务，浏览器开 5002
+python scripts/zone_dashboard.py --once          # 只打一次聚合 JSON（自检）
+python scripts/zone_dashboard.py --port 5010     # 换端口
+```
+
+### 为什么不改主 Web
+
+主 Web（`web/app.py`）是「单引擎绑定」结构：`create_app(engine)` 把一个
+`EventEngine` 塞进 `app.config`，所有路由从它取数。要在同一页面看两个区，必须改
+`web/routes.py` 加跨区取数 —— 而 **live 正在跑，任何 web 层改动都要重启 live 才生效**。
+
+所以看板做成独立进程：**不 import 任何项目模块**（不碰 `config.settings`、不碰
+`core.broker`），对两个引擎零影响；数据只有两条只读路径：
+
+1. HTTP 取两边的 `/api/snapshot`（`SNAP_TIMEOUT=3s`）；
+2. `sqlite3` 以 **`mode=ro`** 只读打开两个库，取 `equity_snapshots` 与今日
+   `orders`/`fills` 计数。
+
+任一区挂掉，页面显示「区域离线」+ 错误串，**不会白屏**（两个区一起看不见是最坏结果）。
+
+### 归一化：只比形状，不比金额
+
+paper 起始 100 万、live 真实 5.8 万，差约 17 倍。绝对金额同图，live 会被压成贴地线。
+所以权益曲线统一**以窗口首点 = 100 归一**（`total_asset / base * 100`），页面有常驻
+提示说明这一点。首点 ≤ 0 时不出点（避免除零 / 符号翻转成反向曲线）。
+
+其余为**逐项对照表**：取值不同则整行高亮 + `≠` 标记 —— 这正是「两个区基础设施同构、
+但身份/通道/资金不同」最直观的呈现。
+
+### 页面看什么
+
+| 区块 | 内容 |
+|---|---|
+| 区卡片 ×2 | 状态点 / `exec_mode` / `data_mode` / `broker_mode` / 总资产 / 现金 / 持仓数 / `halted` pill / 今日委托·成交 / 漏斗与 `no_entry_reason` |
+| 权益曲线 | 双线归一化，带 100 基准虚线，5s 轮询 `/api/zones` |
+| 对照表 | 逐项并列，差异行高亮 |
+
+### 守卫
+
+`tests/test_zone_dashboard.py`（16 例）钉死：`ZONES` 的端口/库路径与
+`core.zone.zone_config()` **逐项相等且互不相交**（防「安静地展示另一个区的数据」）、
+sqlite 必须 `mode=ro` 且源码无写语句、归一化口径、单区离线不抛、看板不得 import
+任何项目模块。**该模块必须在 `tests/run_all.py::_collect_tests()` 注册**，
+否则整文件隐形不执行。
+
+---
+
+## 七、验收清单
 
 ```
 1. curl 127.0.0.1:5001/api/snapshot  ⇒ exec_mode=paper / broker_mode=paper_no_trade
@@ -169,11 +221,13 @@ paper 靠 `_NoTradeBroker` 不从这条路过，所以当前不构成风险；�
 4. logs_paper/quant_system.log 在增长；logs/quant_system.log 只反映 live
 5. logs_paper/engine.pid 的 pid ≠ logs/engine.pid 的 pid
 6. python tests/run_all.py 全绿（除 xtdata 环境类失败）
+7. python scripts/zone_dashboard.py --once ⇒ 两区都 online，且 live/paper 的
+   port 与 db 与 core/zone.py 一致（tests/test_zone_dashboard.py 已钉住）
 ```
 
 ---
 
-## 七、回滚
+## 八、回滚
 
 代码层：`git revert` zone 相关 commit。live 分支零赋值，顺序无关。
 
@@ -182,7 +236,7 @@ paper 靠 `_NoTradeBroker` 不从这条路过，所以当前不构成风险；�
 
 ---
 
-## 八、已知未决
+## 九、已知未决
 
 | # | 内容 | 影响 |
 |---|---|---|

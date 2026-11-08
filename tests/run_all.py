@@ -419,6 +419,15 @@ def _collect_tests():
             #   构造期返回拒单桩且**不实例化** QMTBroker/BridgeBroker；桩的查询返回
             #   None 而不是 []（[] 会清空本地账本）；zone 注入必须早于 engine 导入。
             "tests.test_zone_isolation",
+            # 【2026-11-08 zone】双功能区**统一看板**（scripts/zone_dashboard.py）。
+            #   看板是独立进程 + 纯只读，不进引擎、不碰 config.settings，所以它
+            #   出错的方式只有「悄悄偏离事实」：ZONES 里硬编码的 5000/5001 与两个
+            #   DB 路径是 zone_config() 的派生值，只改一边会**安静地展示另一个区的
+            #   数据**（比报错危险）。钉死：端口/库路径与 core.zone 逐项相等且互不
+            #   相交；sqlite 必须 mode=ro 且源码无写语句；归一化「窗口首点=100」且
+            #   首点非正不出点；单区离线时 online=False 不抛（不白屏）；看板不得
+            #   import 任何项目模块（否则改引擎就得重启看板）。
+            "tests.test_zone_dashboard",
             # 【2026-11-08】QMT 侧**策略本体** qmt_bridge/qmtide_bridge.py 的端到端。
             #   这是真正被部署到 C:\pazq_qmt\python\QMTIDE_BRIDGE.py 的那份文件，
             #   此前零覆盖（test_bridge_executor_e2e 验的是另一份 qmt_executor.py）。
