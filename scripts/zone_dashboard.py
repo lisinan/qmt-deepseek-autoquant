@@ -35,6 +35,7 @@ import sqlite3
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -66,6 +67,14 @@ ZONES = (
 SNAP_TIMEOUT = 3.0       # 单区 HTTP 超时
 SERIES_LIMIT = 240       # 曲线最多取多少个点（够看形状，又不至于卡浏览器）
 SERIES_DAYS = 6          # 曲线窗口：最近 N 个自然日（跨周末时仍能看到上一交易日）
+
+# ---- 热点面板（板块热度 / 个股榜 / 信号流水）----
+HOT_DAYS = 5             # 只回最近 N 个有数据的交易日（够看环比，又不至于把下拉撑爆）
+HOT_SECTORS = 12         # 板块热度 Top N
+HOT_STOCKS = 15          # 个股热度 Top N
+HOT_SIGNALS = 20         # 信号流水最近 N 条
+_HOT_CACHE_TTL = 60      # 热点聚合缓存 TTL（秒），理由见 build_hot
+_HOT_CACHE: dict = {}    # {(zone, day): (写入时刻, payload)} —— 进程内、无持久化
 
 
 # --------------------------------------------------------------------------- 取数
@@ -149,6 +158,244 @@ def _db_stats(db_path: Path) -> dict:
     except Exception:                           # noqa: BLE001
         pass
     return out
+
+
+# --------------------------------------------------------------------- 热点取数
+def _zone_by_key(key: str):
+    """按 key 找区定义；找不到返回 None（端点据此回 400，而不是 500）。"""
+    for z in ZONES:
+        if z["key"] == key:
+            return z
+    return None
+
+
+def _mean(vals) -> "float | None":
+    """非 None 值的均值，保留 2 位；全空 ⇒ None。
+
+    不能把 None 当 0 参与均值：那会把「没算出来」摊成「热度 0.0」，
+    在降序榜里直接沉底，看起来跟「真的冷门」一模一样。
+    """
+    xs = [float(v) for v in vals if v is not None]
+    if not xs:
+        return None
+    return round(sum(xs) / len(xs), 2)
+
+
+def _day_rows(conn, day: str) -> list:
+    """取某交易日各票的**最新一条**读数（每股恰好一条）。
+
+    为什么「每股只取最后一条」，而不是对当天全表求均值：
+    引擎盘中每 15~30 秒重扫一遍，同一只票一天能落几百行
+    （2026-11-06：新易盛 804 行、中际旭创 597 行、中微公司 308 行）。
+    对全表求均值等价于按「被扫描次数」加权 —— 扫得勤的票会主导板块热度，
+    那是采样伪影，不是行情。取当日最后一条 = 该票最新的真实读数，
+    且能逐行对上库里的原始记录（口径可核查）。
+
+    已知局限（实测过，不影响可用性）：每票「最后一条」的时间点并不整齐
+    （2026-11-06 从 09:57 到 15:04 都有），因为引擎只在某票仍是候选时才写它。
+    曾担心这会让 heat_delta 的**方向**失真，故与「按票内均值、再跨票平均」
+    的替代口径逐板块对过账：6 个板块的 Δ 方向完全一致
+    （晶圆代工 -2.97 vs -2.14、AI应用 -3.21 vs -2.88、服务器 -2.26 vs -3.86、
+    AI芯片 -2.71 vs -3.28、光模块 ±0.00、PCB 新进榜 +1.50），
+    即方向可信、幅度有噪声，页面只把方向当箭头用，不展示精确幅度比较。
+    """
+    rows = conn.execute(
+        "SELECT ts, code, name, sector_label, composite, heat_contribution, "
+        "tech_score, fundamental_score, pe, roe, change_pct "
+        "FROM sector_recommendations WHERE substr(ts,1,10) = ?",
+        (day,),
+    ).fetchall()
+    latest = {}
+    for r in rows:
+        code = str(r[1] or "")
+        if not code:
+            continue
+        ts = str(r[0] or "")
+        cur = latest.get(code)
+        if cur is None or ts >= cur["_ts"]:
+            latest[code] = {
+                "_ts": ts,
+                "code": code,
+                "name": r[2],
+                "sector_label": r[3] or "未分类",
+                "composite": r[4],
+                "heat": r[5],
+                "tech": r[6],
+                "fund": r[7],
+                "pe": r[8],
+                "roe": r[9],
+                "change_pct": r[10],
+            }
+    out = []
+    for v in latest.values():
+        v.pop("_ts", None)
+        out.append(v)
+    return out
+
+
+def _agg_sectors(cur_rows: list, prev_rows: list) -> list:
+    """按 sector_label 聚合，并算相对上一交易日的 heat_delta。
+
+    heat_delta = 今日该板块 avg_heat − 上一交易日**同名板块** avg_heat；
+    上一交易日没有这个板块 ⇒ None（不是 0：0 会被读成「热度没变」，
+    而实际是「这板块是今天才进榜的」，含义完全不同）。
+    """
+    def agg(rows: list) -> dict:
+        grouped = {}
+        for r in rows:
+            grouped.setdefault(r["sector_label"], []).append(r)
+        out = {}
+        for label, items in grouped.items():
+            # 龙头 = 板块内综合分最高的一只；综合分全空时退回第一只，
+            # 保证 top 永不为空（页面要显示「龙头是谁」）。
+            best = max(items, key=lambda x: (x["composite"] is not None,
+                                             x["composite"] or 0.0))
+            name = best.get("name")
+            out[label] = {
+                "label": label,
+                "n": len(items),
+                "avg_heat": _mean([i["heat"] for i in items]),
+                "avg_composite": _mean([i["composite"] for i in items]),
+                "avg_change": _mean([i["change_pct"] for i in items]),
+                "top": f"{best['code']} {name}" if name else str(best["code"]),
+            }
+        return out
+
+    cur, prev = agg(cur_rows), agg(prev_rows)
+    out = []
+    for label, s in cur.items():
+        p = prev.get(label)
+        ph = p["avg_heat"] if p else None
+        delta = None
+        if s["avg_heat"] is not None and ph is not None:
+            delta = round(s["avg_heat"] - ph, 2)
+        out.append(dict(s, heat_delta=delta))
+    # avg_heat 降序；None 沉底（用 -1e9 兜住，避免 None 与 float 比较报错）
+    out.sort(key=lambda s: (-(s["avg_heat"] if s["avg_heat"] is not None else -1e9),
+                            s["label"]))
+    return out[:HOT_SECTORS]
+
+
+def _recent_signals(conn, limit: int) -> list:
+    """最近 N 条信号（不限当天，按 ts 降序）。blocked_by 归一成空串。"""
+    rows = conn.execute(
+        "SELECT ts, code, name, side, score, reason, blocked_by "
+        "FROM signals ORDER BY ts DESC LIMIT ?",
+        (int(limit),),
+    ).fetchall()
+    return [{
+        "ts": r[0], "code": r[1], "name": r[2], "side": r[3],
+        "score": r[4], "reason": r[5], "blocked_by": r[6] or "",
+    } for r in rows]
+
+
+def _query_hot(db_path: Path, day=None) -> dict:
+    """热点面板的裸取数 + 聚合（不含缓存）。**绝不抛**：异常一律折成 error 串。"""
+    out = {"day": None, "days": [], "prev_day": None,
+           "sectors": [], "stocks": [], "signals": [], "error": None}
+    if not db_path.exists():
+        out["error"] = "账本尚未创建（该区首次启动后产生）"
+        return out
+    try:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=5)
+    except Exception as e:                          # noqa: BLE001
+        out["error"] = f"无法打开账本：{type(e).__name__}: {e}"
+        return out
+    try:
+        try:
+            days = [r[0] for r in conn.execute(
+                "SELECT substr(ts,1,10) AS d FROM sector_recommendations "
+                "WHERE ts IS NOT NULL AND length(ts) >= 10 "
+                "GROUP BY d ORDER BY d DESC LIMIT ?", (HOT_DAYS,),
+            ).fetchall() if r[0]]
+        except Exception as e:                      # noqa: BLE001 - 缺表也走降级
+            days = []
+            out["error"] = f"板块表不可读：{type(e).__name__}: {e}"
+        out["days"] = days
+
+        if not days:
+            if out["error"] is None:
+                out["error"] = "该区尚无板块数据（交易日盘中产生）"
+        else:
+            use = day if day in days else days[0]
+            out["day"] = use
+            idx = days.index(use)
+            prev = days[idx + 1] if idx + 1 < len(days) else None
+            out["prev_day"] = prev
+            try:
+                cur_rows = _day_rows(conn, use)
+                prev_rows = _day_rows(conn, prev) if prev else []
+                out["sectors"] = _agg_sectors(cur_rows, prev_rows)
+                stocks = sorted(
+                    cur_rows,
+                    key=lambda s: -(s["composite"] if s["composite"] is not None else -1e9))
+                out["stocks"] = stocks[:HOT_STOCKS]
+            except Exception as e:                  # noqa: BLE001
+                out["sectors"], out["stocks"] = [], []
+                out["error"] = f"板块聚合失败：{type(e).__name__}: {e}"
+
+        # 信号表独立降级：缺表 / 查询失败只影响流水，不拖掉已经算好的板块
+        try:
+            out["signals"] = _recent_signals(conn, HOT_SIGNALS)
+        except Exception:                           # noqa: BLE001
+            out["signals"] = []
+    finally:
+        try:
+            conn.close()
+        except Exception:                           # noqa: BLE001
+            pass
+    return out
+
+
+def _hot_cache_clear() -> None:
+    """清空热点缓存（自检 / 测试用）。"""
+    _HOT_CACHE.clear()
+
+
+def build_hot(zone_key: str, day=None) -> dict:
+    """热点面板：板块热度 / 个股榜 / 信号流水（只读 + 进程内缓存）。
+
+    ## 为什么必须缓存
+
+    页面每 5 秒轮询 `/api/zones`。如果热点查询也挂进那条 5 秒链，live 库
+    10 万行 `sector_recommendations` 会被反复全表聚合，与正在写库的 live 引擎
+    抢锁 —— 这是整个看板唯一可能**影响到生产**的路径。所以热点单独缓存，
+    key=(zone, day)，TTL 60 秒；页面侧另开 30 秒轮询，不跟 5 秒的 tick 走。
+
+    `zone_key` 非法 ⇒ 抛 ValueError（端点映射成 400，不是 500）。
+    """
+    z = _zone_by_key(zone_key)
+    if z is None:
+        raise ValueError(
+            f"未知区 {zone_key!r}，可选：{[x['key'] for x in ZONES]}")
+
+    now = time.time()
+    key = (zone_key, day)
+    hit = _HOT_CACHE.get(key)
+    if hit is not None and (now - hit[0]) < _HOT_CACHE_TTL:
+        data = dict(hit[1])
+    else:
+        data = _query_hot(Path(z["db"]), day)
+        # 只缓存落在「有效 key 空间」内的结果：day 是外部参数，若照收不拒，
+        # (zone, 任意字符串) 会把缓存撑成无界增长。
+        if day is None or day in data.get("days", []):
+            _HOT_CACHE[key] = (now, data)
+            if len(_HOT_CACHE) > 2 * HOT_DAYS + 4:   # 实测上限：2 区 × 5 日 + 兜底
+                for k, v in list(_HOT_CACHE.items()):
+                    if now - v[0] >= _HOT_CACHE_TTL:
+                        _HOT_CACHE.pop(k, None)
+        data = dict(data)
+
+    return {
+        "zone": zone_key,
+        "day": data.get("day"),
+        "days": data.get("days", []),
+        "prev_day": data.get("prev_day"),
+        "sectors": data.get("sectors", []),
+        "stocks": data.get("stocks", []),
+        "signals": data.get("signals", []),
+        "error": data.get("error"),
+    }
 
 
 def _pick(snap: dict, path: str, default=None):
@@ -277,6 +524,36 @@ PAGE = r"""<!DOCTYPE html>
   .foot{margin-top:20px;color:var(--fg3);font-size:12px;line-height:1.7}
   code{background:var(--panel2);padding:1px 5px;border-radius:4px;font-size:12px}
   a{color:var(--live)}
+
+  /* ---- 热点面板：板块热度 / 个股榜 / 信号流水 ---- */
+  .hotctl{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:10px 0 16px}
+  .seg{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden}
+  .seg button{appearance:none;border:0;background:transparent;color:var(--fg2);
+              font:inherit;font-size:12.5px;padding:5px 13px;cursor:pointer}
+  .seg button + button{border-left:1px solid var(--line)}
+  .seg button.on{background:var(--zc,var(--live));color:#fff}
+  select{background:var(--panel2);color:var(--fg);border:1px solid var(--line);
+         border-radius:8px;padding:5px 8px;font:inherit;font-size:12.5px}
+  .hotgrid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:22px}
+  @media (max-width:880px){ .hotgrid{grid-template-columns:1fr} }
+  .hotgrid h3,.hotsec h3{font-size:13px;margin:0 0 10px;font-weight:600}
+  .bar{margin-bottom:10px}
+  .bar .r1{display:flex;align-items:baseline;gap:8px;font-size:12.5px}
+  .bar .nm{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .bar .hv{font-variant-numeric:tabular-nums}
+  .bar .dl{font-size:11.5px;font-variant-numeric:tabular-nums;min-width:52px;text-align:right}
+  /* 中国习惯：涨 = 红（--bad #e0575a），跌 = 绿（--ok #3fbf7f） */
+  .up{color:var(--bad)} .down{color:var(--ok)} .flat{color:var(--fg3)}
+  .track{height:6px;border-radius:3px;background:var(--panel2);margin-top:4px;overflow:hidden}
+  .fill{height:100%;border-radius:3px;background:var(--zc,var(--live));opacity:.85}
+  .bar .ld{font-size:11px;color:var(--fg3);margin-top:3px}
+  .empty{color:var(--fg3);font-size:12.5px;padding:16px 0}
+  table.mini{margin-top:0;font-size:12px}
+  table.mini th,table.mini td{padding:5px 7px}
+  tr.blocked td{background:color-mix(in srgb,var(--warn) 13%,transparent)}
+  .bl{color:var(--warn)}
+  .sigwrap{max-height:330px;overflow:auto}
+  .hotsec{margin-top:22px}
 </style>
 </head>
 <body>
@@ -301,6 +578,34 @@ PAGE = r"""<!DOCTYPE html>
     <canvas id="cv"></canvas>
   </div>
 
+  <div class="chartbox" id="hotbox">
+    <h2>板块热度 · 个股榜 · 信号流水</h2>
+    <div class="muted" style="margin-top:2px">
+      回答「AI 产业链哪个环节在升温、哪些票是热点」。同一交易日每只票会被引擎重扫上百次，
+      这里<b>每票只取当日最后一条读数</b>（每票一票，不按扫描次数加权）；
+      环比 = 与上一交易日同名板块的平均热度之差，<b>只看趋势方向</b>。
+    </div>
+    <div class="hotctl">
+      <div class="seg" id="hotzones"></div>
+      <select id="hotday"></select>
+      <span class="muted" id="hotstamp">读取中…</span>
+    </div>
+    <div class="hotgrid">
+      <div>
+        <h3>板块热度 Top 12</h3>
+        <div id="hotsec"></div>
+      </div>
+      <div>
+        <h3>个股热度 Top 15</h3>
+        <div id="hotstk"></div>
+      </div>
+    </div>
+    <div class="hotsec">
+      <h3>信号流水（最近 20 条 · 黄底为被风控拦下）</h3>
+      <div id="hotsig"></div>
+    </div>
+  </div>
+
   <table id="cmp">
     <caption>逐项对照 —— 高亮行表示两个区当前<b>取值不同</b></caption>
     <thead><tr><th>项目</th><th>实盘区</th><th>观察区</th></tr></thead>
@@ -311,6 +616,9 @@ PAGE = r"""<!DOCTYPE html>
     数据来源：两个区各自的 <code>/api/snapshot</code>（HTTP 只读）与账本
     <code>equity_snapshots</code>（<code>mode=ro</code> 只读打开）。本看板不写任何库、不改任何引擎状态。
     区域离线时只影响本卡片显示，不代表该区引擎异常。
+    <br>热点面板另读账本里的 <code>sector_recommendations</code> 与 <code>signals</code>（同样
+    <code>mode=ro</code>），服务端<b>缓存 60 秒</b>、页面<b>每 30 秒</b>刷新一次，
+    避免反复全表聚合与正在写库的引擎抢锁。
   </div>
 </div>
 
@@ -334,7 +642,8 @@ function card(z){
       <span class="muted">:${z.port}</span></div>
     <div class="sub">${esc(z.sub)}</div>
     ${off ? `<div class="pill bad">区域离线</div>
-             <div class="muted" style="margin-top:8px">${esc(z.error)}</div>`
+             <div class="muted" style="margin-top:8px">${esc(z.error)}</div>
+             <div class="muted" style="margin-top:6px">若该区刚重启，首个快照要网络预热约 15 秒，稍等即恢复。</div>`
           : `
     <div class="big">${fmtMoney(z.total_asset)}</div>
     <div class="muted">总资产 · 现金 ${fmtMoney(z.cash)} · 持仓 ${esc(z.positions_n)} 只</div>
@@ -427,6 +736,114 @@ function chart(){
   }
 }
 
+// ---- 热点面板：独立 30 秒轮询，不跟 5 秒的 tick 走（live 库 10 万行，别抢锁）----
+const HOT_ZONES = [["live","实盘区"],["paper","观察区"]];
+let hotZone = "live", hotDay = "";
+
+const n2  = v => (v===null||v===undefined) ? "—" : Number(v).toFixed(2);
+const pct = v => (v===null||v===undefined) ? "—"
+                : ((v>0?"+":"") + Number(v).toFixed(2) + "%");
+
+function hotUrl(){
+  return "api/hot?zone=" + encodeURIComponent(hotZone)
+       + (hotDay ? "&day=" + encodeURIComponent(hotDay) : "");
+}
+
+function renderHot(d){
+  // 面板配色跟随所选区：复用已有 --live / --paper，不引入新色值
+  document.getElementById("hotbox")
+    .style.setProperty("--zc", hotZone === "paper" ? "var(--paper)" : "var(--live)");
+
+  document.getElementById("hotzones").innerHTML = HOT_ZONES.map(([k,n])=>
+    `<button data-z="${k}" class="${k===hotZone?"on":""}">${n}</button>`).join("");
+  document.querySelectorAll("#hotzones button").forEach(b=>{
+    b.onclick = ()=>{ if (hotZone === b.dataset.z) return;
+                      hotZone = b.dataset.z; hotDay = ""; hotTick(); };
+  });
+
+  const days = d.days || [];
+  const cur = d.day || "";
+  const sel = document.getElementById("hotday");
+  sel.innerHTML = days.length
+    ? days.map(x=>`<option value="${x}"${x===cur?" selected":""}>${x}</option>`).join("")
+    : `<option value="">无数据</option>`;
+  sel.onchange = ()=>{ hotDay = sel.value; hotTick(); };
+  hotDay = cur;                    // 服务端解析后的日期，后续轮询沿用
+
+  document.getElementById("hotstamp").textContent = d.error
+    ? "⚠ " + d.error
+    : "热点 " + (cur || "—") + (d.prev_day ? " · 环比基准 " + d.prev_day : " · 无环比基准");
+
+  // 板块热度：横向条形（CSS width 百分比，不用 canvas）
+  const sec = d.sectors || [];
+  const mx = Math.max(1e-9, ...sec.map(s=>Number(s.avg_heat)||0));
+  document.getElementById("hotsec").innerHTML = sec.length ? sec.map((s,i)=>{
+    const w = Math.max(2, (Number(s.avg_heat)||0)/mx*100);
+    const dd = s.heat_delta;
+    const cls = (dd===null||dd===undefined) ? "flat" : (dd>0?"up":(dd<0?"down":"flat"));
+    const txt = (dd===null||dd===undefined) ? "—"
+              : (dd > 0 ? "▲ +" + Number(dd).toFixed(2)
+                        : (dd < 0 ? "▼ " + Number(dd).toFixed(2) : "0.00"));
+    return `<div class="bar">
+      <div class="r1"><span class="nm">${i+1}. ${esc(s.label)}</span>
+        <span class="hv">${n2(s.avg_heat)}</span>
+        <span class="dl ${cls}">${txt}</span></div>
+      <div class="track"><div class="fill" style="width:${w.toFixed(1)}%"></div></div>
+      <div class="ld">${esc(s.n)} 只 · 综合 ${n2(s.avg_composite)}
+        · 均涨 ${pct(s.avg_change)} · 龙头 ${esc(s.top)}</div>
+    </div>`;
+  }).join("") : `<div class="empty">该区尚无板块数据（交易日盘中产生）</div>`;
+
+  // 个股榜
+  const stk = d.stocks || [];
+  document.getElementById("hotstk").innerHTML = stk.length ? `<table class="mini">
+    <thead><tr><th>代码</th><th>名称</th><th>环节</th><th>综合</th><th>热度</th>
+      <th>技术</th><th>基本面</th><th>涨跌幅</th></tr></thead>
+    <tbody>${stk.map(s=>`<tr>
+      <td class="v">${esc(s.code)}</td>
+      <td>${esc(s.name)}</td>
+      <td>${esc(s.sector_label)}</td>
+      <td class="v">${n2(s.composite)}</td>
+      <td class="v">${n2(s.heat)}</td>
+      <td class="v">${n2(s.tech)}</td>
+      <td class="v">${n2(s.fund)}</td>
+      <td class="v ${s.change_pct>0?"up":(s.change_pct<0?"down":"")}">${pct(s.change_pct)}</td>
+    </tr>`).join("")}</tbody></table>`
+    : `<div class="empty">该区尚无个股数据（交易日盘中产生）</div>`;
+
+  // 信号流水：blocked_by 非空 ⇒ 整行标黄 + 显示拦截原因
+  const sig = d.signals || [];
+  document.getElementById("hotsig").innerHTML = sig.length ? `<div class="sigwrap"><table class="mini">
+    <thead><tr><th>时间</th><th>代码</th><th>名称</th><th>方向</th>
+      <th>评分</th><th>理由</th><th>风控</th></tr></thead>
+    <tbody>${sig.map(s=>{
+      const blocked = !!(s.blocked_by && String(s.blocked_by).trim());
+      return `<tr class="${blocked?"blocked":""}">
+        <td class="v">${esc(String(s.ts||"").replace("T"," ").slice(0,19))}</td>
+        <td class="v">${esc(s.code)}</td>
+        <td>${esc(s.name)}</td>
+        <td class="${s.side==="BUY"?"up":"down"}">${esc(s.side)}</td>
+        <td class="v">${n2(s.score)}</td>
+        <td>${esc(s.reason)}</td>
+        <td class="${blocked?"bl":""}">${blocked?esc(s.blocked_by):"—"}</td>
+      </tr>`;}).join("")}</tbody></table></div>`
+    : `<div class="empty">该区尚无信号流水（未产生买卖信号）</div>`;
+}
+
+async function hotTick(){
+  try{
+    const r = await fetch(hotUrl(), {cache:"no-store"});
+    if (!r.ok){
+      document.getElementById("hotstamp").textContent = "热点接口 HTTP " + r.status;
+      return;
+    }
+    renderHot(await r.json());
+  }catch(e){
+    document.getElementById("hotstamp").textContent = "热点读取失败：" + e;
+  }
+}
+hotTick(); setInterval(hotTick, 30000);
+
 let data = null;
 async function tick(){
   try{
@@ -480,6 +897,24 @@ class Handler(BaseHTTPRequestHandler):
                 body = json.dumps({"error": f"{type(e).__name__}: {e}"},
                                   ensure_ascii=False).encode("utf-8")
                 self._send(500, body, "application/json; charset=utf-8")
+        elif path == "/api/hot":
+            # 参数错误回 400；取数异常折成 error 字段回 200（页面永不白屏）
+            q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            zone_key = (q.get("zone") or ["live"])[0]
+            day = (q.get("day") or [""])[0] or None
+            try:
+                payload = build_hot(zone_key, day)
+            except ValueError as e:
+                body = json.dumps({"error": str(e)},
+                                  ensure_ascii=False).encode("utf-8")
+                self._send(400, body, "application/json; charset=utf-8")
+                return
+            except Exception as e:             # noqa: BLE001 - 兜底不得升级成 500
+                payload = {"zone": zone_key, "day": day, "days": [],
+                           "prev_day": None, "sectors": [], "stocks": [],
+                           "signals": [], "error": f"{type(e).__name__}: {e}"}
+            body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+            self._send(200, body, "application/json; charset=utf-8")
         elif path == "/healthz":
             self._send(200, b"ok", "text/plain; charset=utf-8")
         else:
@@ -492,7 +927,20 @@ def main() -> int:
     ap.add_argument("--port", type=int, default=5002)
     ap.add_argument("--once", action="store_true",
                     help="只打印一次聚合 JSON 后退出（自检用）")
+    ap.add_argument("--hot-once", metavar="ZONE", default=None,
+                    help="只打印一次该区的热点面板 JSON 后退出（自检用，ZONE=live|paper）")
+    ap.add_argument("--day", default=None, metavar="YYYY-MM-DD",
+                    help="配合 --hot-once 指定交易日")
     args = ap.parse_args()
+
+    if args.hot_once:
+        try:
+            hot = build_hot(args.hot_once, args.day)
+        except ValueError as e:
+            print(f"[zone-dashboard] {e}", file=sys.stderr)
+            return 2
+        print(json.dumps(hot, ensure_ascii=False, indent=2))
+        return 0
 
     if args.once:
         print(json.dumps(build_payload(), ensure_ascii=False, indent=2))

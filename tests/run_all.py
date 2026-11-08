@@ -438,6 +438,14 @@ def _collect_tests():
             #   首点非正不出点；单区离线时 online=False 不抛（不白屏）；看板不得
             #   import 任何项目模块（否则改引擎就得重启看板）。
             "tests.test_zone_dashboard",
+            # 【2026-11-08 zone】观察台的**热点面板**：板块热度 / 个股榜 / 信号流水。
+            #   数据源是两个区的 `sector_recommendations`（live 已有 10.8 万行）与
+            #   `signals`，只 `mode=ro` 读。钉死：板块按 avg_heat 聚合排序取 12、
+            #   个股按 composite 取 15、信号取 20 条降序、**同票一天多行只认最后一条**
+            #   （引擎只在该票仍是候选时写它，取错行会让 heat_delta 方向失真）、
+            #   heat_delta 同名校验且 prev_day 缺该板块为 None、空表/缺表/缺库分层降级
+            #   不拖垮其它区块、非法 zone ⇒ 400、TTL 60s 内不重复查库。
+            "tests.test_zone_hot",
             # 【2026-11-08】QMT 侧**策略本体** qmt_bridge/qmtide_bridge.py 的端到端。
             #   这是真正被部署到 C:\pazq_qmt\python\QMTIDE_BRIDGE.py 的那份文件，
             #   此前零覆盖（test_bridge_executor_e2e 验的是另一份 qmt_executor.py）。
