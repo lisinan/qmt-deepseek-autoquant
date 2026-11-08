@@ -36,7 +36,21 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-CACHE_DIR = ROOT / "storage" / "hist_cache"
+from core.zone import zone_storage_dir  # noqa: E402  (须在 ROOT 入 sys.path 之后)
+
+def cache_dir() -> Path:
+    """面板缓存目录（**按 zone 隔离**）。
+
+    原实现硬编码 ``ROOT/storage/hist_cache`` ⇒ paper 与 live 同写一个目录，
+    两个进程可能同时写同一个 ``panel_*.pkl``，live 读到半截 pickle 就会在回测/
+    面板算出脏数据（这类故障极难定位）。见 ``core/zone.py::zone_storage_dir``。
+
+    live 返回值与改造前逐位一致（``ROOT/storage/hist_cache``）。
+    """
+    return zone_storage_dir(ROOT) / "hist_cache"
+
+
+CACHE_DIR = cache_dir()
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 FIELDS = ("open", "high", "low", "close", "volume", "amount")

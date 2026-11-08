@@ -26,11 +26,25 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from config.settings import BASE_DIR
+from core.zone import zone_data_cache_dir
 from data.tushare_client import tushare_client
 
 logger = logging.getLogger(__name__)
 
-CACHE_DIR = BASE_DIR / "data" / "cache"
+def cache_dir() -> Path:
+    """tushare 落盘缓存目录（**按 zone 隔离**）。
+
+    原实现硬编码 ``BASE_DIR/data/cache`` ⇒ paper 与 live 同写一个目录。
+    ``northbound_hsgt.json`` 是**单文件**，两个进程同写会读到半截 JSON；
+    ``moneyflow_*`` / ``earnrev_*`` 虽按 code 分文件，也存在同刻写同一文件的情形。
+    见 ``core/zone.py::zone_data_cache_dir``。
+
+    live 返回值与改造前逐位一致（``BASE_DIR/data/cache``）。
+    """
+    return zone_data_cache_dir(BASE_DIR)
+
+
+CACHE_DIR = cache_dir()
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 

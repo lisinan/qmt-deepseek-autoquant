@@ -30,9 +30,23 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from config.settings import BASE_DIR, DYNAMIC_UNIVERSE_CONFIG
+from core.zone import zone_storage_dir
 from data.tushare_client import tushare_client
 
 logger = logging.getLogger(__name__)
+
+
+def _cache_path() -> Path:
+    """候选池缓存文件的路径（**按 zone 隔离**）。
+
+    原实现硬编码 ``BASE_DIR/storage/dynamic_universe.json``，与 zone 无关
+    ⇒ paper 与 live 写同一个文件。2026-11-08 实测 paper 的刷新把 live 的候选池
+    覆写了（mtime 与 paper 日志毫秒级吻合）。候选池决定 live 买什么，属资金安全级，
+    见 ``core/zone.py::zone_storage_dir`` 的说明。
+
+    live 返回值与改造前逐位一致（``BASE_DIR/storage/dynamic_universe.json``）。
+    """
+    return zone_storage_dir(BASE_DIR) / "dynamic_universe.json"
 
 
 class DynamicUniverse:
@@ -44,7 +58,7 @@ class DynamicUniverse:
         self._active_pool: List[str] = []        # 实际参与评分/订阅的 Top-N
         self._last_refresh: float = 0
         self._lock = threading.RLock()
-        self._cache_file = BASE_DIR / "storage" / "dynamic_universe.json"
+        self._cache_file = _cache_path()
         # 启动时优先从缓存加载（新进程冷启动时也能快速读出数据）
         self._load_from_cache()
 

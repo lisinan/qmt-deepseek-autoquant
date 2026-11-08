@@ -419,6 +419,16 @@ def _collect_tests():
             #   构造期返回拒单桩且**不实例化** QMTBroker/BridgeBroker；桩的查询返回
             #   None 而不是 []（[] 会清空本地账本）；zone 注入必须早于 engine 导入。
             "tests.test_zone_isolation",
+            # 【2026-11-08 zone 越界】共享**可写文件**的 zone 隔离。DB 分库只解决了
+            #   `engine_state`，但 `dynamic_universe.json` / `hist_cache/` / `data/cache`
+            #   仍是硬编码 `BASE_DIR/"storage"`，与 zone 无关 ⇒ paper 会写 live 的文件。
+            #   实证：storage/dynamic_universe.json 的 mtime = 20:09:43.394506，与
+            #   paper 日志「刷新完成 20:09:43,394」毫秒级吻合，即 **paper 覆写了 live 的
+            #   候选池**；而 active_pool 决定 live 买什么，属资金安全级。
+            #   钉死：live 五条路径逐位等于改造前字面量（「不影响实盘」的硬证据）、
+            #   paper 全部落在 storage_paper/ 且与 live 零交集、五个模块不得回退成硬编码、
+            #   候选池路径必须是调用时求值的函数（常量会在 import 时定死成 live）。
+            "tests.test_zone_shared_paths",
             # 【2026-11-08 zone】双功能区**统一看板**（scripts/zone_dashboard.py）。
             #   看板是独立进程 + 纯只读，不进引擎、不碰 config.settings，所以它
             #   出错的方式只有「悄悄偏离事实」：ZONES 里硬编码的 5000/5001 与两个

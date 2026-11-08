@@ -121,6 +121,40 @@ def zone_config(zone: str, base_dir: Path | None = None) -> ZoneConfig:
     )
 
 
+def zone_storage_dir(base_dir: Path | None = None,
+                     zone: str | None = None) -> Path:
+    """当前 zone 的**落盘根目录**：live → ``storage/``，paper → ``storage_paper/``。
+
+    为什么需要它（2026-11-08 实证的越界）：``engine_state`` 早已按 DB 分库隔离，
+    但**共享缓存文件**此前硬编码 ``BASE_DIR/"storage"``，与 zone 无关 —— paper
+    会写 live 的文件。实测证据：``storage/dynamic_universe.json`` 的 mtime 是
+    ``2026-11-08 20:09:43.394506``，与 paper 日志第 27 行「刷新完成 20:09:43,394」
+    毫秒级吻合 ⇒ **paper 把 live 的候选池文件覆写了**。
+
+    为什么这是资金安全级：候选池（``active_pool``）直接决定 live 评估/买入哪些票。
+    paper 用 tushare、live 用 xtdata，两边池子本可以不同；只要一次 paper 刷新失败
+    写入半截 JSON，live 重启读到的就是空池或残缺池。
+
+    live 返回值与改造前**逐位一致**（``BASE_DIR/storage``），由
+    ``tests/test_zone_shared_paths.py`` 钉住。
+    """
+    return zone_config(zone or current_zone(), base_dir).db_path.parent
+
+
+def zone_data_cache_dir(base_dir: Path | None = None,
+                        zone: str | None = None) -> Path:
+    """tushare 落盘缓存目录：live 保持 ``data/cache``，paper 用 ``storage_paper/data_cache``。
+
+    live 分支必须与改造前逐位一致（``BASE_DIR/data/cache``）—— 那里的
+    ``northbound_hsgt.json`` 是**单文件**，两个进程同写会读到半截 JSON
+    （``northbound_cache.py:31`` 的 ``F`` 就是从它派生的）。
+    """
+    base = Path(base_dir) if base_dir else Path(__file__).resolve().parents[1]
+    if (zone or current_zone()) == "paper":
+        return zone_storage_dir(base, "paper") / "data_cache"
+    return base / "data" / "cache"
+
+
 def apply_zone(zone: str, base_dir: Path | None = None) -> ZoneConfig:
     """写环境变量，把 zone 传递给下游惰求的读点。
 

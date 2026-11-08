@@ -212,7 +212,63 @@ sqlite 必须 `mode=ro` 且源码无写语句、归一化口径、单区离线�
 
 ---
 
-## 七、验收清单
+## 七、共享可写文件的隔离（2026-11-08 修复的越界）
+
+分库只解决了 `engine_state`。**缓存文件此前仍与 zone 无关**，paper 会直接写 live 的文件。
+
+### 实证（不是推断）
+
+```
+storage/dynamic_universe.json   mtime = 2026-11-08 20:09:43.394506
+logs_paper/quant_system.log     2026-11-08 20:09:43,394   DynamicUniverse 刷新完成
+```
+
+毫秒级吻合 ⇒ **paper 覆写了 live 的候选池文件**。`active_pool` 决定 live 评估/买入
+哪些票，而 paper 走 tushare、live 走 xtdata，两边池子本可以不同；一次 paper 刷新
+失败写入半截 JSON，live 重启就读到空池/残池 —— 而日志里**不会报任何错**。
+
+### 五个共享路径与现在的隔离方式
+
+| 模块 | 改造前（live 原值，必须逐位不变） | paper 现在 |
+|---|---|---|
+| `data/dynamic_universe.py` | `BASE_DIR/storage/dynamic_universe.json` | `storage_paper/dynamic_universe.json` |
+| `data/hist_cache.py` | `ROOT/storage/hist_cache` | `storage_paper/hist_cache` |
+| `data/earnrev_cache.py` | `BASE_DIR/data/cache` | `storage_paper/data_cache` |
+| `data/moneyflow_cache.py` | `BASE_DIR/data/cache` | `storage_paper/data_cache` |
+| `data/northbound_cache.py` | `BASE_DIR/data/cache` | `storage_paper/data_cache` |
+
+全部走 `core/zone.py` 的 `zone_storage_dir()` / `zone_data_cache_dir()`。
+**live 分支返回值与改造前逐位相等**，由 `tests/test_zone_shared_paths.py` 的 7 个用例
+钉死（不是靠 review，是靠断言）。
+
+⚠ `northbound_hsgt.json` 是**单文件**，两进程同写会读到半截 JSON —— 这条最隐蔽。
+
+### paper 需要自己的候选池种子
+
+隔离之后 paper 不再蹭 live 的池子，首次启动会因「Tushare 返回空」而
+`动态候选池: 0 只活跃`，**信号层直接空转**（面板上看却是「运行中」）。
+`refresh()` 失败时**不清空已有池**（只在成功时赋值），所以只要有一次有效缓存就能顶住。
+
+2026-11-08 已做一次性迁移：`storage/dynamic_universe.json` → `storage_paper/dynamic_universe.json`
+（读 live、写 paper，live 文件 mtime 不变）。之后 paper 刷新成功会用自己的数据覆盖。
+
+### 开盘自检
+
+```bash
+python scripts/zone_preflight.py           # 全量
+python scripts/zone_preflight.py --quiet   # 只看问题
+```
+
+纯只读（HTTP GET + `mode=ro` + `stat`），退出码 0/1。它把「能不能干活」拆成可判定断言：
+`data_mode=mock`、`broker=disconnected`、`halted`、`asset_trusted=false`、候选池 0 只、
+漏斗 `universe_n=0` 全部会被点名 —— 这些都是**单独看不出问题、合起来就是零成交**的字段。
+
+其中一条是运行时越界断言：`storage/dynamic_universe.json` 的 mtime 必须**早于**
+`logs_paper/engine.pid` 的 mtime，否则说明 paper 启动后又写过 live 的候选池。
+
+---
+
+## 八、验收清单
 
 ```
 1. curl 127.0.0.1:5001/api/snapshot  ⇒ exec_mode=paper / broker_mode=paper_no_trade
@@ -227,7 +283,7 @@ sqlite 必须 `mode=ro` 且源码无写语句、归一化口径、单区离线�
 
 ---
 
-## 八、回滚
+## 九、回滚
 
 代码层：`git revert` zone 相关 commit。live 分支零赋值，顺序无关。
 
@@ -236,7 +292,7 @@ sqlite 必须 `mode=ro` 且源码无写语句、归一化口径、单区离线�
 
 ---
 
-## 九、已知未决
+## 十、已知未决
 
 | # | 内容 | 影响 |
 |---|---|---|
