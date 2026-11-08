@@ -358,6 +358,20 @@ class TestCrossRestartIdempotency(Base):
 
 
 class TestQueries(Base):
+    def test_ping_reports_code_rev(self):
+        """PING 必须带代码版本号 —— 用来证明 QMT 里跑的是新代码还是旧代码。
+
+        只部署文件、不重新运行策略时，QMT 会一直跑内存里的旧代码（改动静默无效）。
+        2026-11-08 21:31 改的「市值取持仓汇总」如果没生效，总资产仍会虚高 4,547 元，
+        而账面一切正常 —— 没有版本号就只能靠猜。
+        """
+        self.m.put_signal("s1", "PING")
+        self.m.mod.init(self.ctx)
+        self.m.mod.bridge_poll(self.ctx)
+        d = self.m.result()["data"]
+        self.assertEqual(d["rev"], self.m.mod.CODE_REV)
+        self.assertTrue(d["rev"], "CODE_REV 不得为空")
+
     def test_query_asset_maps_fields(self):
         self.m.trade_rows["ACCOUNT"] = [
             Row(m_dAvailable=8337.31, m_dInstrumentValue=58204.99,
@@ -398,6 +412,62 @@ class TestQueries(Base):
         self.assertAlmostEqual(
             d["total_asset"], 57862.49, places=2,
             msg="必须回落到 cash+市值，绝不能把 137321.5 灌进风控")
+
+    def test_query_asset_uses_position_mv_when_account_is_stale(self):
+        """★★ 2026-11-08 21:30 实盘实测：ACCOUNT 与 POSITION 的市值**不是同一个价格**。
+
+        ACCOUNT.m_dInstrumentValue 停在**上一交易日收盘**：
+            50,798.00 = 493.33×100 + 2.93×500   （11-05 收盘价）
+        POSITION.m_dMarketValue 才是最新价：
+            46,251.00 = 448.00×100 + 2.902×500  （11-06 收盘价，当日 300308 −9.18%）
+
+        差额 4,547.00 与账本 11-06 的 daily_pnl −4,547.03 分毫不差。
+        若取 ACCOUNT 口径：总资产 62,409.49（真值 57,862.49）⇒ 回撤从 −14.2% 变 −7.5%，
+        熔断缓冲凭空多 6.7pp（当时距 −20% 只剩 5.78pp）⇒ 必须用持仓汇总。
+        """
+        self.m.trade_rows["ACCOUNT"] = [
+            Row(m_dAvailable=11611.49, m_dInstrumentValue=50798.0)]
+        self.m.trade_rows["POSITION"] = [
+            Row(m_strInstrumentID="300308", m_strExchangeID="SZ",
+                m_nVolume=100, m_dMarketValue=44800.0),
+            Row(m_strInstrumentID="510050", m_strExchangeID="SH",
+                m_nVolume=500, m_dMarketValue=1451.0),
+        ]
+        self.m.put_signal("s1", "QUERY_ASSET")
+        self.m.mod.init(self.ctx)
+        self.m.mod.bridge_poll(self.ctx)
+        d = self.m.result()["data"]
+        self.assertAlmostEqual(d["market_value"], 46251.0, places=2,
+                               msg="必须用持仓汇总，不能用上一交易日收盘价的 50798")
+        self.assertAlmostEqual(d["total_asset"], 57862.49, places=2,
+                               msg="总资产必须等于 11-06 收盘真值，不是 62409.49")
+
+    def test_query_asset_does_not_zero_mv_when_positions_look_empty(self):
+        """矛盾态：持仓查得到但汇总为 0，而 ACCOUNT 说有市值。
+
+        此时**绝不能**清零 —— total_asset 会瞬间少掉全部持仓 ⇒ 假回撤 −X% ⇒ 假熔断。
+        宁可沿用 ACCOUNT 口径（旧一天），也不肯凭空造一次瀑布。
+        """
+        self.m.trade_rows["ACCOUNT"] = [
+            Row(m_dAvailable=11611.49, m_dInstrumentValue=46251.0)]
+        self.m.trade_rows["POSITION"] = []      # 查询成功但为空的矛盾态
+        self.m.put_signal("s1", "QUERY_ASSET")
+        self.m.mod.init(self.ctx)
+        self.m.mod.bridge_poll(self.ctx)
+        d = self.m.result()["data"]
+        self.assertAlmostEqual(d["market_value"], 46251.0, places=2)
+        self.assertAlmostEqual(d["total_asset"], 57862.49, places=2)
+
+    def test_query_asset_falls_back_when_position_query_fails(self):
+        """持仓查询返回 None（未知）时回落 ACCOUNT 口径，且不得把 None 当 0。"""
+        self.m.trade_rows["ACCOUNT"] = [
+            Row(m_dAvailable=11611.49, m_dInstrumentValue=46251.0)]
+        self.m.trade_rows["POSITION"] = None
+        self.m.put_signal("s1", "QUERY_ASSET")
+        self.m.mod.init(self.ctx)
+        self.m.mod.bridge_poll(self.ctx)
+        d = self.m.result()["data"]
+        self.assertAlmostEqual(d["total_asset"], 57862.49, places=2)
 
     def test_dbl_max_sentinel_becomes_default(self):
         """QMT 用 DBL_MAX 表示「字段不适用」（实测 m_dCurrMargin /

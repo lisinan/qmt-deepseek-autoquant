@@ -463,6 +463,13 @@ def _collect_tests():
             #   paper 不受影响、落盘调用点（_persist_equity 60s / _shutdown）不得被删。
             #   已做正向对照：去掉闸门后该测试必红（cash 11,611.57 → 1,000,000）。
             "tests.test_live_state_save_guard",
+            # 【2026-11-08】tushare 域名绕开代理。事故链真发生过：guardian 拉起引擎时
+            #   继承 HTTP_PROXY=127.0.0.1:7897（VPN 没开）⇒ tushare 全部 ProxyError ⇒
+            #   行情源按 xtdata→tushare→mock 降到 mock ⇒ `mock_trade_block_reason`
+            #   当日禁掉**所有**买卖，零成交。修法只加 NO_PROXY，不改全局代理
+            #   （GitHub/包管理仍走代理）。钉死：waditu 绕开、其它域名照走、既有条目不丢、
+            #   幂等不重复、`data/tushare_client.py` 必须调用同一份实现。
+            "tests.test_tushare_proxy_bypass",
             # 【2026-11-08】QMT 侧**策略本体** qmt_bridge/qmtide_bridge.py 的端到端。
             #   这是真正被部署到 C:\pazq_qmt\python\QMTIDE_BRIDGE.py 的那份文件，
             #   此前零覆盖（test_bridge_executor_e2e 验的是另一份 qmt_executor.py）。
@@ -475,7 +482,16 @@ def _collect_tests():
             #   行情通道）。钉死：字段映射 / time 为毫秒 epoch / 沪市 ETF 回落
             #   新浪 / 限频不得突破 10 次每分钟 / 绝不返回空 / 绝不标 _mock /
             #   data_mode="tushare" 不被 mock 闸门拦截。全离线，FakePro 不打网络。
-            "tests.test_tushare_quote"]
+            "tests.test_tushare_quote",
+            # 【2026-11-08 R50-RSI】P0 基线「已声明分歧」登记表
+            #   （config/_baseline_divergence.py）的唯一守卫。
+            #   为什么必须显式登记：本 runner 用**显式模块清单**而不是 glob，
+            #   新增测试文件不写进这里就永远不执行 —— 而它守的正是「RSI 每周把
+            #   已声明的刻意差异报成 P0 漂移」这一条，不跑等于没修。
+            #   钉死：测试与审计引用**同一张表**（`is` 同一性）；豁免只对登记的
+            #   具体值生效（生产多一只 / 回测把探针抄进基线都必须回到 ★漂移）；
+            #   表里的生产值 = 现网真实值；登记字段不得与 MUST_MATCH 双归类。
+            "tests.test_rsi_baseline_declared"]
     tests = []
     import_errors = []
     for m in mods:

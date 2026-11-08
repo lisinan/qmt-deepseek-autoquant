@@ -40,8 +40,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sqlite3
 import sys
+import time
 import urllib.request
 from datetime import datetime
 from pathlib import Path
@@ -197,6 +199,45 @@ def probe_bridge() -> None:
             f"已部署 {st.st_size} 字节，mtime {datetime.fromtimestamp(st.st_mtime):%m-%d %H:%M}")
     else:
         add(WARN, sec, "策略本体", "未部署 ⇒ 若切 bridge 模式会无人接单")
+
+    # ---- 心跳：QMT 侧策略是否真的在跑，以及**跑的是哪一版代码** ----
+    # 为什么必须查版本：只部署文件、不在 QMT 里重新运行策略时，QMT 会一直跑
+    # 内存里的旧代码 —— 部署看起来成功、boot.log 也可能有历史记录，但改动完全没生效。
+    # 心跳里的 rev 是被动读取的，不需要往 signal.json 写东西（那是下单通道，探针绝不碰）。
+    hb = root / "heartbeat.json"
+    if hb.exists():
+        age = time.time() - hb.stat().st_mtime
+        try:
+            data = json.loads(hb.read_text(encoding="utf-8"))
+        except Exception:
+            data = {}
+        rev = data.get("rev")
+        pid = data.get("pid")
+        add(PASS if age <= 15 else FAIL, sec, "心跳",
+            f"{age:.1f}s 前，pid={pid}，rev={rev}"
+            + ("" if age <= 15 else " ⇒ 桥已死/被停，切 bridge 后无人接单"))
+        want = _repo_bridge_rev()
+        if want:
+            same = (rev == want)
+            add(PASS if same else FAIL, sec, "代码版本",
+                f"QMT 在跑 {rev!r}，仓库是 {want!r}"
+                + ("" if same else " ⇒ QMT 里是**旧代码**，必须在 QMT 里重新运行策略"))
+    elif root.exists():
+        add(WARN, sec, "心跳", "桥目录存在但没有 heartbeat.json ⇒ 策略从未成功 init")
+
+
+def _repo_bridge_rev() -> str | None:
+    """读仓库里 qmt_bridge/qmtide_bridge.py 的 CODE_REV（正则读，不 import）。
+
+    不 import 的原因：那个模块 import 期会跑自测并往 boot.log 写东西，
+    探针不该污染 QMT 侧的诊断日志。
+    """
+    src = BASE_DIR / "qmt_bridge" / "qmtide_bridge.py"
+    try:
+        m = re.search(r'^CODE_REV\s*=\s*"([^"]+)"', src.read_text(encoding="utf-8"), re.M)
+        return m.group(1) if m else None
+    except Exception:
+        return None
 
 
 # --------------------------------------------------------------------- D 数据准确性

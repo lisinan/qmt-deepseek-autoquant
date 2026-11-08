@@ -108,6 +108,12 @@ _poll_seen = [0]              # poll 次数，只用于「定时器到底有没�
 # place the SAME order again with the next form (double order, real money).
 _po_form = [None]
 _dict_warned = set()          # 去重「只报一次」的日志，避免 500ms 刷爆 boot.log
+# ★ 代码版本号：PING / DUMP 会带出来，用来**证明 QMT 里跑的到底是哪一版**。
+#   背景：2026-11-08 21:31 修了「ACCOUNT 市值用上一交易日收盘价」的缺陷，
+#   但 QMT 已加载的旧代码不会自己更新 —— 只部署文件不重新运行策略，改动等于没做。
+#   有了这个字段，一条 PING 就能回答「新代码生效了吗」，不用猜。
+#   约定：改动了会影响实盘数值/下单的逻辑就换一个值（时间戳格式）。
+CODE_REV = "2026-11-08T21:31-mv-from-positions"
 _io_selftest_ran = [False]    # IO 权限矩阵每个模块实例只探一次
 SKIP_SOCKET_PROBE = False     # 测试置 True：省掉每次 connect 的 0.5s 等待
 
@@ -459,6 +465,9 @@ def _write_heartbeat(ContextInfo):
             "account": getattr(ContextInfo, "accountID", DEFAULT_ACCOUNT_ID),
             "account_type": getattr(ContextInfo, "account_type", DEFAULT_ACCOUNT_TYPE),
             "pid": os.getpid(),
+            # 被动版本戳：任何人读 heartbeat.json 就能判断 QMT 里跑的是哪一版，
+            # 不需要往 signal.json 写东西（那是引擎的下单通道，探针绝不该碰）。
+            "rev": CODE_REV,
         })
     except Exception as e:
         _log("[BRIDGE] heartbeat write failed: %s" % e)
@@ -525,6 +534,10 @@ def _account_of(ContextInfo, account):
 
 
 def _q_account(ContextInfo, account):
+    # 先查持仓（拿最新价市值），再查 ACCOUNT —— 顺序刻意如此：
+    # ACCOUNT 里的市值可能停在上一交易日收盘（见下方实测），但现金/冻结只有它有。
+    # 先持仓后账户也让「最后一次查询是 ACCOUNT」这个既有约定保持不变。
+    pos_mv = _sum_position_mv(ContextInfo, account)
     aid, atype = _account_of(ContextInfo, account)
     rows = get_trade_detail_data(aid, atype, "ACCOUNT")  # noqa: F821
     if not rows:
@@ -532,12 +545,51 @@ def _q_account(ContextInfo, account):
     a = rows[0]
     cash = _f(_attr(a, ["m_dAvailable", "m_dCash"], 0))
     mv = _f(_attr(a, ["m_dInstrumentValue", "m_dStockValue", "m_dMarketValue"], 0))
+    # ★★ 2026-11-08 21:30 实测（同一轮 QUERY，同一账号）：**ACCOUNT 与 POSITION 的市值
+    #    用的不是同一个价格**。ACCOUNT.m_dInstrumentValue 停在**上一交易日收盘**，
+    #    POSITION.m_dMarketValue 才是最新价。
+    #      300308.SZ 11-06 跌 -9.18%（493.33 → 448.00）
+    #      ACCOUNT  : 50,798.00 = 493.33×100 + 2.93×500   ← 11-05 收盘价
+    #      POSITION : 46,251.00 = 448.00×100 + 2.902×500  ← 11-06 收盘价
+    #      差额 4,547.00 与账本 11-06 的 daily_pnl -4,547.03 **分毫不差**
+    #    => 若拿 ACCOUNT 口径当 `_broker_total_asset`：总资产 62,409.49（真值 57,862.49），
+    #      回撤会算成 -7.5%（真实 -14.2%），熔断缓冲凭空多出 6.7pp。
+    #      当前账本距 -20% 只剩 5.78pp => 这个误差足以决定熔断是否触发，必须用持仓汇总。
+    #    持仓查询失败（None）时才回落到 ACCOUNT 口径 —— 宁可口径旧一天，也不肯凭空造数。
+    if pos_mv is not None and pos_mv > 0:
+        if mv > 0 and abs(pos_mv - mv) > max(1.0, 0.001 * max(pos_mv, mv)):
+            if "acct_mv_mismatch" not in _dict_warned:
+                _dict_warned.add("acct_mv_mismatch")
+                _log("[BRIDGE] ACCOUNT 市值 %0.2f 与持仓汇总 %0.2f 不一致"
+                     "（差 %0.2f，ACCOUNT 用的是上一交易日收盘价），"
+                     "以持仓汇总为准" % (mv, pos_mv, mv - pos_mv))
+        mv = pos_mv
+    elif pos_mv == 0 and mv > 0:
+        # 矛盾：持仓查得到但汇总为 0，而 ACCOUNT 说有市值。
+        # 此时**绝不能**把市值清零（total_asset 会瞬间少掉全部持仓 => 假回撤 => 假熔断），
+        # 保留 ACCOUNT 口径并只报一次日志，等下一轮持仓恢复正常。
+        if "acct_mv_zero_conflict" not in _dict_warned:
+            _dict_warned.add("acct_mv_zero_conflict")
+            _log("[BRIDGE] 持仓汇总为 0 但 ACCOUNT 市值 %0.2f，暂按 ACCOUNT 口径"
+                 "（不清零，避免假回撤）" % (mv,))
     return {
         "cash": cash,
         "frozen": _f(_attr(a, ["m_dFrozenCash", "m_dFrozen"], 0)),
         "market_value": mv,
         "total_asset": _total_asset_of(a, cash, mv),
     }
+
+
+def _sum_position_mv(ContextInfo, account):
+    """持仓市值汇总；持仓查询失败返回 ``None``（区别于「确实空仓」的 0.0）。"""
+    try:
+        rows = _q_positions(ContextInfo, account)
+    except Exception as e:                            # noqa: BLE001
+        _log("[BRIDGE] 持仓汇总失败，回落 ACCOUNT 口径: %r" % (e,))
+        return None
+    if rows is None:
+        return None
+    return float(sum(float(p.get("market_value") or 0.0) for p in rows))
 
 
 def _total_asset_of(a, cash, mv):
@@ -802,6 +854,7 @@ def _dump(ContextInfo):
             entry["fields"] = fields
         schema[typ] = entry
     return {
+        "rev": CODE_REV,
         "globals": g,
         "interesting": interesting,
         "schema": schema,
@@ -829,7 +882,9 @@ def _handle(ContextInfo, sig):
     account = sig.get("account") or "cash"
 
     if action == "PING":
-        return True, {"pong": _now()}, ""
+        # rev 用于确认「QMT 里跑的到底是哪一版代码」：只部署文件、不重新运行策略时，
+        # 旧代码会一直活到 QMT 重启，改动静默无效（2026-11-08 差点踩到）。
+        return True, {"pong": _now(), "rev": CODE_REV}, ""
     if action == "DUMP":
         return True, _dump(ContextInfo), ""
     if action in _QUERY_ACTIONS:
@@ -1036,8 +1091,8 @@ def init(ContextInfo):
         _load_seen()
     except Exception as e:
         _log("[BRIDGE] seen 恢复失败: %s: %s" % (type(e).__name__, e))
-    _log("[BRIDGE] init done. root=%s account=(%s,%s) timer=%s"
-         % (BRIDGE_ROOT, aid, atype, timer))
+    _log("[BRIDGE] init done. root=%s account=(%s,%s) timer=%s rev=%s"
+         % (BRIDGE_ROOT, aid, atype, timer, CODE_REV))
 
     # 自测必须放后台线程。它是「诊断」，不是「启动前置」，绝不能占住 init。
     # 2026-11-08 02:09 实测代价：socket 探针两个阻塞 connect 各 0.5s，用户恰好

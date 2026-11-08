@@ -79,10 +79,43 @@ QMT 升级到 2.1.32.0 后新增「框架/进程白名单」，外部 python 被
 from __future__ import annotations
 
 import logging
+import os
 import threading
 import time
 from datetime import datetime, timedelta
 from typing import Any, Dict, Iterable, List, Optional
+
+# 国内行情 API 不该走境外代理 —— 见 bypass_proxy_for_tushare() 的注释。
+TUSHARE_NO_PROXY_HOSTS = ("api.waditu.com", ".waditu.com", "api.tushare.pro")
+
+
+def bypass_proxy_for_tushare() -> str:
+    """把 tushare 的域名加进 ``NO_PROXY``，避免被 VPN 代理连坐。
+
+    ★ 2026-11-08 09:40 实测（真实事故，不是假设）：
+      引擎由 guardian 拉起时继承了 ``HTTP_PROXY=127.0.0.1:7897``（VPN），
+      而那一刻 VPN 没开 ⇒ ``data.tushare_client`` 全部
+      ``ProxyError: [WinError 10061] 由于目标计算机积极拒绝`` ⇒
+      行情源从 tushare 降到 **mock** ⇒ ``mock_trade_block_reason`` 当日禁掉
+      **所有**买卖。整整一个交易日零成交，根因是「一个跟行情无关的环境变量」。
+
+    修法刻意**只加 NO_PROXY，不改全局代理**：其它组件（GitHub、包管理）可能
+    确实要走代理，一刀切删环境变量会把别的东西弄坏。
+
+    返回合并后的 NO_PROXY 字符串（便于测试断言）。
+    """
+    cur = (os.environ.get("NO_PROXY") or os.environ.get("no_proxy") or "")
+    hosts = [h.strip() for h in cur.split(",") if h.strip()]
+    for h in TUSHARE_NO_PROXY_HOSTS:
+        if h not in hosts:
+            hosts.append(h)
+    merged = ",".join(hosts)
+    os.environ["NO_PROXY"] = merged
+    os.environ["no_proxy"] = merged
+    return merged
+
+
+bypass_proxy_for_tushare()
 
 logger = logging.getLogger(__name__)
 

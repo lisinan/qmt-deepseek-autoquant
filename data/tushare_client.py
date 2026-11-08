@@ -135,6 +135,14 @@ class TushareClient:
                 return False
             try:
                 import tushare as ts
+                # 2026-11-08 事故：环境里的 VPN 代理变量会让 tushare 全部 ProxyError，
+                # 行情源掉到 mock 后当日零成交。这里显式绕开代理（实现只有一份，
+                # 在 core/tushare_quote.py 里）。
+                try:
+                    from core.tushare_quote import bypass_proxy_for_tushare
+                    bypass_proxy_for_tushare()
+                except Exception as _e:            # noqa: BLE001
+                    logger.debug("设置 tushare NO_PROXY 失败(忽略): %s", _e)
                 ts.set_token(self.token)
                 self._pro = ts.pro_api(timeout=TUSHARE_TIMEOUT)
                 logger.info("Tushare 已连接")
