@@ -29,6 +29,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -84,16 +85,56 @@ def compile_file(p: Path) -> str:
         return "%s: %s" % (type(e).__name__, e)
 
 
+_BAK_TS_RE = re.compile(r"\.bak-(\d{8})-(\d{4}|\d{6})$")
+
+
+def _bak_ts(p: Path):
+    """从文件名取备份时刻（epoch 秒）。取不到返回 None。
+
+    ★ 为什么不用 mtime：备份是 `shutil.copy2` 做的，**它会把源文件的 mtime 一起复制**。
+    2026-11-09 11:25 那次因此让 `(now - mtime) < 180` 把刚生成的备份判成老文件
+    ⇒ 自检 1 假红，且**回滚分支调的是同一个 finder，最需要它时是哑的**。
+    文件名里的时间戳是「生成时刻」的唯一可靠记录。
+
+    ★ 必须同时认两种精度（踩过）：
+      - 4 位 `bak-YYYYMMDD-HHMM`：`patch_bridge_sharing_20261109.py:466` 用的是这个，
+        真实备份名就是 `qmtide_bridge.py.bak-20261109-1124`；
+      - 6 位 `bak-YYYYMMDD-HHMMSS`：`patch_b2_20261109.py` 用的是这个。
+    只认 6 位会让 4 位那一批全部解析失败 —— 我的第一版守卫测试又恰好只造 6 位名字，
+    于是「测试全绿、真实备份找不到」。**测试造的样本必须来自生产代码的真实格式。**
+    """
+    m = _BAK_TS_RE.search(p.name)
+    if not m:
+        return None
+    fmt = "%Y%m%d%H%M%S" if len(m.group(2)) == 6 else "%Y%m%d%H%M"
+    try:
+        return time.mktime(time.strptime(m.group(1) + m.group(2), fmt))
+    except Exception:
+        return None
+
+
+def _pick_fresh(cands, max_age_sec: float = 180.0, now: float = None):
+    """按**文件名时间戳**挑最新的、且不超过 max_age_sec 的备份。"""
+    now = time.time() if now is None else now
+    scored = []
+    for c in cands:
+        ts = _bak_ts(c)
+        if ts is None:
+            continue
+        if abs(now - ts) <= max_age_sec:
+            scored.append((ts, str(c)))
+    return Path(max(scored)[1]) if scored else None
+
+
 def find_backup(target: Path):
-    """按 patcher 的命名规则找刚生成的备份（3 分钟内）。"""
+    """按 patcher 的命名规则找刚生成的备份（文件名时间戳在 3 分钟内）。"""
     cands = []
     if target == REPO_TARGET:
         if BACKUP_DIR.is_dir():
             cands = sorted(BACKUP_DIR.glob(REPO_TARGET.name + ".bak-*"))
     else:
         cands = sorted(target.parent.glob(target.name + ".bak-*"))
-    fresh = [c for c in cands if (time.time() - c.stat().st_mtime) < 180]
-    return fresh[-1] if fresh else None
+    return _pick_fresh(cands)
 
 
 def run_patcher(apply: bool) -> int:
