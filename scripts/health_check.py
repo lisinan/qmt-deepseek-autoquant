@@ -71,11 +71,14 @@ except Exception:
     pass
 
 BASE_DIR = pathlib.Path(__file__).resolve().parent.parent
-MINIQMT_EXE = r"C:\pazq_qmt\bin.x64\XtItClient.exe"  # 拉起器：双击启动 miniQMT 的入口
-# 真正常驻的引擎进程是 XtMiniQmt.exe；XtItClient.exe 仅作拉起器，启动后即退出，
-# 不能用来判定"是否在运行"，否则会误报"miniQMT 退出"并反复自启动（2026-09-15 确诊）。
-MINIQMT_ENGINE_PROC = "XtMiniQmt.exe"
-MINIQMT_LAUNCHER_PROC = "XtItClient.exe"
+MINIQMT_EXE = r"C:\pazq_qmt\bin.x64\XtItClient.exe"
+# ★ 2026-11-09 语义更正：2026-11-08 起交易改走**大 QMT（XtItClient.exe）+ 文件桥**，
+#   不再使用 miniQMT。大 QMT 的 XtItClient.exe 就是常驻客户端本身（实测单一进程
+#   1GB 常驻，桥 qmtide_bridge.py 跑在它内部），不存在「拉起器启动后即退出」的行为。
+#   因此存活判定以 XtItClient.exe 为准；XtMiniQmt.exe 仅作为历史版本兜底。
+#   真正回答「能不能下单」的是桥心跳（scripts/bridge_health.py），本函数只判进程在不在。
+MINIQMT_ENGINE_PROC = "XtItClient.exe"
+MINIQMT_LAUNCHER_PROC = "XtMiniQmt.exe"
 # 是否允许守护/自启逻辑自动拉起 miniQMT。2026-09-15 起设为 False：
 # 用户改为手动启动 miniQMT（避免自动拉起与券商断线重连的乒乓效应）。
 # 置 True 可恢复自动拉起。
@@ -107,10 +110,12 @@ def _log(msg: str) -> None:
 
 
 def is_miniqmt_up() -> bool | None:
-    """True=引擎在运行 / False=未运行 / None=检测失败(未知)。
+    """True=大 QMT 在运行 / False=未运行 / None=检测失败(未知)。
 
-    存活判定以常驻引擎进程 XtMiniQmt.exe 为准；XtItClient.exe 仅是拉起器，
-    启动后即退出，不能用于判定存活，否则会误报"miniQMT 退出"并反复自启动。
+    2026-11-09：大 QMT + bridge 方案下，常驻进程就是 XtItClient.exe，
+    存活判定以它为准；XtMiniQmt.exe 只作历史版本兜底。
+    注意本函数只看「进程在不在」，不回答「能不能下单」——
+    后者看桥心跳：`python scripts/bridge_health.py`。
     """
     try:
         out = subprocess.run(

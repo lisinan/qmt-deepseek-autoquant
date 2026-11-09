@@ -292,3 +292,55 @@ python scripts/iface_probe.py    # C 段「代码版本」：QMT rev ≠ 仓库 
    passorder(op, otype, aid, code, prtype, price, vol, name, quickTrade, msg, ContextInfo)
    ```
 2. 无跨重启幂等保护（见 §六.5）。
+
+---
+
+## 附：2026-11-09 记录更正 —— 交易通道已改为「大 QMT + 文件桥」，miniQMT 弃用
+
+本节是**口径更正**，前面章节里所有提到 miniQMT 的内容按此为准。
+
+### 事实（2026-11-09 19:59 实测）
+
+| 项 | 值 |
+|---|---|
+| QMT 客户端进程 | `XtItClient.exe`（单一进程常驻，约 985 MB） |
+| `XtMiniQmt.exe` | **不存在**（该进程名在本机永不出现） |
+| `trading_config.json::broker_qmt_mode` | `bridge` |
+| 引擎链路 | `exec=live` / `broker=bridge` / `broker_connected=True` / `data_mode=tushare` |
+| 桥心跳 | `heartbeat.json` age ≈ 0.5–1.0s，`pid` 等于 `XtItClient.exe` 的 pid |
+
+⇒ **桥（`qmtide_bridge.py`）跑在 `XtItClient.exe` 进程内**。它不是「拉起器」，
+它就是大 QMT 客户端本身；`passorder` 在该进程内可用，策略由 QMT 侧「运行策略」加载。
+
+### 为什么之前一直误报
+
+`scripts/startup_all.bat` 与 `scripts/health_check.py` 原以 `XtMiniQmt.exe` 判存活，
+注释写「XtItClient.exe 仅作拉起器，启动后即退出」。这个前提在 2026-11-08 切换通道后
+**已经不成立**，后果是：
+
+- 每次开机 `startup.log` 必有一条 `[WARN] miniQMT 引擎 25s 内未就绪：可能停在登录界面`
+- 而同期桥心跳一直是新鲜的 ⇒ **假告警**，且它长得最像「人不在、机器坏了」
+
+### 正确的存活判定
+
+**看桥心跳，不看进程名**：
+
+```
+python scripts/bridge_health.py          # 新鲜则退出码 0，并打印 rev/pid/age
+python scripts/bridge_health.py --json   # 机器可读
+```
+
+心跳新鲜同时意味着三件事：QMT 已登录 + 策略已运行（init 跑过）+ 桥已就绪。
+这是任何进程名都给不出的信息。
+
+已在 2026-11-09 落地：
+- `scripts/startup_all.bat`：等待段改为轮询 `bridge_health.py`（最多 90s），
+  文案统一为「大 QMT」
+- `scripts/health_check.py`：`MINIQMT_ENGINE_PROC` 改为 `XtItClient.exe`（`XtMiniQmt.exe` 降为兜底）
+
+### 仍然成立的约束
+
+- 桥内嵌 Python **3.6.8**，只能用 3.6 语法；`simpleRun="0"` 才会调 init+passorder
+- 行情走 tushare（`QMT_QUOTE_SOURCE=auto` 会从 xtdata 回落到 tushare），
+  引擎进程**不继承 HTTP_PROXY**，`NO_PROXY` 已含 waditu 域名 ⇒ 不依赖 VPN
+- 不要试图建第二个 `xttrader` 会话（本方案下本来就不需要）

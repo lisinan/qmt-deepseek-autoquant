@@ -62,9 +62,12 @@ timeout /t 15 /nobreak >nul
 echo [%TIME%] 系统就绪，开始拉起应用 >> "%LOG%"
 
 REM ============================================================
-REM 1) miniQMT 交易客户端
-REM    XtItClient.exe 只是「拉起器」，真正常驻的是 XtMiniQmt.exe；拉起器启动后即退出，
-REM    因此存活判定必须以 XtMiniQmt.exe 为准（2026-09-15 确诊，见 health_check.py）。
+REM 1) 大 QMT 交易客户端（2026-11-08 起：交易走文件桥，不再用 miniQMT）
+REM    ★ 本段 2026-11-09 重写：旧逻辑以 XtMiniQmt.exe 判存活，而大 QMT 方案下
+REM      那个进程名**永不出现** ⇒ 每次开机都误报「25s 内未就绪，可能停在登录界面」。
+REM      现在判定两件事：① XtItClient.exe 在跑；② 桥心跳新鲜（这才是「能不能下单」）。
+REM    桥（qmtide_bridge.py）跑在 QMT 进程内、每 500ms 刷 heartbeat.json，
+REM    所以心跳新鲜 = QMT 已登录 + 策略已运行 + 桥已 init，三项一次说完。
 REM    另：必须以 bin.x64 为工作目录启动，否则客户端找不到 Qt 依赖与自身配置。
 REM    本段全部用 goto 线性结构，不用嵌套 if/else（2026-10-24 教训：嵌套块会双分支执行）。
 REM ============================================================
@@ -77,42 +80,51 @@ tasklist /FI "IMAGENAME eq XtItClient.exe" 2>nul | findstr /I "XtItClient.exe" >
 if not errorlevel 1 goto :MQ_LAUNCHING
 
 if not exist "%MINIQMT%" goto :MQ_MISSING
-echo [%TIME%] 拉起 miniQMT: %MINIQMT%  (CWD=%MINIQMT_DIR%) >> "%LOG%"
+echo [%TIME%] 拉起大 QMT: %MINIQMT%  (CWD=%MINIQMT_DIR%) >> "%LOG%"
 start "" /D "%MINIQMT_DIR%" "%MINIQMT%"
 goto :MQ_WAIT
 
 :MQ_LAUNCHING
-echo [%TIME%] miniQMT 拉起器已在运行，等待引擎就绪 >> "%LOG%"
+echo [%TIME%] 大 QMT 进程已在运行，等待桥心跳 >> "%LOG%"
 goto :MQ_WAIT
 
 :MQ_RUNNING
-echo [%TIME%] 检测到 miniQMT 引擎已运行，跳过拉起 >> "%LOG%"
+echo [%TIME%] 检测到大 QMT (XtItClient.exe) 已在运行，跳过拉起 >> "%LOG%"
 goto :AFTER_MQ
 
 :MQ_MISSING
-echo [%TIME%] [ERR] 未找到 miniQMT: %MINIQMT% >> "%LOG%"
+echo [%TIME%] [ERR] 未找到大 QMT 客户端: %MINIQMT% >> "%LOG%"
 goto :AFTER_MQ
 
 :MQ_DISABLED
-echo [%TIME%] miniQMT 自动拉起已关闭 (MQ_AUTOSTART=0)，请手动启动 >> "%LOG%"
+echo [%TIME%] 大 QMT 自动拉起已关闭 (MQ_AUTOSTART=0)，请手动启动 >> "%LOG%"
 goto :AFTER_MQ
 
 :MQ_WAIT
-REM 给引擎 25s 初始化（含 xtquant 数据服务与行情连接）。
-REM 超时不等于失败：若已配置自动登录，登录完成后引擎会自行常驻；
-REM 若未勾「记住密码/自动登录」，此处只会停在登录界面，需人工输入。
-timeout /t 25 /nobreak >nul
-tasklist /FI "IMAGENAME eq XtMiniQmt.exe" 2>nul | findstr /I "XtMiniQmt.exe" >nul
-if errorlevel 1 goto :MQ_NOT_READY
-echo [%TIME%] miniQMT 引擎已就绪 (XtMiniQmt.exe) >> "%LOG%"
+REM 等桥心跳变新鲜，最多约 90 秒（9 次 × 10s）。
+REM 判定用 scripts/bridge_health.py（读 heartbeat.json），不再看进程名：
+REM   心跳新鲜 = QMT 已登录 + 策略已运行 + 桥已 init。
+REM 若 QMT 未勾「记住密码/自动登录」，会停在登录界面 ⇒ 心跳始终不出现 ⇒ 打 WARN。
+REM 计时用 ping 而不是 timeout：timeout /t 在无控制台时会立刻报错返回（已踩）。
+set /a MQ_TRIES=0
+:MQ_POLL
+call :BRIDGE_READY
+if not errorlevel 1 goto :MQ_READY
+set /a MQ_TRIES+=1
+if %MQ_TRIES% GEQ 9 goto :MQ_NOT_READY
+"%SystemRoot%\System32\ping.exe" -n 11 127.0.0.1 >nul
+goto :MQ_POLL
+
+:MQ_READY
+echo [%TIME%] 桥心跳已就绪（大 QMT 侧策略在运行） >> "%LOG%"
 goto :AFTER_MQ
 
 :MQ_NOT_READY
-echo [%TIME%] [WARN] miniQMT 引擎 25s 内未就绪：可能停在登录界面（未勾自动登录）或拉起失败，需人工确认 >> "%LOG%"
+echo [%TIME%] [WARN] 90s 内桥心跳未变新鲜：QMT 可能停在登录界面（未勾自动登录）、或策略未点「运行」 >> "%LOG%"
 :AFTER_MQ
 
-REM 等 miniQMT 服务端口稳定一点，再起守护（守护会再确认并拉起交易引擎）
-timeout /t 5 /nobreak >nul
+REM 再给 5s 让桥侧服务稳定，然后起守护（守护会再确认并拉起交易引擎）
+"%SystemRoot%\System32\ping.exe" -n 6 127.0.0.1 >nul
 
 REM ============================================================
 REM 2) 守护进程（5 分钟轮询，自动拉起交易引擎 127.0.0.1:5000）
@@ -173,6 +185,15 @@ echo [%TIME%] [WARN] 未找到 run_zone.bat，跳过观察区 >> "%LOG%"
 echo [%TIME%] qmtIDE 自启编排结束 >> "%LOG%"
 del "%LOCK%" 2>nul
 endlocal
+exit /b 0
+
+REM ============================================================================
+REM :BRIDGE_READY —— 桥心跳新鲜则 errorlevel=0
+REM   用 project 的 conda python 跑 bridge_health.py（纯只读，不 import 项目模块）。
+REM ============================================================================
+:BRIDGE_READY
+"%PY%" "%PROJ%\scripts\bridge_health.py" --max-age 60 >nul 2>&1
+if errorlevel 1 exit /b 1
 exit /b 0
 
 REM ===== 第二个实例走到这里：不碰锁（锁属于正在执行的那个实例），直接退出 =====

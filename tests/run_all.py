@@ -519,7 +519,9 @@ def _collect_tests():
             #   券商不返回该字段、_restore_engine_state 的 live 分支又在恢复
             #   持仓前就 return ⇒ 两侧都拿不到 ⇒ T+1 锁与建仓保护期双双失效
             #   （盘中重启后当日买入的票被卖、券商拒单 306050 即由此而来）。
-            "tests.test_open_date_backfill"]
+            "tests.test_open_date_backfill",
+            # 【2026-11-09】大 QMT + bridge：自启用桥心跳判就绪，不再看 miniQMT 进程名
+            "tests.test_bridge_health"]
     tests = []
     import_errors = []
     for m in mods:
