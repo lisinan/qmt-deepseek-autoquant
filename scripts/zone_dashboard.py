@@ -947,8 +947,14 @@ def main() -> int:
         return 0
 
     srv = ThreadingHTTPServer((args.host, args.port), Handler)
-    print(f"[zone-dashboard] http://{args.host}:{args.port}"
-          f"  （live :{ZONES[0]['port']} / paper :{ZONES[1]['port']}，只读）", flush=True)
+    # ★ 启动横幅必须是纯 ASCII（2026-11-09 实测崩溃）：
+    #   从 .bat 的 `start /min cmd /c ... >> log` 拉起时，stdout 没有 PYTHONIOENCODING，
+    #   Python 3.9 会按 ANSI 代码页（本机 cp1252）编码 print ⇒ 全角括号 "（" 直接抛
+    #   UnicodeEncodeError，进程在 serve_forever 之前就死了 —— 表现为「端口一直起不来，
+    #   日志里只有 traceback」，极容易被误判成端口占用或依赖缺失。
+    #   这里改成 ASCII；同时在 run_zone.bat 里补 PYTHONIOENCODING=utf-8 双保险。
+    print("[zone-dashboard] http://%s:%s  (live :%s / paper :%s, readonly)" % (
+        args.host, args.port, ZONES[0]["port"], ZONES[1]["port"]), flush=True)
     try:
         srv.serve_forever()
     except KeyboardInterrupt:

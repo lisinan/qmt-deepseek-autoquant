@@ -24,6 +24,9 @@ set "LOGZ=%PROJ%\logs\zone_launch.log"
 REM sqlite3 的 DLL 在 conda 的 Library\bin 下，缺了会 ImportError: _sqlite3
 set "PATH=C:\Users\lisinan\.conda\envs\qmt\Library\bin;C:\Users\lisinan\.conda\envs\qmt\DLLs;%PATH%"
 set "PYTHONPATH=%PROJ%"
+REM 子进程的 print() 也必须是 utf-8：.bat 的 start /min 会丢掉 PYTHONIOENCODING，
+REM 而展板启动横幅含中文，按 ANSI 代码页编码会直接 UnicodeEncodeError（已实测崩过）。
+set "PYTHONIOENCODING=utf-8"
 if not exist "%PROJ%\logs" mkdir "%PROJ%\logs"
 echo [%TIME%] run_zone 开始 >> "%LOGZ%"
 
@@ -87,7 +90,7 @@ call :PORT_UP %WP_PORT%
 if not errorlevel 1 goto :WAIT_OK
 set /a WP_LEFT-=1
 if %WP_LEFT% LEQ 0 goto :WAIT_TIMEOUT
-"%SystemRoot%\System32\timeout.exe" /t 1 /nobreak >nul
+"%SystemRoot%\System32\ping.exe" -n 2 127.0.0.1 >nul
 goto :WAIT_LOOP
 :WAIT_OK
 echo [%TIME%] %WP_TAG% 就绪 (端口 %WP_PORT%) >> "%LOGZ%"
