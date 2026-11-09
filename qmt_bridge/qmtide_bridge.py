@@ -113,7 +113,7 @@ _dict_warned = set()          # 去重「只报一次」的日志，避免 500ms
 #   但 QMT 已加载的旧代码不会自己更新 —— 只部署文件不重新运行策略，改动等于没做。
 #   有了这个字段，一条 PING 就能回答「新代码生效了吗」，不用猜。
 #   约定：改动了会影响实盘数值/下单的逻辑就换一个值（时间戳格式）。
-CODE_REV = "2026-11-08T21:31-mv-from-positions"
+CODE_REV = "2026-11-09T1125-write-retry"
 _io_selftest_ran = [False]    # IO 权限矩阵每个模块实例只探一次
 SKIP_SOCKET_PROBE = False     # 测试置 True：省掉每次 connect 的 0.5s 等待
 
@@ -256,15 +256,34 @@ def _atomic_write_json(path, obj):
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(obj, f, ensure_ascii=False)
-    try:
-        os.replace(tmp, path)
-    except Exception:
-        # very old python without os.replace
+    # 2026-11-09 P0: replace 失败改为 8 次退避重试, 并删除 os.remove + os.rename 回退。
+    # ★ 因果链要看对(team-lead 2026-11-09 亲自验过): 日志里那个 WinError 183
+    #   不是 os.replace 报的, 而是**回退路径第二步** os.rename 报的:
+    #     1) os.replace 失败(本机实测 WinError 5), 被 `except Exception:` 无声吞掉;
+    #     2) 回退里 os.remove(path) 因目标仍被读句柄占着而 PermissionError,
+    #        又被 `except: pass` 吞掉;
+    #     3) 目标还在 -> os.rename(tmp, path) 报 WinError 183(ERROR_ALREADY_EXISTS)。
+    #   整条链吞掉两个真实错误, 只留下最误导人的第三个。实盘代价: 08:48:52 与
+    #   盘中各一次写失败, 整份 result 丢失, 引擎只能等满 10s 超时。
+    # 现在: 退避重试(总预算 0.02*(1+..+8)=0.72s, 远小于 10s 超时), 耗尽才 raise;
+    #   且**先写 boot.log 再抛** —— QMT 用 pythonw 跑, 没有 stdout, 不落盘就等于
+    #   没发生过(2026-11-08 就是因为只 print 而误判过一次)。
+    last = None
+    for i in range(8):
         try:
-            os.remove(path)
-        except Exception:
-            pass
-        os.rename(tmp, path)
+            os.replace(tmp, path)
+            return
+        except OSError as e:
+            last = e
+            time.sleep(0.02 * (i + 1))
+    # ★ 日志失败绝不许盖住真错误: 若 _boot 自己抛, 原始 last 也必须照抛不误;
+    #   否则就变成「用次生错误盖住第一因」—— 正是今天在修的那个毛病。
+    try:
+        _boot("[BRIDGE] write failed after 8 retries: %s (%s) -> %s"
+              % (type(last).__name__, last, path))
+    except Exception:  # noqa: log-only
+        pass
+    raise last
 
 
 def _read_bytes_ctypes(path):
