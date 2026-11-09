@@ -502,7 +502,19 @@ def _collect_tests():
             #      11-03×2 共 6 行重复，热力矩阵同日画成多个格子、日期错位）；
             #   ③ 读端 `/api/gate_timeline` 不按 date 去重、空态无 hint，
             #      观察区新建当晚只显示一句「暂无时间线数据」，看不出是故障还是空。
-            "tests.test_gate_timeline_zone"]
+            "tests.test_gate_timeline_zone",
+            # 【2026-11-09 P0/P1】桥接读写的 Windows 共享冲突（B1 写侧重试 /
+            #   B2 读侧 FILE_SHARE_DELETE）。踩过两次真事：
+            #   ① QMT 侧 `_atomic_write_json` 的 `os.remove + os.rename` 非原子
+            #      回退在「引擎正读着 result.json」时必败（remove 拿
+            #      PermissionError 被吞、rename 撞上仍在的目标 ⇒ WinError 183），
+            #      实盘 08:48:52 与盘中各丢一份 result；老代码还会**静默覆盖**目标
+            #      文件且不抛异常（已用反证跑过）。
+            #   ② 引擎读侧 `open()` 不带 FILE_SHARE_DELETE，是这条链的起点。
+            #   本模块把补丁脚本的 transform 打在仓库当前源码上再 import，因此
+            #   「补丁未部署 / 已部署」两种状态都必须绿，也顺带验证补丁脚本本身。
+            #   登记理由同上：本 runner 用显式清单，不写进来就永远不执行。
+            "tests.test_bridge_io_sharing"]
     tests = []
     import_errors = []
     for m in mods:
