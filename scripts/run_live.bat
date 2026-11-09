@@ -18,5 +18,16 @@ set "PY=C:\Users\lisinan\.conda\envs\qmt\python.exe"
 cd /d "%PROJ%"
 set "PYTHONPATH=%PROJ%"
 set "PATH=C:\Users\lisinan\.conda\envs\qmt\Library\bin;C:\Users\lisinan\.conda\envs\qmt\DLLs;%PATH%"
+
+REM ---- 观察区(5001) + 展板(5002)：默认随 live 一起起 ----
+REM 2026-11-09 新增。此前这两者不在任何启动链路里，只能手工起，
+REM 会话一断就消失（当日 10:37:35 两者同秒双亡）。幂等由 run_zone.bat
+REM 的端口判定负责，已在跑则跳过；不 kill 任何进程、不影响 live。
+REM 需要「只起 live、不要观察区」时： set QMT_WITH_ZONE=0 后再运行本脚本。
+if "%QMT_WITH_ZONE%"=="0" goto :SKIP_ZONE
+if not exist "%PROJ%\scripts\run_zone.bat" goto :SKIP_ZONE
+call "%PROJ%\scripts\run_zone.bat"
+:SKIP_ZONE
+
 "%PY%" -u main.py --web --mode live --init-positions >> "%PROJ%\logs\engine_live_out.log" 2>&1
 endlocal

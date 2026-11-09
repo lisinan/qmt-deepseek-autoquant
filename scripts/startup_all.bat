@@ -154,6 +154,22 @@ goto :AFTER_WB
 echo [%TIME%] 未找到 WorkBuddy: %WORKBUDDY% >> "%LOG%"
 :AFTER_WB
 
+REM ============================================================
+REM 4) 观察区(paper, 5001) + 统一展板(5002)  —— 2026-11-09 新增
+REM    此前自启只拉 live，这两者不在任何链路里：只能手工起，且会话一断就
+REM    消失（当日 10:37:35 两者同秒双亡，之后 5001/5002 一直没人管）。
+REM    幂等交给 run_zone.bat 的端口判定（已在监听则跳过，不 kill）。
+REM    安全：paper 走 _NoTradeBroker（真实下单硬阻断，连 xttrader 都不 import）；
+REM          展板纯只读、不 import 任何项目模块。
+REM ============================================================
+if not exist "%PROJ%\scripts\run_zone.bat" goto :ZONE_MISSING
+echo [%TIME%] 拉起观察区 + 展板 >> "%LOG%"
+call "%PROJ%\scripts\run_zone.bat" >> "%LOG%" 2>&1
+goto :AFTER_ZONE
+:ZONE_MISSING
+echo [%TIME%] [WARN] 未找到 run_zone.bat，跳过观察区 >> "%LOG%"
+:AFTER_ZONE
+
 echo [%TIME%] qmtIDE 自启编排结束 >> "%LOG%"
 del "%LOCK%" 2>nul
 endlocal
