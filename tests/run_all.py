@@ -514,7 +514,12 @@ def _collect_tests():
             #   本模块把补丁脚本的 transform 打在仓库当前源码上再 import，因此
             #   「补丁未部署 / 已部署」两种状态都必须绿，也顺带验证补丁脚本本身。
             #   登记理由同上：本 runner 用显式清单，不写进来就永远不执行。
-            "tests.test_bridge_io_sharing"]
+            "tests.test_bridge_io_sharing",
+            # 【2026-11-09 P0】live 持仓的 open_date 必须从 fills 回灌：
+            #   券商不返回该字段、_restore_engine_state 的 live 分支又在恢复
+            #   持仓前就 return ⇒ 两侧都拿不到 ⇒ T+1 锁与建仓保护期双双失效
+            #   （盘中重启后当日买入的票被卖、券商拒单 306050 即由此而来）。
+            "tests.test_open_date_backfill"]
     tests = []
     import_errors = []
     for m in mods:

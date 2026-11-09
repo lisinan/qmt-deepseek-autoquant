@@ -561,6 +561,12 @@ class EventEngine:
         # live 模式由 _sync_broker_positions 合并回同步来的持仓，确保退出逻辑
         # /移动止损在实盘同样生效。
         self._pos_meta: Dict[str, dict] = {}
+        # 【2026-11-09 P0】live 持仓的 open_date 回灌记忆。
+        # 券商接口不返回 open_date ⇒ live 持仓的 T+1 锁与建仓保护期双双失效
+        # （盘中重启后发废单 306050 即由此而来）。回灌时机是 _sync_broker_positions，
+        # 而它每几秒跑一次 ⇒ 必须记住「这个 code 已经查过 fills 且查不到」，
+        # 否则每轮都要打一次 200 行的查询。查不到的多半是券商侧历史仓（fills 里没有）。
+        self._open_date_looked: set = set()
         # 权益曲线快照（供盘后复盘重建当日收益/最大回撤）：峰值与节流时间戳
         self._peak_equity: float = 0.0
         self._last_equity_ts: float = 0.0
@@ -4257,6 +4263,68 @@ class EventEngine:
             pass
         return default
 
+    def _backfill_open_date(self, code: str) -> Optional[datetime]:
+        """从 ``fills`` 回灌 ``open_date``（券商不返回该字段）。
+
+        【2026-11-09 P0】为什么必须有这一步：
+        ``_restore_engine_state`` 在 ``restore_ledger=False``（live）分支于恢复
+        持仓之前就 ``return`` 了（见该函数内 ``if not restore_ledger: ... return``），
+        而 ``_sync_broker_positions`` 建仓时取的 ``meta.get("open_date")`` 只来自
+        内存里的 ``_pos_meta``——进程重启后它是空的。两侧都拿不到 ⇒ live 持仓的
+        ``open_date`` 恒为 ``None`` ⇒ ``is_t1_locked()`` 与 ``is_in_entry_protection()``
+        对实盘全部失效（两者在 ``open_date is None`` 时都返回「不锁定」）：
+        当日买入的票当天就可能被卖出（券商拒单 306050），建仓保护期也形同不存在。
+
+        取法：``fills`` 里该票**最近一笔 BUY** 的成交时刻（``get_fills`` 按 id 倒序）。
+        本策略不日内加仓，故「最近一笔买入」即当前持仓的建仓时刻；即便将来加仓，
+        ``is_t1_locked`` 只在「开仓日 == 当日」时锁定，用最近一笔买入仍然正确
+        （当日新买的份额确实不可卖），方向是安全侧。
+
+        ``_open_date_looked`` 保证每个 code 每个进程只查一次：查不到的多半是
+        券商侧历史仓（fills 表里没有对应成交），不该每 3 秒重查一次。
+        """
+        # ★ 绝不允许「补元数据」这件事失败而中断整轮持仓同步：
+        #   _sync_broker_positions 的异常会被外层宽 except 吞掉，一旦这里抛，
+        #   后面的持仓落账/补订阅全都不会执行，而且**日志里只有一个字**。
+        #   所以对 self 的依赖一律用 getattr 软取（测试桩、半构造实例都安全）。
+        looked = getattr(self, "_open_date_looked", None)
+        if looked is None:
+            looked = set()
+            try:
+                self._open_date_looked = looked
+            except Exception:
+                pass
+        if code in looked:
+            return None
+        looked.add(code)
+        storage = getattr(self, "storage", None)
+        if storage is None or not hasattr(storage, "get_fills"):
+            logger.warning("open_date 回灌跳过: %s 无 storage.get_fills（测试桩？）", code)
+            return None
+        try:
+            rows = storage.get_fills(limit=200, code=code)
+        except Exception as e:
+            logger.warning("open_date 回灌失败（查 fills 异常） %s: %s", code, e)
+            return None
+        for r in rows or []:
+            if str(r.get("side") or "").upper() != "BUY":
+                continue
+            ts = r.get("ts")
+            if not ts:
+                continue
+            try:
+                od = datetime.fromisoformat(str(ts))
+            except Exception:
+                logger.warning("open_date 回灌失败（ts 不可解析） %s: %r", code, ts)
+                return None
+            logger.info("open_date 回灌: %s ← %s（来自 fills#%s，券商不返回该字段）",
+                        code, od.isoformat(timespec="seconds"), r.get("id"))
+            return od
+        logger.warning(
+            "open_date 回灌未命中: %s 在 fills 无 BUY 记录（券商侧历史仓？）"
+            "⇒ 该仓的 T+1 锁与建仓保护期在本进程内不生效", code)
+        return None
+
     def _sync_broker_positions(self) -> None:
         """live 模式：每轮以 broker 为权威源，把本地账本与真实持仓/资产对齐。
 
@@ -4345,6 +4413,11 @@ class EventEngine:
                     pos.avg_cost = avg
                     pos.last_price = last
                     pos.available = avail
+                    # 【2026-11-09 P0】存量仓也要补：进程启动早期建的 Position
+                    # 可能拿到 open_date=None（见 _backfill_open_date 的说明）。
+                    # 只补一次，补上后不会再为 None。
+                    if pos.open_date is None:
+                        pos.open_date = self._backfill_open_date(code)
                     # 合并/兜底止损价（本策略开的仓用 ATR 止损；broker 同步来的
                     # 历史仓无元数据则给一个宽幅硬止损作灾难保护）
                     if pos.stop_price <= 0:
@@ -4357,7 +4430,8 @@ class EventEngine:
                         code=code, name=UNIVERSE.get(code, code),
                         quantity=qty, available=avail, avg_cost=avg,
                         last_price=last,
-                        open_date=meta.get("open_date"),
+                        open_date=meta.get("open_date")
+                        or self._backfill_open_date(code),
                         peak_price=meta.get("peak_price", 0.0) or last,
                         stop_price=meta.get("stop_price", 0.0)
                         or (round(avg * (1 - wide), 3) if avg > 0 else 0.0),
