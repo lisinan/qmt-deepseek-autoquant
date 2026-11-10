@@ -323,3 +323,22 @@ def test_mount_point_references_only_existing_names():
             "is_t1_locked", "STRATEGY_PARAMS"}
     missing = need - top
     assert not missing, "挂载段引用了源码里不存在的名字: %s" % missing
+
+
+def test_mock_data_blocks_whole_channel_without_consuming_id():
+    """mock 行情下整条通道不动作：既不提交，也不写 done（id 留到下轮）。
+
+    为什么单独守这一条：_handle_buy 没有返回值，引擎在 mock 下拦掉单子后
+    账本若仍记 submit，指令就被"消耗"了却没有任何成交 —— 事后无法区分
+    "下过单但被拦" 与 "根本没下"。
+    """
+    with _Env() as e:
+        e.eng.data_mode = "mock"
+        e.eng.allow_mock_trading = False
+        e.queue(BUY_ONE)
+        st = _run(e, ticks={"510050.SH": _Tick(2.9)})
+        assert st["submit"] == 0 and e.eng.buys == [] and e.done() == {}
+        # 行情恢复后同一条指令必须还能执行
+        e.eng.data_mode = "tushare"
+        _run(e, ticks={"510050.SH": _Tick(2.9)})
+        assert len(e.eng.buys) == 1

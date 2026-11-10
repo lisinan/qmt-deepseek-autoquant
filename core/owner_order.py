@@ -272,6 +272,15 @@ def run_step(engine, ticks: Dict[str, Any], current_prices: Dict[str, float],
     stats = {"submit": 0, "reject": 0, "skip": 0, "ok": 0}
     if not isinstance(cfg, dict) or not cfg.get("enabled"):
         return stats
+    # ★ mock（合成行情）期间整条通道不动作。
+    # 为什么必须在**这里**拦、而不是等 _handle_buy 自己拦：_handle_buy 没有返回值，
+    # 引擎在 mock 下拦掉单子后我的账本仍会记 submit —— 于是指令被"消耗"却没有任何成交，
+    # 事后看 done 文件会以为下过单。宁可整轮不动、id 留到下轮。
+    if str(getattr(engine, "data_mode", "xtdata")) == "mock" \
+            and not getattr(engine, "allow_mock_trading", False):
+        if logger:
+            logger.debug("[OWNER指令] 行情源=mock，本通道整体跳过（不消耗 id）")
+        return stats
 
     now = now or datetime.now()
     today = now.date()
