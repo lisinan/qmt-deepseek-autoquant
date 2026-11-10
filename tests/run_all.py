@@ -523,7 +523,9 @@ def _collect_tests():
             # 【2026-11-09】大 QMT + bridge：自启用桥心跳判就绪，不再看 miniQMT 进程名
             "tests.test_bridge_health",
             # 【2026-11-10】OWNER 指令单：允许加仓与卖出，落单仍走唯一落单口
-            "tests.test_owner_order"]
+            "tests.test_owner_order",
+            # 【2026-11-10】行情从 mock 恢复后强制重建日线特征（否则假日线跑一天）
+            "tests.test_daily_rebuild_on_reattach"]
     tests = []
     import_errors = []
     for m in mods:

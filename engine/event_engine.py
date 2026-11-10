@@ -628,12 +628,32 @@ class EventEngine:
         if qmt_client.mode in ("xtdata", "tushare"):
             self.data_mode = qmt_client.mode
             return True
+        prev_mode = self.data_mode          # 记录切换前的源，供重建判定用
         try:
             ok = qmt_client.reattach()
         except Exception as e:  # noqa: BLE001 - 重连失败不得拖垮主循环
             logger.debug("行情源重连异常(忽略): %s", e)
             return False
         self.data_mode = qmt_client.mode
+        # ==== 行情恢复后重建日线特征（patch_daily_rebuild.py 插入）====
+        # 从 mock 切到真实源时，必须**无条件重算**日线特征：
+        #   启动早期（夜间/盘前/开机）行情未就绪会落到 mock，此时算出的 MA20/MA60/
+        #   动量/宽度全是合成序列的产物（core/qmt_client.py:82-95 基准价任意），
+        #   而 reattach 只换报价源、不碰特征缓存 ⇒ 面板显示"已恢复"，决策仍用假数据。
+        # force=True 是刻意的：默认 False 会跳过 FEATURE_TTL_SEC 内的"新鲜"缓存，
+        #   而那份缓存正是假的（2026-11-10 实测 paper 300308 close=122.22 vs 真值 452.03）。
+        if ok and prev_mode == "mock" and self.data_mode in ("xtdata", "tushare"):
+            try:
+                _n = self.daily.refresh(codes=self._daily_codes(), force=True)
+                logger.warning(
+                    "行情已从 mock 恢复（%s），强制重建日线特征: 覆盖 %d 只",
+                    self.data_mode, _n)
+                system_notice(
+                    "SUCCESS", "系统",
+                    f"行情恢复后已重建日线特征（{_n} 只），闸门/动量/宽度恢复真实")
+            except Exception as _e:  # noqa: BLE001 - 重建失败不得阻断开盘
+                logger.warning("行情恢复后重建日线特征失败（不影响交易，但特征仍为旧值）: %s", _e)
+        # ==== 行情恢复后重建日线特征 END ====
         if ok:
             system_notice(
                 "SUCCESS", "系统",
