@@ -32,6 +32,10 @@ T+1、建仓保护期、`max_positions` 全部照旧生效——这条是设计�
     amount      买入金额（元），按现价向下取整到 100 股
     price_cap   买入价格上限（>0 时不追高，现价高于它就一直等，不消耗 id）
     price_floor 卖出价格下限（>0 时现价低于它就一直等，不消耗 id）
+    max_amount  单笔金额上限（元），覆盖全局 owner_order.max_amount，只对本条生效
+    allow_large_position
+                买入时绕过「单仓上限 40%」（显式股数、不乘连亏降仓系数）。
+                默认关闭；仅 OWNER 明确要接回大额底仓时置 true。
     valid_until 有效期（"YYYY-MM-DD"，含当天）；过期标记 expired 不再重试
     note        备注，写进信号 reason 与日志
 
@@ -213,6 +217,13 @@ def decide(ins: dict, *, now: datetime, positions: Dict[str, Any],
             return ST_REJECT, "valid_until 格式非法（应为 YYYY-MM-DD）", 0
 
     max_amt = _float(cfg.get("max_amount")) or DEFAULT_MAX_AMOUNT
+    # 单笔金额上限的**逐条覆盖**（2026-11-10）。全局 1000 元是"先小后抬"的
+    # 保守值，但 OWNER 有时需要一次大额（如接回 300308 一手 4.7 万）。
+    # 只影响本条目，全局配置不变；金额上限仍是硬约束，只是基准可被 OWNER
+    # 在指令里显式上调 —— 这条通道本来就是 OWNER 亲笔写文件，无需二次授权。
+    _own_max = _float(ins.get("max_amount"))
+    if _own_max is not None and _own_max > 0:
+        max_amt = _own_max
     max_n = _int(cfg.get("max_per_day")) or DEFAULT_MAX_PER_DAY
     if max_n > 0 and day_n >= max_n:
         return ST_REJECT, "已达每日指令上限 %d 条" % max_n, 0
@@ -330,7 +341,17 @@ def run_step(engine, ticks: Dict[str, Any], current_prices: Dict[str, float],
                 save_signal(sig)
             # 用金额锁定股数：fixed_amount 在 _handle_buy 内「÷现价向下取整到 100 股」
             if handle_buy:
-                handle_buy(sig, tick, current_prices, fixed_amount=qty * price)
+                # allow_large_position（2026-11-10）：显式股数 + 绕过「单仓上限 40%」。
+                # 走 _handle_buy 既有的 owner_reentry 分支 —— 该分支本来就是为
+                # 「OWNER 显式指定股数个，接回底仓」建的：股数不乘连亏降仓系数
+                # （100×0.5=50 股不是整百，券商必拒），且 can_open 的
+                # allow_large_position=True 放行超配。
+                # 默认 False ⇒ 一切照旧（40% 上限、连亏系数全部生效）。
+                if ins.get("allow_large_position"):
+                    handle_buy(sig, tick, current_prices,
+                               fixed_amount=qty * price, owner_reentry=True)
+                else:
+                    handle_buy(sig, tick, current_prices, fixed_amount=qty * price)
             record(engine, done, oid, ST_SUBMIT, "买入 %d 股 @%.3f 已交落单口" % (qty, price),
                    logger=logger, notify=notify)
             engine._owner_day_n = day_n = day_n + 1

@@ -55,6 +55,7 @@ class _Eng(object):
         self._owner_day_n = 0
         self.signals = []
         self.buys = []
+        self.buy_large = []
         self.sells = []
         self.sell_ret = True
 
@@ -62,8 +63,9 @@ class _Eng(object):
     def _save_signal(self, sig):
         self.signals.append(sig)
 
-    def _handle_buy(self, sig, tick, prices, fixed_amount=0.0):
+    def _handle_buy(self, sig, tick, prices, fixed_amount=0.0, owner_reentry=False):
         self.buys.append((sig.code, fixed_amount))
+        self.buy_large.append(owner_reentry)
 
     def _handle_sell(self, sig, pos, now=None):
         self.sells.append(sig.code)
@@ -401,3 +403,62 @@ def test_mock_data_blocks_whole_channel_without_consuming_id():
         e.eng.data_mode = "tushare"
         _run(e, ticks={"510050.SH": _Tick(2.9)})
         assert len(e.eng.buys) == 1
+
+
+# ------------------------------------------------- 单笔金额覆盖 / 大额放行（13:50）
+def test_buy_per_instruction_max_amount_overrides_global():
+    """全局 max_amount=1000，但本条目写了 max_amount=50000 ⇒ 必须放行。
+
+    场景（2026-11-10 实盘）：接回 300308 一手 = 100 股 × 470 元 ≈ 4.7 万，
+    远大于全局 1000 元的小额验证上限。全局值不动，只给这一条开口子。
+    """
+    with _Env() as e:
+        e.queue({"id": "big1", "code": "300308.SZ", "side": "BUY", "lots": 100,
+                 "max_amount": 50000.0, "valid_until": "2026-11-10"})
+        st = _run(e, ticks={"300308.SZ": _Tick(470.0)})
+        assert st["submit"] == 1 and st["reject"] == 0
+        assert e.eng.buys[0][1] == 47000.0
+
+
+def test_buy_without_override_still_hits_global_cap():
+    """没写 max_amount 的条目，必须继续被全局 1000 元拦住（默认行为不变）。"""
+    with _Env() as e:
+        e.queue({"id": "big2", "code": "300308.SZ", "side": "BUY", "lots": 100,
+                 "valid_until": "2026-11-10"})
+        _run(e, ticks={"300308.SZ": _Tick(470.0)})
+        assert e.eng.buys == []
+        assert "超过单笔上限" in e.done()["big2"]["reason"]
+
+
+def test_buy_allow_large_position_flag_reaches_handle_buy():
+    """allow_large_position=true 必须以 owner_reentry=True 传到落单口。
+
+    不传就等于只放开了金额、没放开 40% 单仓上限 —— 4.7 万占 6 万权益的 78%，
+    risk.can_open 仍会拒。两个开关必须成对，这条钉的就是这个耦合。
+    """
+    with _Env() as e:
+        e.queue({"id": "big3", "code": "300308.SZ", "side": "BUY", "lots": 100,
+                 "max_amount": 50000.0, "allow_large_position": True,
+                 "valid_until": "2026-11-10"})
+        _run(e, ticks={"300308.SZ": _Tick(470.0)})
+        assert e.eng.buy_large == [True]
+
+
+def test_buy_default_does_not_allow_large_position():
+    with _Env() as e:
+        e.queue(dict(BUY_ONE))
+        _run(e, ticks={"510050.SH": _Tick(2.9)})
+        assert e.eng.buy_large == [False]
+
+
+def test_sell_is_not_subject_to_max_amount():
+    """卖出不受单笔金额上限约束：一手 300308 4.7 万必须能卖。
+
+    金额上限是「建仓」的护栏（防手滑超配），卖出是减仓、永远是降风险方向，
+    套上限只会让止损卖不出去。这条钉住「以后不要顺手把上限加到 SELL 分支」。
+    """
+    with _Env() as e:
+        e.eng._positions["300308.SZ"] = _Pos(100, open_date=datetime(2026, 11, 3, 10, 59))
+        e.queue({"id": "big4", "code": "300308.SZ", "side": "SELL", "lots": 100})
+        st = _run(e, ticks={"300308.SZ": _Tick(470.0)})
+        assert st["ok"] == 1 and st["reject"] == 0 and e.eng.sells == ["300308.SZ"]
