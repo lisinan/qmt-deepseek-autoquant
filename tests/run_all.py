@@ -521,7 +521,9 @@ def _collect_tests():
             #   （盘中重启后当日买入的票被卖、券商拒单 306050 即由此而来）。
             "tests.test_open_date_backfill",
             # 【2026-11-09】大 QMT + bridge：自启用桥心跳判就绪，不再看 miniQMT 进程名
-            "tests.test_bridge_health"]
+            "tests.test_bridge_health",
+            # 【2026-11-10】OWNER 指令单：允许加仓与卖出，落单仍走唯一落单口
+            "tests.test_owner_order"]
     tests = []
     import_errors = []
     for m in mods:
