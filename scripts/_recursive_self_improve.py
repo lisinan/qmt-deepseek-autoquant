@@ -60,6 +60,15 @@ from scripts import _loop_liveness as LL  # noqa: E402
 #   漏掉 risk/manager.py ⇒ 5 个熔断键被误判死参数）；误报比漏报更伤人。
 from strategy import _param_audit as PA  # noqa: E402
 
+# ★ 第三处单一事实源（2026-11-08 R50-RSI）：「已声明分歧」登记表。
+#   旧实现在本文件的 audit_baseline_drift() 里自带一份「不相等即漂移」的判据，
+#   与 tests/test_evolve_baseline_sync.py::KNOWN_DIVERGENCE 形成两份实现 ⇒
+#   manual_entry_codes（回测 () / 生产 ['510050.SH']）一边被认作已登记刻意差异、
+#   一边被每周报成 P0 漂移，把 priority_actions() 的第一位永久占住。
+#   现在两侧都 import config/_baseline_divergence.py，且豁免只对**逐位相等**的
+#   登记值生效 —— 任一侧再变即恢复 ★漂移（不会把真漂移吞掉）。
+from config._baseline_divergence import is_declared  # noqa: E402
+
 # 新增：待首跑的新任务不应算「停摆」（三态判定下仅作用于 ③ 的表述）
 NEW_AUTOS = {"1c6e4605", "6265093f", "4a425d4f"}
 
@@ -245,6 +254,15 @@ def audit_baseline_drift() -> dict:
       northbound_mode / momentum_min_mom ...）。每次漂移都会让此后所有
       「dSh 增量」相对错误基线计算 ⇒ 循环的**反馈信号本身在说谎**。
       静态读点扫描只能证明「代码读了该键」，唯有逐字段比值才能证明「读数一致」。
+
+    【2026-11-08 R50-RSI 三态化】判据由二态（一致/★漂移）改为三态：
+      一致 / **已声明分歧** / ★漂移。已声明分歧 = 两侧不等、但值逐位等于
+      `config/_baseline_divergence.py::KNOWN_DIVERGENCE` 里登记的那一对值
+      （当前唯一一条：观察篮 `manual_entry_codes`，回测 () / 生产 ['510050.SH']，
+      理由见该模块注释 —— 510050 是 live 链路探针，不是研究样本）。
+      为什么要分：旧二态让这条**修不了**的差异每周占据 P0 首位（R49/R50 连续两轮），
+      真正的新漂移即便出现也挤不到第一位 —— 与 GUARD 每小时假告警同型的「狼来了」。
+      安全边界：豁免只对登记的**具体值**生效，任一侧再变即回到 ★漂移。
     """
     import dataclasses
 
@@ -273,12 +291,19 @@ def audit_baseline_drift() -> dict:
             else:
                 same = pv == bv
         rows.append({"field": name, "key": key, "prod": pv, "bt": bv,
-                     "status": "一致" if same else "★漂移"})
+                     # 【2026-11-08 R50-RSI】三态而非二态：
+                     #   一致 / 已声明分歧（值等于 config/_baseline_divergence.py 的
+                     #   登记值，是**刻意保留**且已写理由的差异，如观察篮探针 510050）
+                     #   / ★漂移（真漂移，唯一该占 P0 首位的那类）。
+                     "status": ("一致" if same else
+                                "已声明分歧" if is_declared(name, bv, pv) else "★漂移")})
     drift = [r for r in rows if r["status"] == "★漂移"]
+    declared = [r for r in rows if r["status"] == "已声明分歧"]
     unmapped = [r for r in rows if r["status"] == "未映射"]
-    return {"rows": rows, "drift": drift, "unmapped": unmapped,
+    return {"rows": rows, "drift": drift, "declared": declared, "unmapped": unmapped,
             "checked": len(rows) - len(unmapped),
-            "drift_n": len(drift), "unmapped_n": len(unmapped)}
+            "drift_n": len(drift), "declared_n": len(declared),
+            "unmapped_n": len(unmapped)}
 
 
 def priority_actions(space: dict, activity: list, caps: list,
@@ -381,8 +406,10 @@ def main() -> None:
         "ledger": ledger,
         "capability": caps, "baseline_drift": {
             "checked": drift.get("checked"), "drift_n": drift.get("drift_n"),
+            "declared_n": drift.get("declared_n"),
             "unmapped_n": drift.get("unmapped_n"),
-            "drift": drift.get("drift"), "unmapped": drift.get("unmapped"),
+            "drift": drift.get("drift"), "declared": drift.get("declared"),
+            "unmapped": drift.get("unmapped"),
             "error": drift.get("error")},
         "actions": acts,
         "elapsed_sec": round(time.time() - t0, 2),
@@ -442,7 +469,9 @@ def main() -> None:
     else:
         L.append(f"逐字段比对 `_evolve_wf.base_cfg()`（验证器基线）与 "
                  f"`config/settings.py`（生产配置）：可比 **{drift['checked']}** 项，"
-                 f"**漂移 {drift['drift_n']} 项**，未映射 {drift['unmapped_n']} 项。\n\n")
+                 f"**漂移 {drift['drift_n']} 项**，"
+                 f"已声明分歧 {drift.get('declared_n') or 0} 项，"
+                 f"未映射 {drift['unmapped_n']} 项。\n\n")
         if drift["drift"]:
             L.append("| 回测字段 | 回测值 | 生产键 | 生产值 | 判定 |\n")
             L.append("|---|---:|---|---:|---|\n")
@@ -453,7 +482,22 @@ def main() -> None:
                      "> 本项目 docstring 已记录过 13 次同类漂移（top_n / risk_per_trade / "
                      "fixed_amount / northbound_mode / momentum_min_mom …）。\n")
         else:
-            L.append("✅ 基线一致，当前无需修口径。\n")
+            L.append("✅ 无未声明漂移，基线可信。\n")
+        declared = drift.get("declared") or []
+        if declared:
+            L.append("\n**已声明分歧**（`config/_baseline_divergence.py` 逐值钉住，"
+                     "**不计入漂移、不占优先级**；任一侧再变即自动回到 ★漂移）：\n\n"
+                     "| 回测字段 | 回测值 | 生产值 | 为什么刻意不同 |\n"
+                     "|---|---:|---:|---|\n")
+            why = {
+                "manual_entry_codes":
+                    "510050 是 live 链路探针（不进回测宇宙/排名），"
+                    "P0 基线定义=已验证的纯动量路径；2026-11-05 OWNER 裁决不放开",
+                "manual_entry_exit_exempt": "随观察篮一起评估，两侧当前同值",
+            }
+            for r in declared:
+                L.append(f"| `{r['field']}` | {r['bt']} | {r['prod']} | "
+                         f"{why.get(r['field'], '已登记（见该模块注释）')} |\n")
         if drift["unmapped"]:
             L.append(f"\n未映射回测字段（{drift['unmapped_n']}，需人工确认是否应接生产键）："
                      + "、".join(f"`{r['field']}`" for r in drift["unmapped"]) + "\n")

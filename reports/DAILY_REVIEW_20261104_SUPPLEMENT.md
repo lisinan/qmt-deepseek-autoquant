@@ -150,7 +150,19 @@
     **更硬的证据**：`engine_state` 最后一笔写入 ts 仍是 `2026-11-04T15:04:44.779680` ⇒ **00:02 那次 pre_open 重启根本没写过 `engine_state`**（`_save_engine_state` 只在 `_persist_equity`/复位路径被调，pre_open 无快照）⇒ 它既没造成、也没「延续」这个 null，只是**没有改善**。
   - **语义必须钉死（尚无任何文档写过）**：`open_date="2026-11-03T10:59:01.277211"` 对照两条时序 —— 比 `orders id=1105 ts=10:59:01.209676` **晚 67.5ms**、比 `fills id=390 ts=10:59:10.407253` **早 9.13s** ⇒ **`open_date` 记的是「下单受理时刻」，不是「成交时刻」**。对 T+1（日粒度）无影响，但保护期按分钟算（`is_in_entry_protection`），9 秒在边界上会翻转判定。**#22 若从 `orders` 恢复能复现该语义，从 `fills` 恢复会差 9 秒** ⇒ 修的时候必须写明取哪个时间源。
 - 闸门：`is_t1_locked(None)` 返回 False（`:96-97`）；`is_in_entry_protection(None)` 返回 False（`:116`）。调用点 `:3684` / `:3699`。
-- **杀伤路径（明日最需要防的）**：明日盘中若有任何重启，当日新仓 `open_date=None` ⇒ T+1 锁失效 ⇒ 硬止损/日内强平会向券商发「T+1 不可卖」的真卖单 ⇒ **306050 拒单废单，且每轮重发**（`_pending_sells` 只在受理成功后登记）。
+- **杀伤路径（条件触发，不是明日必然）**：若有**盘中重启 + 当日新买**，新仓 `open_date=None` ⇒ T+1 锁失效 ⇒ 硬止损/日内强平会向券商发「T+1 不可卖」的真卖单 ⇒ **306050 拒单废单，且每轮重发**（`_pending_sells` 只在受理成功后登记）。
+  **但明日实际影响 = 0**：两只都买于 11-03，`open_date.date()=11-03 ≠ 11-05` ⇒ **T+1 本来就不锁**（与 `open_date` 是否缺失无关）；保护窗（11-04 09:30+30min）早已过；120 天超时远未到。
+- ★ **四个字段的读点逐一定位（本报告最有复用价值的一张表）**：
+
+| 字段 | 唯一行为读点 | `exit_mode="trend"`（现值）下 |
+|---|---|---|
+| `peak_price` | `event_engine.py:2027`（在 `if exit_mode=="scalp"` 分支内） | **死** |
+| `stop_price` | `trend_strategy.py:280` | **死** |
+| `target_price` | `trend_strategy.py:283` | **死** |
+| **`open_date`** | `:99`（T+1）/ `:122`（保护期）/ `trend_strategy.py:296`（120 天超时） | **活** |
+
+  决定性的一行：`trend_strategy.on_exit` 的**第一个分支** `if exit_mode == "trend": … return None` 在 `# 剥头皮模式（原逻辑）` **之前**就返回 ⇒ `:280`/`:283` 在 trend 下永远走不到。
+  ⇒ **`open_date` 是四者中唯一还活着的**，也正因如此，`#22` 阶段①（只恢复 `open_date`）不是"顺手修"，是**唯一有实际收益的一步**；而 `peak_price` 那颗才有反向风险（§B-1），必须放阶段②。
 - ★ **`peak_price` 退化对今天零影响 —— 我逐码核过，推翻了一个看起来很像真的说法**：
   `:2022 if STRATEGY_PARAMS.get("exit_mode","scalp") == "scalp":` 才算 `chand = pos.peak_price × (1 − atr_stop_mult × atr_pct)`（`:2027`）；
   `:2030 else:`（trend）只做 `if pos.stop_price <= 0` 的一次性宽幅止损，**不读 `peak_price`**。
