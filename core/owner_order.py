@@ -394,9 +394,17 @@ def run_step(engine, ticks: Dict[str, Any], current_prices: Dict[str, float],
         if save_signal:
             save_signal(sig)
         ok = False
+        _placed = None
         if handle_sell and pos is not None:
             try:
-                ok = bool(handle_sell(sig, pos, now))
+                # lots=qty 是本次要卖的股数（2026-11-10 P0 修复）：
+                # 落单口原签名没有这个入参，会把「卖 1 手」执行成「清仓可用量」。
+                _prev_placed = getattr(engine, "_last_sell_placed", None)
+                ok = bool(handle_sell(sig, pos, now, lots=qty))
+                _now_placed = getattr(engine, "_last_sell_placed", None)
+                # 只有本轮**新产生**的委托才算数（避免读到上一轮残留）
+                if _now_placed is not None and _now_placed is not _prev_placed:
+                    _placed = _now_placed
             except Exception as e:                      # noqa: BLE001
                 if logger:
                     logger.warning("[OWNER指令] 卖出异常 %s: %s", oid, e)
@@ -408,6 +416,19 @@ def run_step(engine, ticks: Dict[str, Any], current_prices: Dict[str, float],
             if logger:
                 logger.warning("[OWNER指令] %s 卖出 %s %d 股 @%.3f（%s）",
                                oid, code, qty, price, note or "-")
+        elif _placed and _placed.get("ok"):
+            # live 分支下单成功后**故意返回 False**（未成交不释放槽位），
+            # 所以这里靠落单口回传的 _last_sell_placed 判定，而不是布尔返回值。
+            record(engine, done, oid, ST_SUBMIT,
+                   "卖出 %d 股已提交（委托号 %s，成交待回报）"
+                   % (int(_placed.get("qty") or qty), _placed.get("order_id") or "-"),
+                   logger=logger, notify=notify)
+            engine._owner_day_n = day_n = day_n + 1
+            stats["submit"] += 1
+            if logger:
+                logger.warning("[OWNER指令] %s 卖出 %s %d 股已提交 @%.3f（%s）",
+                               oid, code, int(_placed.get("qty") or qty), price,
+                               note or "-")
         else:
             record(engine, done, oid, ST_REJECT, "落单口未成交（保护期/委托失败/零仓位）",
                    logger=logger, notify=notify)

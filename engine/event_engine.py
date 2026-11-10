@@ -3787,12 +3787,24 @@ class EventEngine:
         return True
 
     def _handle_sell(self, sig: Signal, pos: Position,
-                     now: Optional[datetime] = None, force: bool = False) -> bool:
+                     now: Optional[datetime] = None, force: bool = False,
+                     lots: Optional[int] = None) -> bool:
         """卖出成交/拦截的统一入口。
+
+        ``lots``（2026-11-10 P0 新增）：**本次要卖多少股**。``None`` = 清仓
+        （既有语义，所有历史调用点行为零变化）。
+
+        为什么必须有这个参数：本方法在 live 分支里恒返回 ``False``（见下方
+        ``_register_pending_order`` 段：委托已提交但未成交，调用方不得补位），
+        所以它从来只是"清仓该持仓"的执行器。OWNER 指令单按"指定股数"理解
+        卖出，13:52 实测把「卖 1 手」执行成了「卖掉券商全部可用 500 股」
+        （`orders#1108` / `fills#393`）—— 缺的就是这个入参。
 
         **返回语义（2026-09-23 PM-EVOLVE 新增）**：
           - ``True``  = 仓位已真的清掉（槽位已释放），调用方可以放心买入补位；
-          - ``False`` = 卖出**未发生**（T+1 锁定 / 建仓保护期 / 委托失败 / 零仓位）。
+          - ``False`` = 卖出**未发生**（T+1 锁定 / 建仓保护期 / 委托失败 / 零仓位），
+            **或** live 下委托已提交但尚未成交（此时看 ``self._last_sell_placed``
+            区分"已提交"与"被拦"）。
 
         背景（max_positions 夹紧失效 P0 缺陷）：轮动「弱换强」原本无条件
         ``先卖最弱 → 再买候选``，而 ``_handle_sell`` 在 T+1 拦截时只 ``return``，
@@ -3884,8 +3896,22 @@ class EventEngine:
                     f"首个可卖日开盘后 {self.entry_protect_minutes} 分钟内不退出"
                     f"（防分钟级误伤）；跳过理由={getattr(sig, 'reason', '')}")
             return False
-        # ---- B2-3 卖出量夹紧到券商可用量（仅 live）----
-        qty = int(pos.quantity)
+        # ---- B2-3 卖出量：显式 lots 优先，再夹紧到券商可用量（仅 live）----
+        # 【2026-11-10 P0】`lots` 是 OWNER 指令单传进来的"本次卖多少"。
+        # 为 None 时保持历史语义「清仓该持仓」，所有既有调用点零变化。
+        # 三道夹紧缺一不可：不大于持仓、不大于券商可用、且必须是 100 的整数倍
+        # （非整百的卖出委托券商必拒，而日志只会显示"已提交"，故障会藏起来）。
+        if lots is not None:
+            requested = int(lots)
+            if requested <= 0:
+                logger.warning("[卖出] 指定股数非法（%s），已忽略本次卖出", requested)
+                return False
+            if requested % 100 != 0 and requested != int(pos.quantity):
+                logger.warning("[卖出] 指定股数 %d 不是 100 的整数倍，已拒绝", requested)
+                return False
+            qty = min(requested, int(pos.quantity))
+        else:
+            qty = int(pos.quantity)
         avail = int(getattr(pos, "available", 0) or 0)
         if self.exec_mode == "live" and avail > 0:
             qty = min(qty, avail)
@@ -3929,6 +3955,15 @@ class EventEngine:
                 else:
                     logger.warning("卖出委托返回 ok 但无 order_id（%s），无法跟踪成交",
                                    sig.code)
+                # 【2026-11-10 P1】显式回传「这笔卖出到底提交了没有」。
+                # live 分支恒返回 False（委托已提交未成交，调用方不得补位），
+                # 调用方仅凭布尔值无法区分「被 T+1/保护期拦下」与「已提交待成交」。
+                # OWNER 指令单曾因此把 13:52 那笔成功下单记成 reject。
+                self._last_sell_placed = {
+                    "ts": datetime.now(), "code": sig.code, "qty": qty,
+                    "order_id": str(res.get("order_id") or ""),
+                    "ok": bool(res.get("ok")),
+                }
                 return False
             return False
         else:

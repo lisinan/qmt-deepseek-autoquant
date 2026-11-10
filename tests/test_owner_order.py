@@ -59,6 +59,9 @@ class _Eng(object):
         self.buys = []
         self.buy_large = []
         self.sells = []
+        self.sell_lots = []
+        self.sell_placed_false = False
+        self._last_sell_placed = None
         self.sell_ret = True
 
     # 与引擎同名，便于把真实方法直接传进去
@@ -69,8 +72,17 @@ class _Eng(object):
         self.buys.append((sig.code, fixed_amount))
         self.buy_large.append(owner_reentry)
 
-    def _handle_sell(self, sig, pos, now=None):
+    def _handle_sell(self, sig, pos, now=None, lots=None):
         self.sells.append(sig.code)
+        self.sell_lots.append(lots)
+        # 模拟 live 分支：下单成功但返回 False（未成交不释槽），
+        # 真实引擎用 _last_sell_placed 回传「确实提交了」。
+        if self.sell_placed_false and lots:
+            self._last_sell_placed = {
+                "ts": now, "code": sig.code, "qty": int(lots),
+                "order_id": "SIM%d" % (len(self.sells)), "ok": True,
+            }
+            return False
         return self.sell_ret
 
 
@@ -512,3 +524,48 @@ def test_sell_falls_back_to_open_date_when_available_unknown():
         _run(e, ticks={"510050.SH": _Tick(2.9)})
         assert e.eng.sells == []
         assert "T+1" in e.done()["av4"]["reason"]
+
+
+# ------------------------------------- lots 入参 / 提交成功但返回 False（2026-11-10 P0）
+def test_sell_passes_requested_lots_to_engine():
+    """指令写 lots=100，落单口必须收到 lots=100 —— 而不是让它自己去清仓。
+
+    实盘事故：13:52 指令 lots=100，实际卖掉 500 股（整仓可用量）。
+    根因是 `_handle_sell` 原签名没有"这次卖多少"的入参。
+    """
+    with _Env() as e:
+        e.eng._positions["510050.SH"] = _Pos(
+            800, open_date=datetime(2026, 11, 3, 9, 30), available=500)
+        e.queue({"id": "lp1", "code": "510050.SH", "side": "SELL", "lots": 100})
+        _run(e, ticks={"510050.SH": _Tick(2.9)})
+        assert e.eng.sell_lots == [100]
+
+
+def test_sell_submitted_but_false_is_recorded_as_submit():
+    """live 落单成功却返回 False（未成交不释槽）⇒ 账本必须记 submit，不是 reject。
+
+    事故表现：13:52 那笔下单成功（order_id=0165958027），账本写成
+    `reject / 落单口未成交` —— 与事实相反，且没计入 max_per_day。
+    """
+    with _Env() as e:
+        e.eng._positions["510050.SH"] = _Pos(
+            800, open_date=datetime(2026, 11, 3, 9, 30), available=500)
+        e.eng.sell_placed_false = True
+        e.queue({"id": "lp2", "code": "510050.SH", "side": "SELL", "lots": 100})
+        st = _run(e, ticks={"510050.SH": _Tick(2.9)})
+        assert st["submit"] == 1 and st["reject"] == 0
+        assert e.done()["lp2"]["status"] == oo.ST_SUBMIT
+        assert "已提交" in e.done()["lp2"]["reason"]
+        assert e.eng._owner_day_n == 1     # 提交也要计入每日条数
+
+
+def test_sell_blocked_without_order_still_records_reject():
+    """真的被拦（没产生任何委托）仍必须记 reject —— 别把"没提交"也记成 submit。"""
+    with _Env() as e:
+        e.eng._positions["510050.SH"] = _Pos(
+            800, open_date=datetime(2026, 11, 3, 9, 30), available=500)
+        e.eng.sell_ret = False              # 返回 False 且不产生 _last_sell_placed
+        e.queue({"id": "lp3", "code": "510050.SH", "side": "SELL", "lots": 100})
+        st = _run(e, ticks={"510050.SH": _Tick(2.9)})
+        assert st["reject"] == 1
+        assert e.done()["lp3"]["status"] == oo.ST_REJECT
