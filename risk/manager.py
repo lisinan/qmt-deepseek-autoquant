@@ -70,6 +70,11 @@ class RiskManager:
         self._halted: bool = False
         self._halt_reason: str = ""
         self._peak_asset: float = 0.0
+        # 【2026-11-10 P0】max_drawdown 熔断解除后的「重新武装阈值」。
+        # 峰值不再因解除而下移（否则 −20% 预算被侵蚀），改用本阈值防止
+        # 「峰值单调 + dd≤−20% 恒成立 ⇒ 解除即再熔断 ⇒ 永久买入冻结」。
+        # 0.0 = 未武装（等价旧行为：dd 达线即熔断）。
+        self._dd_rearm_floor: float = 0.0
         self._daily_trade_count: int = 0
         self._halt_day: date = date.today()   # 回撤熔断触发日（用于冷却自动恢复）
         # 【2026-09-21】连亏起算日。只存 consec_loss 数值而不存「何时开始亏」，
@@ -157,7 +162,13 @@ class RiskManager:
                 return
             dd = (total_asset - self._peak_asset) / self._peak_asset
             if dd <= self.p["max_drawdown_pct"]:
-                self._halt(reason=f"max_drawdown {dd*100:.2f}%")
+                # 【2026-11-10 P0】重新武装：熔断解除后只有**再跌破解除时刻的
+                # 权益**才再次熔断。否则「峰值只上不下 + dd≤−20% 恒成立」会让
+                # 账户在解除的下一秒立刻再熔断，形成永久买入冻结
+                # （实测 asset=40000 / peak=67453.62 ⇒ dd −40.7%）。
+                _floor = float(getattr(self, "_dd_rearm_floor", 0.0) or 0.0)
+                if _floor <= 0.0 or total_asset < _floor - 1e-9:
+                    self._halt(reason=f"max_drawdown {dd*100:.2f}%")
                 return
 
     def set_daily_pnl_equity_mode(self, enabled: bool) -> None:
@@ -344,13 +355,35 @@ class RiskManager:
         else:
             recover_days = self.p.get("halt_recover_days", 1)
         if held >= recover_days:
+            # 【2026-11-10 P0】峰值基线**只上不下**。
+            # 原实现（任何类型熔断解除都把 peak 重置为当前总资产）让 −20% 硬线的
+            # 基线被系统性下移。实盘实证（risk_snapshots，两次都在 09:30:1x）：
+            #   11-03  66,542.31 → 63,207.94（−3,334.37）
+            #   11-09  67,453.62 → 58,162.49（−9,291.13）
+            # ⇒ 硬线实际要跌到真实峰值 −26.65% 才触发，多出 4,485.95 元
+            #   未受保护回撤（= 当时权益 7.42%）。
+            # 与 _maybe_recover_zombie 的既有纪律对齐（那里已写「不重置 _peak_asset」）。
+            # 「解除即再熔断」的防冻结改由 _dd_rearm_floor 承担（见 on_asset_update）。
+            _was_dd_halt = str(self._halt_reason or "").startswith("max_drawdown")
             self._halted = False
             self._halt_reason = ""
             self._consec_loss = 0
             self._daily_pnl = 0.0
             self._flatten_requested = False
             if total_asset and total_asset > 0:
-                self._peak_asset = total_asset   # 重置基线，避免解除后立即再熔断
+                if _was_dd_halt:
+                    # 只在**回撤类**解除时武装阈值；连亏/日亏类不是回撤事件，
+                    # 不应影响 max_drawdown 的触发条件。
+                    self._dd_rearm_floor = float(total_asset)
+                    logger.error(
+                        "RiskManager 回撤熔断解除：峰值基线保持 %.2f 不变，"
+                        "重新武装阈值 = %.2f（再跌破才再次熔断）",
+                        float(self._peak_asset or 0.0), self._dd_rearm_floor)
+                    system_notice(
+                        "SUCCESS", "风控",
+                        f"回撤熔断解除：−20% 硬线基线保持 "
+                        f"{float(self._peak_asset or 0.0):,.2f} 不变（不再下移），"
+                        f"重新武装阈值 {self._dd_rearm_floor:,.2f}")
             logger.info("RiskManager 熔断自动恢复（冷却 %s 日，重置风险基线）", held)
             system_notice("SUCCESS", "风控",
                           f"熔断自动恢复（冷却 {held} 日，已重置连亏/日内盈亏，恢复开仓）")
@@ -420,6 +453,10 @@ class RiskManager:
             # 同批退出合并计数：不持久化会导致重启后当日可再计一次连亏
             "last_loss_day": (self._last_loss_day.isoformat()
                               if self._last_loss_day else ""),
+            # 【2026-11-10】重新武装阈值必须持久化：不持久化则重启后归 0
+            # ⇒ 若账户仍在 −20% 以下，下一次资产更新立刻再熔断（虽然方向安全，
+            # 但会让「解除」在重启后形同虚设）。
+            "dd_rearm_floor": round(float(self._dd_rearm_floor or 0.0), 2),
         }
 
     def load_state(self, state) -> None:
@@ -452,6 +489,10 @@ class RiskManager:
         if lld:
             self._last_loss_day = lld
         self._consec_loss_date = _d(state.get("consec_loss_date"))
+        try:
+            self._dd_rearm_floor = float(state.get("dd_rearm_floor") or 0.0)
+        except (TypeError, ValueError):
+            self._dd_rearm_floor = 0.0
 
     # ---------- 手动恢复 ----------
 
@@ -473,6 +514,7 @@ class RiskManager:
         self._today = date.today()
         if capital > 0:
             self._peak_asset = capital
+            self._dd_rearm_floor = 0.0
             self._day_open_asset = capital
         logger.warning("RiskManager 账本复位：风控基线全部清零，回撤从 0 起算")
 

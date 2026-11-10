@@ -476,6 +476,18 @@ STRATEGY_PARAMS = {
     # 生效时点：因 .py 有改动，仍在 **10-08 开市前重启**最稳妥（与 R17/R20 一起）。
     # 可逆：置 0 即恢复旧行为，零代码改动。
     "min_passing_candidates": 2,    # 入场宽度确认（0=关闭）
+    # 【2026-11-10 P0】宽度闸门的**度量口径**（第 20 例「回测有、实盘无」背离）：
+    #   "universe"  = 动量截断前全量池里通过入场门的票数（= 回测口径，默认）
+    #   "truncated" = 动量 top_n 截断后的 BUY 数（2026-11-10 之前的旧行为）
+    # 旧口径下宽度上限恒为 top_n=3，mom_pass_n<=1 时恒为 1 ⇒ K=2 闸门必然触发
+    # （2026-11-10 实测 688981.SH 被挡 24 次）。
+    # 价签：四窗收益差均值 +11.56pt、四窗全胜、window 级 t=+7.12（四窗全正）。
+    #   ★ Calmar/Sharpe 只作方向：逐折 Calmar 的小分母会把均值撑爆
+    #     （某折 MDD 3.8% ⇒ Calmar 236.89），Sharpe +0.101 亦不显著。
+    # 已知残差：生产 trend_up 用 close>MA60、回测用 MA20>MA60 ⇒ 修后生产宽度 ≥ 回测。
+    #   详见本文件模块 docstring；**本批刻意不夹带修它**。
+    # 回滚：改回 "truncated" + 重启即逐位恢复旧行为。
+    "breadth_gate_basis": "universe",
 
     # ---- 信念仓位（conviction sizing）【PM-EVOLVE R35 2026-10-16 落盘：仅接线，未启用】----
     # 语义：AI 宽度（宇宙内收盘站上 MA(regime_ma=60) 的比例）≥ conviction_breadth_thr 时，
@@ -654,6 +666,19 @@ STRATEGY_PARAMS = {
     # ★ 可逆：`owner_reentry` 置为 `{}` 即完全关闭（热读，无需重启进程内的下一次 step）。
     #
     # 📌 下一交易日（2026-11-03）到期后本块应置空 `{}`，避免配置长期悬挂。
+    # ===== OWNER 指令单通道（2026-11-10 v1.1）=====
+    # 与上面两条通道的区别：manual_entry 跳过已持仓、owner_reentry 只补空仓，
+    # 两条都故意拒绝加仓；本通道**允许加仓，也允许卖出**。
+    # 红线不变：落单只走 _handle_buy / _handle_sell（唯一落单口），
+    #   熔断 / 日内次数 / 现金夹紧 / 行情新鲜度 / 总资产可信度 / T+1 /
+    #   建仓保护期 / max_positions 全部照旧生效。
+    # 幂等：同 id 永不重复提交（storage/owner_orders_done.json 落盘）。
+    # 关闭：enabled=False 即彻底惰性（不读文件、不打日志），等价于未安装。
+    "owner_order": {
+        "enabled": True,         # 启用开关（OWNER 2026-11-10 授权开启）
+        "max_amount": 1000.0,    # 单笔金额上限（元）——先小，跑顺再抬
+        "max_per_day": 5,        # 每日指令条数上限
+    },
     "owner_reentry": {
         "code": "300308.SZ",        # 中际旭创
         "lots": 1,                  # 1 手 = 100 股（= 11-02 被误卖的原持仓数量）

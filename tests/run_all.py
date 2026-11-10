@@ -503,6 +503,15 @@ def _collect_tests():
             #   ③ 读端 `/api/gate_timeline` 不按 date 去重、空态无 hint，
             #      观察区新建当晚只显示一句「暂无时间线数据」，看不出是故障还是空。
             "tests.test_gate_timeline_zone",
+            # 【2026-11-09 P0】QMT 侧 bridge 的 total_asset 必须计入冻结资金。
+            #   漏 frozen ⇒ 一挂买单总资产就被低估 ⇒ _risk_total_asset() 当成真实
+            #   回撤 ⇒ 命中 daily_stop_flatten_pct(-6%) 强平真仓（与 11-02 同类）。
+            #   今日量化：基线 57,862 时 -6% 只有 3,472 元，而单笔仓位 1.5~2.3 万。
+            #   本模块钉死「frozen=0 时逐位不变」（保证补丁上线后常态零变化）
+            #   与「frozen>0 时计入」；补丁未部署时自动走 [PENDING-DEPLOY] 分支，
+            #   因此补丁前后都必须是绿的，不允许出现「测试红着等上线」。
+            #   登记理由同上：本 runner 用显式清单，不写进来就永远不执行。
+            "tests.test_bridge_frozen_total",
             # 【2026-11-09 P0/P1】桥接读写的 Windows 共享冲突（B1 写侧重试 /
             #   B2 读侧 FILE_SHARE_DELETE）。踩过两次真事：
             #   ① QMT 侧 `_atomic_write_json` 的 `os.remove + os.rename` 非原子
@@ -528,8 +537,12 @@ def _collect_tests():
             "tests.test_daily_rebuild_on_reattach",
             # 【2026-11-10 P1】固定金额→股数的浮点截断：实盘 13:23 用
             #   `fixed_amount=290.2 / price=2.902` 被判「不足一手」拒单，
-            #   真因是 0.99999999999999 被 int() 截成 0 手。观察篮同源代码。
-            "tests.test_fixed_lots"]
+            #   真因是 0.99999999999999988 被 int() 截成 0 手。观察篮同源代码。
+            "tests.test_fixed_lots",
+            # 【2026-11-10 主理人】本批落盘的反向断言：峰值基线不被熔断恢复下移 /
+            #   回撤熔断解除后不立即再熔断 / peak 兜底按 mode 过滤 / 未知态占位
+            #   按墙钟自解且先于 get_trades / 宽度闸门用全量池口径。
+            "tests.test_20261110_landing_guards"]
     tests = []
     import_errors = []
     for m in mods:

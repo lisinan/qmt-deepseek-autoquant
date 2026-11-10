@@ -1,0 +1,2714 @@
+# -*- coding: utf-8 -*-
+"""
+日线回测器（真实历史数据，xtdata 本地零额度）
+
+目的：用真实日线数据，对"原策略逻辑" vs "优化后逻辑"做 A/B，
+量化本次优化的贡献（趋势闸门 / 移动止损 / 波动率目标仓位）。
+
+说明：
+  - 真实系统是在 1 分钟 K 线上跑 6 因子 + 日线趋势闸门。1 分钟历史
+    需 Tushare 积分，这里用日线复刻同一套因子与闸门逻辑（日线级），
+    并额外用 MA60 作为"更高周期"趋势过滤，等价体现 MTF 思想。
+  - 信号在 day i 收盘产生，day i+1 开盘成交（避免未来函数）。
+  - 离场用当日 high/low 判断是否触发止损/止盈/移动止损。
+
+用法：
+  python strategy/backtest_daily.py            # 跑 baseline + optimized 对比
+  python strategy/backtest_daily.py --mode optimized
+  python strategy/backtest_daily.py --code 300308.SZ
+"""
+from __future__ import annotations
+
+import argparse
+import math
+import sys
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta
+import datetime as _dt
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
+
+ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from config.settings import (  # noqa: E402
+    STOCK_CODES, UNIVERSE, MARKET_INDEX_CODE, SECTOR_OF, TRADE_COST_PCT,
+)
+from core import indicators as I  # noqa: E402
+from core.qmt_client import qmt_client  # noqa: E402
+
+
+# ============================================================ 数据
+
+def load_daily(code: str, count: int = 260) -> Optional[Dict[str, List[float]]]:
+    """优先 xtdata 本地日线。同时返回交易日 date（用于跨标的对齐）。
+
+    ★【2026-09-24 PM-EVOLVE 第 7 轮 P0 修复】加「本地日线陈旧 → 就地补拉」。
+    原实现只读本地缓存，而 miniQMT 的 1d 缓存只在客户端主动同步时更新，
+    一旦停止同步就**永久冻结**（实测冻结在 2026-08-25，滞后 4 周）⇒
+    所有回测/walk-forward 结论都建立在过期 4 周的样本上，且样本量少 22 根。
+    实测 ``download_history(code, period='1d')`` 仅 **0.1s/只**，23 只宇宙
+    全量补拉 1.9s，即可把本地末日从 20260825 拉到 20260924。
+    补拉失败时静默沿用旧数据（保持修复前的降级行为，不引入新的失败模式）。
+    """
+    try:
+        raw = qmt_client.get_history(code, period="1d", count=count)
+        # 陈旧判定：最后一根距今超过 5 个自然日（覆盖周末+调休）
+        if raw:
+            _last = raw[-1].get("ts")
+            if _last is not None and hasattr(_last, "date"):
+                if (_dt.date.today() - _last.date()).days > 5:
+                    try:
+                        if qmt_client.download_history(code, period="1d"):
+                            _r2 = qmt_client.get_history(code, period="1d",
+                                                         count=count)
+                            if _r2 and len(_r2) >= 120:
+                                raw = _r2
+                    except Exception:
+                        pass
+        if raw and len(raw) >= 120:
+            return {
+                "date": [b["ts"].strftime("%Y%m%d") for b in raw],
+                "open": [b["open"] for b in raw],
+                "high": [b["high"] for b in raw],
+                "low": [b["low"] for b in raw],
+                "close": [b["close"] for b in raw],
+                "volume": [b["volume"] for b in raw],
+            }
+    except Exception:
+        pass
+    return None
+
+
+def align_panel(data: Dict[str, dict]) -> Tuple[List[str], Dict[str, dict]]:
+    """把各标的日线对齐到统一交易日轴。
+
+    为什么必须做：原实现用 ``n = min(len(close))`` 截断，索引 i 在不同
+    标的上指向**不同日期**（任一标的停牌/上市晚就错位），横截面动量排名
+    和组合权益都会失真。
+
+    停牌日处理：前向填充（o/h/l/c 全取上一收盘，量为 0）并标记
+    ``valid[i]=False``，该日禁止成交但持仓照常按最后价格估值。
+    """
+    if not data:
+        return [], {}
+
+    # 兼容无 date 的旧数据/mock：退化为尾部截断对齐
+    if not all("date" in d for d in data.values()):
+        n = min(len(d["close"]) for d in data.values())
+        out: Dict[str, dict] = {}
+        for code, d in data.items():
+            out[code] = {k: list(d[k][-n:])
+                         for k in ("open", "high", "low", "close", "volume")}
+            out[code]["valid"] = [True] * n
+        return [str(k) for k in range(n)], out
+
+    all_dates = sorted({dt for d in data.values() for dt in d["date"]})
+    out = {}
+    for code, d in data.items():
+        idx = {dt: k for k, dt in enumerate(d["date"])}
+        o, h, l, c, v, valid = [], [], [], [], [], []
+        last_close = None
+        for dt in all_dates:
+            k = idx.get(dt)
+            if k is None:
+                # 停牌 / 未上市
+                if last_close is None:
+                    o.append(0.0); h.append(0.0); l.append(0.0)
+                    c.append(0.0); v.append(0.0); valid.append(False)
+                else:
+                    o.append(last_close); h.append(last_close)
+                    l.append(last_close); c.append(last_close)
+                    v.append(0.0); valid.append(False)
+            else:
+                o.append(d["open"][k]); h.append(d["high"][k])
+                l.append(d["low"][k]); c.append(d["close"][k])
+                v.append(d["volume"][k]); valid.append(True)
+                last_close = d["close"][k]
+        out[code] = {"open": o, "high": h, "low": l,
+                     "close": c, "volume": v, "valid": valid}
+    return all_dates, out
+
+
+# ============================================================ 因子（与 trend_strategy 等价）
+
+def score_daily_series(o, h, l, c, v,
+                       vwap_window: int = 0,
+                       vwap_factor_fixed: float = -1.0) -> List[Tuple[float, Dict[str, float]]]:
+    """向量化 6 因子评分：预计算所有指标序列一次，逐索引取 [i]。
+
+    与 ``score_daily`` 数值完全一致（I.last(series[:i+1]) == series[i]，
+    因指标在预热后恒为非负值、无 None 反弹）。返回长度 n 的列表，
+    每项 = (score, factors_dict)。run_backtest 用它把 O(n^2) 的逐 bar
+    重算降为 O(n)，加速 walk-forward 验证（结果不变）。
+
+    ``vwap_window``：滚动 N 日 VWAP 窗口；**0（默认）= 累计 VWAP，零行为变化**。
+    详见 ``core/indicators.vwap_roll`` 的缺陷说明（2026-10-12 第 27 轮）。
+    """
+    n = len(c)
+    sma5 = I.sma(c, 5)
+    sma10 = I.sma(c, 10)
+    sma20 = I.sma(c, 20)
+    rsi = I.rsi(c, 14)
+    _, _, hist = I.macd(c, 12, 26, 9)
+    k, d, j = I.kdj(h, l, c, 9)
+    bmid, bup, blo = I.boll(c, 20, 2.0)
+    atr = I.atr(h, l, c, 14)
+    sma20_slope = _vec_slope(sma20, 5)   # 全序列斜率（与 daily_trend_up 等价）
+    typ = [(hh + ll + cc) / 3 for hh, ll, cc in zip(h, l, c)]
+    vwap = I.vwap_roll(typ, v, vwap_window)
+    out: List[Tuple[float, Dict[str, float]]] = []
+    for i in range(n):
+        close = c[i]
+        ma5 = sma5[i]; ma10 = sma10[i]; ma20 = sma20[i]
+        rsi_i = rsi[i]; macd_hist = hist[i]
+        # KDJ 无内置预热：全序列从第 0 根起算。但原 score_daily 传入的是
+        # 截断序列 c[:i+1]，长度 < 9 时 I.kdj 整体返回 None。为与逐 bar 版本
+        # 在每根 i 上完全一致，i+1 < 9 时置 None（仅影响预热区，不参与交易）。
+        kdj_j = j[i] if (i + 1) >= 9 else None
+        boll_mid = bmid[i]; boll_up = bup[i]; boll_lo = blo[i]
+        atr_i = atr[i]; vwap_i = vwap[i]
+        factors: Dict[str, float] = {}
+        # 趋势
+        tr = 0.0
+        if ma5 and ma10 and ma20:
+            if ma5 > ma10 > ma20:
+                tr += 1.0
+                ma20_s = sma20_slope[i] if sma20_slope[i] is not None else 0.0
+                if ma20_s > 0:
+                    tr += 1.0
+            elif ma5 > ma10:
+                tr += 0.5
+        factors["trend"] = round(tr, 2)
+        # 动量
+        mm = 0.0
+        if macd_hist is not None and macd_hist > 0:
+            mm += 1.0
+        factors["momentum"] = round(mm, 2)
+        # 超买超卖
+        ob = 0.0
+        if rsi_i is not None:
+            if 30 < rsi_i < 70:
+                ob += 1.0
+            elif rsi_i <= 30:
+                ob += 1.5
+            elif rsi_i >= 80:
+                ob -= 0.5
+        if kdj_j is not None:
+            if kdj_j < 20:
+                ob += 0.5
+            elif kdj_j > 100:
+                ob -= 1.0
+        factors["oversold"] = round(max(0.0, min(2.0, ob)), 2)
+        # 量价
+        vp = 0.0
+        if i >= 5 and v and sum(v[i - 5:i]) > 0:
+            ratio = v[i] / (sum(v[i - 5:i]) / 5)
+            if ratio >= 1.2:
+                vp = 1.0
+            elif ratio >= 1.0:
+                vp = 0.5
+        factors["volume"] = round(vp, 2)
+        # 位置（BOLL）
+        pos = 0.0
+        if close and boll_mid and boll_up and boll_lo:
+            if boll_lo <= close <= boll_up:
+                pos = (0.5 + 0.5 * (close - boll_mid) / (boll_up - boll_mid)
+                       if boll_up > boll_mid else 0.5)
+            elif close > boll_up:
+                pos = 0.0 if close > boll_up * 1.02 else 0.5
+            elif close < boll_lo:
+                pos = 0.3 if close > boll_lo * 0.98 else 0.0
+        factors["position"] = round(pos, 2)
+        # VWAP（重校准版）
+        vw = 0.0
+        if vwap_factor_fixed >= 0:
+            vw = float(vwap_factor_fixed)      # 固定值（噪声检验）
+        elif close and vwap_i:
+            diff = (close - vwap_i) / vwap_i
+            if diff > 0.0008:
+                vw = 2.0
+            elif diff > -0.004:
+                vw = 1.0
+        factors["vwap"] = round(vw, 2)
+        out.append((round(sum(factors.values()), 2), factors))
+    return out
+
+
+def score_daily(o, h, l, c, v, vwap_window: int = 0) -> Tuple[float, Dict[str, float]]:
+    """对一组日线序列（截至当前）计算 6 因子评分。c[-1] 为当前收盘。
+
+    兼容旧调用：等价于 score_daily_series(...)[-1]。
+    ``vwap_window``：滚动 N 日 VWAP 窗口；0（默认）= 累计 VWAP，零行为变化。
+    """
+    ma5 = I.last(I.sma(c, 5))
+    ma10 = I.last(I.sma(c, 10))
+    ma20 = I.last(I.sma(c, 20))
+    rsi = I.last(I.rsi(c, 14))
+    _, _, hist = I.macd(c, 12, 26, 9)
+    macd_hist = I.last(hist)
+    k, d, j = I.kdj(h, l, c, 9)
+    kdj_j = I.last(j)
+    _bmid, _bup, _blo = I.boll(c, 20, 2.0)
+    boll_mid, boll_up, boll_lo = I.last(_bmid), I.last(_bup), I.last(_blo)
+    atr = I.last(I.atr(h, l, c, 14))
+    typ = [(hh + ll + cc) / 3 for hh, ll, cc in zip(h, l, c)]
+    vwap = I.last(I.vwap_roll(typ, v, vwap_window))
+    close = c[-1]
+
+    factors: Dict[str, float] = {}
+    # 趋势
+    tr = 0.0
+    if ma5 and ma10 and ma20:
+        if ma5 > ma10 > ma20:
+            tr += 1.0
+            ma20_s = I.slope(I.sma(c, 20), 5) or 0
+            if ma20_s > 0:
+                tr += 1.0
+        elif ma5 > ma10:
+            tr += 0.5
+    factors["trend"] = round(tr, 2)
+    # 动量
+    mm = 0.0
+    if macd_hist is not None and macd_hist > 0:
+        mm += 1.0
+    factors["momentum"] = round(mm, 2)
+    # 超买超卖
+    ob = 0.0
+    if rsi is not None:
+        if 30 < rsi < 70:
+            ob += 1.0
+        elif rsi <= 30:
+            ob += 1.5
+        elif rsi >= 80:
+            ob -= 0.5
+    if kdj_j is not None:
+        if kdj_j < 20:
+            ob += 0.5
+        elif kdj_j > 100:
+            ob -= 1.0
+    factors["oversold"] = round(max(0.0, min(2.0, ob)), 2)
+    # 量价
+    vp = 0.0
+    if v and len(v) >= 6 and sum(v[-6:-1]) > 0:
+        ratio = v[-1] / (sum(v[-6:-1]) / 5)
+        if ratio >= 1.2:
+            vp = 1.0
+        elif ratio >= 1.0:
+            vp = 0.5
+    factors["volume"] = round(vp, 2)
+    # 位置（BOLL）
+    pos = 0.0
+    if close and boll_mid and boll_up and boll_lo:
+        if boll_lo <= close <= boll_up:
+            pos = 0.5 + 0.5 * (close - boll_mid) / (boll_up - boll_mid) if boll_up > boll_mid else 0.5
+        elif close > boll_up:
+            pos = 0.0 if close > boll_up * 1.02 else 0.5
+        elif close < boll_lo:
+            pos = 0.3 if close > boll_lo * 0.98 else 0.0
+    factors["position"] = round(pos, 2)
+    # VWAP（重校准版）
+    vw = 0.0
+    if close and vwap:
+        diff = (close - vwap) / vwap
+        if diff > 0.0008:
+            vw = 2.0
+        elif diff > -0.004:
+            vw = 1.0
+    factors["vwap"] = round(vw, 2)
+
+    return round(sum(factors.values()), 2), factors
+
+
+def trend_up_relaxed(a: bool, b: bool, c: bool, d: bool, relax: str) -> bool:
+    """trend_up 的四分量按放宽档位组合（纯函数，回测/实盘共用同一张真值表）。
+
+    分量（与 daily_trend_up / daily_context.py:325 严格同义）：
+      a = close > MA20        b = MA20 > MA60
+      c = MA20 5 日斜率 > 0   d = MACD 柱 >= 0
+
+    档位：
+      "none"     = a & b & c & d  （生产现状，默认）
+      "no_macd"  = a & b & c      去掉 MACD（MACD 最滞后，弱市里最后翻正）
+      "no_slope" = a & b & d      去掉 MA20 斜率
+      "no_ma60"  = a & c & d      不要求 MA20>MA60（允许早期趋势）
+      "any3"     = 4 个分量中至少 3 个成立
+      "ma60s"    = a & b & c & d & e（收紧：额外要求 MA60 5 日斜率 > 0）
+    注：e 分量单独由调用方传入（函数第 5 参），默认 None = 该档退化为 "none"。
+    """
+    if relax == "none":
+        return a and b and c and d
+    if relax == "no_macd":
+        return a and b and c
+    if relax == "no_slope":
+        return a and b and d
+    if relax == "no_ma60":
+        return a and c and d
+    if relax == "any3":
+        return (1 if a else 0) + (1 if b else 0) + (1 if c else 0) + (1 if d else 0) >= 3
+    return a and b and c and d
+
+
+def _trend_up_with_ma60s(a, b, c, d, e):
+    """收紧档 ma60s：原 4-AND 再叠加 MA60 斜率 > 0。"""
+    return a and b and c and d and bool(e)
+
+
+def daily_trend_up(c, h, l, i: int, relax: str = "none") -> bool:
+    """更高周期趋势闸门：close>MA20>MA60 且 MA20 斜率>0 且 MACD>=0。"""
+    if i < 60:
+        return False
+    ma20 = I.last(I.sma(c[:i + 1], 20))
+    ma60 = I.last(I.sma(c[:i + 1], 60))
+    ma20_s = I.slope(I.sma(c[:i + 1], 20), 5) or 0
+    _, _, hist = I.macd(c[:i + 1], 12, 26, 9)
+    macd_hist = I.last(hist)
+    close = c[i]
+    a = bool(ma20 and close > ma20)
+    b = bool(ma20 and ma60 and ma20 > ma60)
+    cc = bool(ma20_s > 0)
+    d = bool((macd_hist or 0) >= 0)
+    return trend_up_relaxed(a, b, cc, d, relax)
+
+
+def atr_pct_at(h, l, c, i: int) -> float:
+    atr = I.last(I.atr(h[:i + 1], l[:i + 1], c[:i + 1], 14))
+    return (atr / c[i]) if (atr and c[i]) else 0.0
+
+
+# ============================================================ 回测
+
+@dataclass
+class BacktestConfig:
+    use_gate: bool = True           # 日线趋势闸门
+    stop_loss: float = -0.04         # 固定止损下限
+    take_profit: float = 0.12        # 固定止盈下限
+    atr_stop_mult: float = 2.5       # 止损距离 = ATR% * 该倍数
+    tp_atr_mult: float = 4.0         # 止盈距离 = ATR% * 该倍数
+    trailing: bool = True
+    trailing_activation: float = 0.06
+    trailing_stop: float = -0.03
+    trailing_floor: float = -0.005   # 移动止损保本线下限
+    max_hold_days: int = 20
+    vol_sizing: bool = True         # ATR 波动率目标仓位
+    risk_per_trade: float = 0.01
+    fixed_amount: float = 50000.0
+    cost_pct: float = TRADE_COST_PCT     # 单边交易成本（佣金+印花税+滑点），计入
+    chandelier: bool = False         # True=用峰值时 ATR 吊灯止损（趋势跟随）
+    entry_mode: str = "factor"       # "factor"=6因子评分; "trend"=日线突破追涨
+    # ---- 离场执行时点口径（2026-10-08 第 23 轮 PM-EVOLVE，研究开关）----
+    # 【为什么有这条轴】文件头声明的语义是「信号在 day i 收盘产生，day i+1 开盘
+    #   成交（避免未来函数）」，入场侧确实如此（C 段收盘出信号 → A 段次日开盘成交）。
+    #   但**离场侧** B 段是「day i 的 high/low/close 判定 + day i 成交」——
+    #   其中 `trend_break` 用 **当日收盘价 cl** 判定 MA20 下穿/收盘跌破 exit_ma，
+    #   却仍以 **同一个 cl** 成交 ⇒ 少了一根 bar 的执行延迟，是 exit 侧的前视偏差。
+    #   实盘铁证（2026-10-08）：09:19:02~09:19:32 的 4 笔「趋势破位离场」全部是
+    #   用**上一根已收盘日线**判定、在**次日开盘后**以盘中价成交；实盘不可能在
+    #   当日收盘那一刻用当日收盘价卖出。
+    #   False（默认）= 原行为（当日收盘成交），零行为变化；
+    #   True          = trend_break 顺延到**次日开盘**成交，与入场侧同口径。
+    # 适用范围刻意做窄：只延迟「收盘判定类」的 trend_break。stop_loss /
+    # chandelier / take_profit / trend_trail 由 low/high 日内触发、实盘由分钟线
+    # 执行，本就当日成交；hard_stop / crash 实盘亦为分钟尺度 ⇒ 均不延迟。
+    exit_next_open: bool = False
+    # ---- 入场侧「仅 1 只通过时半仓降级」研究开关（2026-10-10 周度深度研究）----
+    # 【背景】R21 落盘 min_passing_candidates=2 后，近 90 日仅 54.4% 天数 ≥2 只
+    #   通过、45.6% 天数 < 2 只 ⇒ 全关（零开仓）。R24 已证「放宽 trend_up 信号门」
+    #   是灾难（四窗最差 −0.49），但那是放低了**信号质量**。本开关严格区分：
+    #   **只放宽仓位、不动信号质量门**——当恰好 1 只通过全部门时，仍开这 1 只，
+    #   但仓位减半（wf × 0.5，经 line 1475 的 tgt=tgt*wf 流入实际股数）。
+    #   既提高弱市暴露（治 KPI#4 为负的机制根因），又不引入低质量信号。
+    # False（默认）= 原行为（<2 只即全关），零行为变化；
+    # True          = 恰好 1 只通过 → 半仓开这 1 只（多只通过仍全开，0 只仍全关）。
+    entry_half_when_one: bool = False
+    # ---- 涨跌停不可成交（回测真实性，2026-10-21 B9 研究开关）----
+    # 【为什么默认 False】P0 基线被 3 条数值守卫钉死
+    #   （tests/_baseline_tushare_panel.py / test_entry_half_when_one /
+    #    test_trend_break_slower_exit 等），其常量在「按次日 open 无条件成交」的
+    #   旧语义下校准。一旦默认改为 True，极端场景（一字涨停/跌停）的成交结果
+    #   全部改变 ⇒ 全部历史结论与 KPI 作废。故与其它「回测有、实盘无」的代理
+    #   开关同守则：**默认 False = 零行为变化**，显式 True 才启用，启用后须
+    #   重新 re-baseline（见 docs/Spec_B9_backtest_realism.md）。
+    # 【为什么需要它】评审 §3.1-P1 认定：策略买「60 日动量最强、创 20 日新高」的
+    #   票，信号次日开盘常一字/大幅涨停，实盘买不到；跌停封死时同样卖不出。
+    #   旧回测仅凭 panel[code]["valid"]（停牌）拦截，在最关键的极端场景双向美化。
+    limit_up_block: bool = False
+    limit_pct_main: float = 0.10       # 主板（含中小板）涨跌停幅度
+    limit_pct_growth: float = 0.20     # 创业板 300/301、科创板 688 涨跌停幅度
+    max_positions: int = 8
+    # ---- A 股 T+1 约束【P0 修正 2026-09-02】----
+    # 原事件时序：A) 执行昨日挂单（今日开盘成交，写入 positions）
+    #   → B) 逐仓检查离场。B 段遍历的是包含本日新建仓的全部持仓，于是
+    #   entry_day == i 的仓位当天就能触发 stop_loss / hard_stop / crash /
+    #   trend_break —— A 股 T+1 下这是做不到的。
+    # 后果：回测替策略规避了「买入当天大幅跳水只能扛到明天」的那部分损失，
+    #   系统性高估收益、低估回撤。
+    # True = 强制 T+1（建仓当日不可卖，仅标记权益）；False = 旧行为（仅供对照）。
+    t1_restriction: bool = True
+    # ---- 入场日线闸门 trend_up 的放宽档位（2026-10-09 第 24 轮 AM-EVOLVE，研究开关）----
+    # 【为什么有这条轴】实盘铁证：连续两个交易日（10-08 / 10-09）开盘卖光后
+    #   **全天零 BUY、100% 现金**。诊断（scripts/_am_gate_diag.py）：
+    #     近 90 个交易日（20260527→20261008）全宇宙 trend_up 通过率
+    #       至少 1 只通过：69/90 = **76.7%**
+    #       至少 2 只通过（= 生产 min_passing_candidates=2）：49/90 = **54.4%**
+    #     末 30 个交易日：pass=0 的天数占 **17/30 = 57%**（含 09-28~09-30、10-08）
+    #     四分量单独通过率：above_ma20 37.3% / above_ma60 40.8% /
+    #                       ma20_slope 39.1% / macd 45.2% ⇒ 联合仅 **10.97%**
+    #   ⇒ 「低暴露 / KPI#4 不达标」的机制根因不是亏钱，而是**一半交易日根本不参与**。
+    # 【机理假设】trend_up = close>MA20>MA60 且 MA20 斜率>0 且 MACD 柱>=0，
+    #   是 4 个**高度正相关**分量的 AND ⇒ 弱市里四者同时转负，闸门整体关闭。
+    #   放宽其中一条 = 用少量假信号换取暴露，属 alpha 型（非尺度型）改动。
+    # 【口径纪律】实盘同式判定在 strategy/daily_context.py:325，
+    #   落盘前必须同步该处读点，否则制造「回测有效、实盘无效」的背离。
+    # 默认 **"none" = 原 4-AND**，逐位保持既有回测行为，零行为变化。
+    trend_up_relax: str = "none"
+    # ---- 分行业分散持仓（组合层风险约束，研究用）----
+    # 与 max_positions（组合总上限）正交：在"总上限"之内，进一步限制
+    # 同一 AI 产业链环节（光模块/AI芯片/晶圆代工/…）最多持几只。
+    # 经济逻辑：AI 产业链各环节内高度同向（如光模块三杰齐涨齐跌），
+    # 动量排名前 6 常挤在同一环节，导致"伪分散"。限制 per-sector 持仓数
+    # 强制组合跨环节铺开，降低环节内相关性带来的隐性集中风险，提升
+    # Sharpe / Calmar。默认 0 = 关闭（行为与旧版完全一致）。
+    # 须经 IS/OOS + 多折 walk-forward 严格验证后才并入生产。
+    max_per_sector: int = 0
+    # ---- VWAP 因子窗口（**回测/实盘口径对齐**，研究开关；默认 0 = 现状）----
+    # 【2026-10-12 PM-EVOLVE 第 27 轮 · 第 13 次同型口径缺陷】
+    # 缺陷：6 因子里的 vwap 因子用 ``I.vwap``（**从序列起点累计**），其数值
+    #   取决于序列从哪天开始算。实盘 `DailyContext` 只拉 120 根（DAILY_COUNT），
+    #   回测用全样本 901 根 ⇒ 同一标的同一天两侧 vwap 值系统性不同。
+    #   实测：35.1% 的 (标的,交易日) score 不同；回测会买的 2684 个信号里
+    #   **482 个（18.0%）在实盘口径下 <4.0 ⇒ 实盘漏买**。
+    # 修复：>0 = 改用**滚动 N 日 VWAP**（平移不变 ⇒ 与序列起点无关 ⇒ 两侧同值）。
+    # **默认 0 = 累计 VWAP（现状），逐位零行为变化**；>0 才改变评分。
+    # 【口径纪律】实盘同式读点在 strategy/daily_context.py:_compute()，
+    #   落盘前必须确认该处已同步读取本字段。
+    # 【2026-10-12 PM-EVOLVE 第 27 轮】<0 = 现状；>=0 = 该因子恒取该固定值。
+    # 用于判定 vwap 因子本身是 alpha 还是噪声（它正是回测/实盘不一致的**唯一**
+    # 起源：实盘只有 120 根历史而 I.vwap 从序列起点累计）。若移除/固定它后
+    # OOS 不降甚至升 ⇒ 该因子是噪声，且可顺带消除 35% 的回测/实盘评分分歧。
+    vwap_factor_fixed: float = -1.0
+    vwap_window: int = 0
+    buy_score_threshold: float = 4.0
+    min_signals: int = 3
+    # ---- 日线偏置闸门（与实盘 trend_strategy.on_bars 对齐）----
+    # 【2026-09-22 PM-EVOLVE 口径修正】实盘的入场日线闸门是
+    #   ``trend_up or bias >= min_daily_bias``（trend_strategy.py:151），
+    # 而回测历史上**只有 trend_up 一路**（bias 通道从未建模）→
+    # 回测系统性**低估**实盘的入场机会，所有历史调参结论都建立在偏保守的基线上。
+    # 现补上该通道。bias ∈ [-1, 1]（daily_context.py:180-187），故
+    # 默认 **2.0 = 关闭**（bias 永不可达），逐位保持既有回测行为，
+    # 不破坏任何历史结论与测试；需要评估生产口径时显式传入 0.2 即可。
+    min_daily_bias: float = 2.0
+    # ---- 轮动「日内突破绕过日线闸门」代理建模【2026-09-23 AM-EVOLVE】----
+    # 实盘 _maybe_rotate（event_engine.py:674-675 补强空槽 / 706-707 弱换强）的语义是：
+    #     is_breakout = tick.change_pct >= rotation_intraday_breakout_pct(1.5)
+    #     if not is_breakout and sig.side != "BUY": continue
+    #   ⇒ **只要日内涨幅达标，即使 on_daily_features 因日线闸门（daily-gate）返回
+    #     HOLD 也照样买入**，连 buy_score_threshold / min_signals 都不看。
+    #   而回测器历史上**完全没有 rotation 逻辑**（grep 'rotation|轮动' 零命中）⇒
+    #   这是「实盘有、回测无」的分支，违反 §7 口径纪律：09-22 刚落盘的
+    #   min_daily_bias=2.0 只管住了主信号路径，管不住轮动这条旁路。
+    #   实盘证据（2026-09-23 10:00:52）：688008.SH 以
+    #     「daily-gate:bias=-0.30 trend_up=False」被轮动买入，3 秒后即被
+    #     「趋势破位离场」判定卖出（T+1 锁住），次日开盘真的卖掉 → 买/卖空转。
+    # 本字段在日线上代理该分支：当日涨幅(%) >= 阈值时豁免日线闸门。
+    #   默认 **99.0 = 关闭**（逐位保持既有回测行为，零行为变化，不破坏历史结论）。
+    breakout_bypass_gate: float = 99.0
+    # 是否连评分门槛（buy_score_threshold / min_signals）一起豁免。
+    #   True = 完整复现实盘轮动语义；False = 只豁免日线闸门（默认）。
+    breakout_bypass_score: bool = False
+    # ---- ★★ 板块轮动（rotation）主体代理建模【2026-10-06 AM-EVOLVE 第 17 轮】----
+    # 【为什么现在才建模】G/H 系列只建模了轮动的**两个副作用**（绕日线闸门 / 超仓），
+    #   轮动**本体**——「补强空槽」与「弱换强」两条**建仓分支**——在回测器里仍是
+    #   零命中（grep 'rotation' 零结果）。而实盘 `enable_rotation=True` 且
+    #   `rotation_fill_empty_slot=True`、`rotation_hot_top_n=15` 一直在跑：
+    #   热板块候选（LLM rerank top ∪ 板块推荐池 top15）**显式绕过动量闸门**
+    #   （event_engine.py:774-777）⇒ 实盘真正持有的可能是动量第 4~18 名的名字，
+    #   而不是回测验证过的动量前 3 名。这是与观察篮同型的「实盘有、回测无」。
+    # 【为什么怀疑它是收益杀手（先验证方向再动手）】
+    #   本轮 60×9 / 90×6 网格实测「放宽动量池」的 Sharpe 代价：
+    #     top_n 3(现状) → 4 −0.398/−0.494、6 −0.494/−0.180、15 −0.641/−0.279
+    #     ⇒ 每放进一只动量榜更弱的名字，Sharpe 就系统性下降。轮动正是这条路径。
+    # 【代理口径（保守下界，忠实度说明）】
+    #   ① hot 池：实盘是 LLM/板块热度，回测无法复现 ⇒ 用**动量榜 top_n 之后的
+    #      hot_top_n 只**代理（同为「有趋势但不在前 N」的一批名字），且同样绕过闸门；
+    #    ② 触发条件、日线闸门、突破/BUY 双判定、评分差、批量换仓数均与实盘同名参数同义；
+    #   ③ 换出在**次日开盘**与换入**同时**成交（实盘是盘中，日线粒度无法再细）；
+    #   ④ 只换出**已持仓**（不含当日 picks）⇒ 低估了 churn，是**效应下界**。
+    # 默认 **False = 关闭**（逐位保持既有回测行为，零行为变化，不破坏历史结论与测试）。
+    rotation_enabled: bool = False
+    rotation_hot_top_n: int = 15          # 实盘 rotation_hot_top_n
+    rotation_fill_empty_slot: bool = True  # 实盘 rotation_fill_empty_slot
+    rotation_weak_to_strong: bool = True   # 是否建模「卖出最弱持仓」一侧
+    rotation_intraday_breakout_pct: float = 1.5   # 实盘 rotation_intraday_breakout_pct
+    rotation_min_score_gap: float = 2.0    # 实盘 rotation_min_score_gap
+    rotation_min_score_gap_hot: float = 0.0  # 实盘 rotation_min_score_gap_hot
+    rotation_max_swaps_per_eval: int = 3   # 实盘 rotation_max_swaps_per_eval
+    rotation_require_daily_gate: bool = True  # 实盘 09-23 已落盘 True
+    # 实盘 09-23 PM 已修复的旧缺陷：换出被 T+1 拦下却仍买入 ⇒ 净超仓。
+    #   回测默认 False = 复现**修复后**行为（H 系列曾用 max_positions=6/7 代理旧行为）。
+    rotation_oversize_on_t1_block: bool = False
+    # ---- 连亏降仓（position_scale）代理建模【2026-09-24 AM-EVOLVE 第 6 轮】----
+    # ★ 又一条「实盘有、回测无」的分支。实盘 RiskManager.on_fill 对每笔 SELL 判定盈亏：
+    #     亏 → _consec_loss += 1；盈 → _consec_loss = 0
+    #     _consec_loss >= max_consecutive_losses(3)      → position_scale 按阶梯下降
+    #     _consec_loss >= max_consecutive_losses_halt(5) → _halt()，scale 归零、禁止开仓
+    #   阶梯 _SCALE_LADDER = [1.0, 0.8, 0.6, 0.4, 0.0]（risk/manager.py:27），
+    #   event_engine._handle_buy 在 ``if scale <= 0: return`` 处**无声丢弃全部买单**。
+    # 而回测器 run_backtest 历史上**完全没有 position_scale 概念**（grep 零命中），
+    #   恒按 1.0 满仓建 ⇒ 实盘跑的是「从未被任何回测验证过的变体」，违反 §7 口径纪律。
+    #
+    # 实盘铁证（2026-09-24）：
+    #   09-23 收盘 consec=3 → scale=0.8（已降仓）；
+    #   09-24 10:00:00 **同一时刻** 4 笔 SELL（300502/603986/688008/688012）全部亏损
+    #     → _consec_loss 3→7，越过 halt 阈值 5 → halted=True、scale=0.0；
+    #   risk_snapshots 与 engine_state 均确认：11:29 仍是 scale=0.0、halted=True
+    #     ⇒ **账户自 10:00 起完全丧失开仓能力**（含观察篮）。
+    #   注意：4 笔是**同一次板块级相关退出**，却被计为 4 次「独立判断失误」——
+    #   这正是本代理要度量的核心效应。
+    #
+    # 默认 **False = 关闭**（逐位保持既有回测行为，零行为变化，不破坏历史结论与测试）。
+    consec_loss_scale: bool = False
+    consec_loss_trigger: int = 3      # 实盘 RISK_PARAMS["max_consecutive_losses"]
+    consec_loss_halt: int = 5         # 实盘 RISK_PARAMS["max_consecutive_losses_halt"]
+    # 熔断后禁止开仓的**交易日**数。实盘 halt_recover_days=1：当日盘中触发，
+    # 次日 09:30 首个 tick 即自愈 ⇒ 日线粒度下近似为「封锁 1 根 bar」，默认 1。
+    consec_loss_halt_bars: int = 1
+    # 阶梯末端（consec 达到最高档时的仓位倍数）。实盘为 **0.0 = 完全冻结**。
+    # 可调低该字段做「保留地板」的对照（如 0.4 = 降仓但不死亡）。
+    consec_loss_floor: float = 0.0
+    # ---- 「同批退出合并计数」修复变体【2026-09-24 AM-EVOLVE 第 6 轮】----
+    # 缺陷本体：RiskManager.on_fill 对**每笔** SELL 独立判定盈亏并 +1，
+    #   而「连续亏损」的语义是「**连续多次独立判断失误**」。但本组合 5 只标的
+    #   同属 AI 产业链、高度同向：板块回调时**所有仓位在同一时刻一起破位离场**，
+    #   on_fill 在几毫秒内被连续调用 N 次 ⇒ 一次板块级事件被计成 N 次连亏。
+    # 实盘铁证（2026-09-24）：
+    #   10:00:00.662591 / .664592 / .664592 / .665591 —— 4 笔 SELL 相隔 **3 毫秒**，
+    #   _consec_loss 由 3 直接跳到 7，瞬间越过 halt 阈值 5 ⇒ halted=True、
+    #   position_scale=0.0，账户自 10:00 起整个下午盘丧失开仓能力。
+    #   这不是「策略连续 7 次判断失误」，是「1 次板块回调」。
+    # True = 按**交易日聚合**判定：当日所有离场的净盈亏为负才 +1、为正则归零
+    #   （一次板块级退出 = 1 次连亏）。默认 False = 复现实盘现状（逐笔计数）。
+    consec_loss_batch: bool = False
+    # ---- 日内已实现亏损熔断代理【2026-09-24 PM-EVOLVE 第 7 轮】----
+    # ★ 又一条「实盘有、回测无」的分支（risk/manager.py:158-165 / 216-222）。
+    #   实盘 RiskManager 用 ``_daily_pnl``（只累计**已实现**盈亏，SELL 时累加，
+    #   日切归零）做两路 OR 判定，任一触发即 ``_halt()`` → 禁止一切新开仓，
+    #   冷却 halt_recover_days=1 日后自愈：
+    #     ① ``_daily_pnl / total_asset <= daily_loss_limit_pct``（-3%）
+    #     ② ``_daily_pnl <= -daily_loss_limit_abs``（-5000 元，绝对金额）
+    #   而回测器历史上**完全没有 daily_pnl 概念**（grep 零命中）⇒ 与连亏阶梯
+    #   一样，实盘跑的是「从未被任何回测验证过的变体」，违反 §7 口径纪律。
+    #
+    # ★★ 缺陷假设（本代理要度量的核心）：阈值 ② 是**绝对金额、不随账户规模缩放**。
+    #   paper 账户 2026-09-21 复位为 1,000,000 后，5000 元 == **0.5%**，
+    #   而显式设定的百分比阈值 ① 是 **3%** —— 两个参数表达同一意图，
+    #   更严的那个却是遗留绝对值，且账户规模越大越严（规模翻倍 ⇒ 相对阈值翻倍收紧）。
+    #   这属于「长度单位不缩放」型工程缺陷，而非策略选择。
+    #
+    # 实盘铁证（2026-09-24）：risk_snapshots 15:02
+    #   ``{"halted": true, "daily_pnl": -5602.4, "consecutive_losses": 7,
+    #      "position_scale": 0.0, "peak_asset": 1005996.0}``
+    #   ⇒ daily_pnl=-5602.4 **已越过 ②（-5000）**，但 loss_pct=-5602/991309=-0.565%
+    #     远未达 ①（-3%）；当日 44 条观察篮 BUY 信号（300308 中际旭创，每 5 分钟
+    #     一条）**全部零成交**，账户 78.4% 现金空转一整个交易日。
+    #
+    # 默认 **False = 关闭**（逐位保持既有回测行为，零行为变化，不破坏历史结论与测试）。
+    daily_loss_halt: bool = False
+    # ① 百分比阈值（负面小数）。-0.03 = 实盘 daily_loss_limit_pct。
+    daily_loss_pct: float = -0.03
+    # ② 绝对阈值的**账户百分比**表达。0 = 关闭该路判定；
+    #   0.005 = 复现「5000 元 / 100 万账户」的实盘现状（0.5%）。
+    #   用百分比而非绝对金额表达，是为了让网格能直接扫「等效严格度」，
+    #   并让结论对账户规模不变（绝对金额会在不同规模下给出不同答案）。
+    daily_loss_abs_pct: float = 0.0
+    # 熔断后禁止开仓的交易日数（实盘 halt_recover_days=1）。
+    daily_loss_halt_bars: int = 1
+    # ---- 日内强平（daily_stop_flatten_pct）代理 ----
+    # 实盘 risk/manager.py:98-111：以「开盘资产口径」（含隔夜重估）算当日亏损，
+    #   达 daily_stop_flatten_pct(-6%) 即置 flatten_requested 并停牌，
+    #   引擎据此**强平全部可卖持仓**（engine/event_engine.py:1537）。
+    # 日线代理：用「昨日收盘权益」近似开盘资产，触发则次日开盘清仓 + 停牌。
+    #   默认 **-99.0 = 关闭**（零行为变化）。
+    daily_stop_flatten_pct: float = -99.0
+    # ---- 退出范式 + 动量（本次优化）----
+    exit_mode: str = "scalp"        # "scalp"=紧移动止损; "trend"=趋势骑行至破位
+    trend_exit_ma: int = 60          # 趋势破位判定均线
+    # ---- 单仓上限（与实盘 RISK_PARAMS.max_single_position_pct 对齐）----
+    # 【2026-09-22 AM-EVOLVE 口径修正】回测原把单仓上限**硬编码**为 equity*0.30，
+    # 而实盘 PositionSizer 用的是 RISK_PARAMS["max_single_position_pct"]（当前 0.19）。
+    # 0.30 vs 0.19 是 ~58% 的敞口差，直接后果：验证器 P0 系统性**高估**实盘等
+    # 效敞口，所有"增量 dSh"都建立在偏乐观的基线上。现改为可配置字段，
+    # 默认 0.30 保持既有回测行为（不破坏既有测试/历史结论），
+    # 需要"生产对齐"评估时显式传入生产值即可。
+    max_single_position_pct: float = 0.30
+    # 【2026-09-22 AM-EVOLVE 证伪留痕】曾加 ``trend_exit_confirm_days``（破位需
+    # 连续 N 日确认，抗假破位）。90×6 OOS 单调恶化（N=2 −0.046 → N=7 −0.197），
+    # 说明二值破位已是最优退出时点。**实现已撤回，勿重试**；
+    # 详见 strategy/daily_context.py::trend_broken 的证伪注释。
+    hard_stop_pct: float = -0.18     # 趋势模式宽幅硬止损（灾难保护）
+    # ---- 观察篮（manual_entry）代理建模【2026-09-30 PM-EVOLVE 第 15 轮】----
+    # ★ 又一条「实盘有、回测无」的分支，而且是**最贵的一条**：
+    #   实盘 2026-09-29 收盘 5 只持仓里 **3 只来自观察篮**（300502/300308/002415/
+    #   000977/603986 中的若干只），而回测器历史上对 `manual_entry_codes` 与
+    #   `manual_entry_exit_exempt` **完全零建模**（grep 零命中）⇒
+    #   本项目最大的一块**实盘仓位来源**从来没有被任何回测验证过。
+    # 实盘语义（config/settings.py:357-369 + engine/event_engine.py）：
+    #   ① 篮子里的代码**绕过**动量排名 / 日线闸门 / buy_score_threshold / min_signals 建仓；
+    #   ② 仍走 `_handle_buy` ⇒ 风控熔断、现金夹紧、max_positions、单标的金额上限照旧生效；
+    #   ③ `manual_entry_exit_exempt=True` 时**豁免**趋势破位 / 超时 / 单日暴跌退出，
+    #      只保留 −18% 硬止损。
+    # 经济上的疑问（本代理要度量的核心）：豁免退出意味着这些票在下跌市里**无人止损**，
+    #   而它们又多是 MA60 下方的弱势标的 ⇒ 2026-09-28 当日实盘亏损几乎全部来自观察篮。
+    # 默认 **空元组 = 关闭**（逐位保持既有回测行为，零行为变化，不破坏历史结论与测试）。
+    manual_entry_codes: tuple = ()
+    manual_entry_exit_exempt: bool = True   # 与生产 ``manual_entry_exit_exempt`` 同名同义
+    manual_entry_slots: int = 5             # 篮子最多占用多少个持仓槽位
+    trend_max_hold_days: int = 120   # 趋势模式最长持仓
+    # ---- 突破入场的「贴近阶段新高」容差【2026-09-30 PM-EVOLVE 第 15 轮】----
+    # 仅 entry_mode="trend"（日线突破追涨）生效：要求收盘价 >= 近 20 日最高 × 本系数。
+    # 原实现把 0.98 硬编码在分支里，无法做剂量扫描（无法区分「真高原」与「单值尖峰」），
+    # 违反本项目「单窗网格必须细扫查高原、拒绝尖峰」的纪律。现提升为可配置字段，
+    # 默认 **0.98 与原硬编码逐位相同** ⇒ 零行为变化，不破坏任何历史结论与测试。
+    # 1.00 = 必须创 20 日新高（最严）；0.95 = 距高点 5% 内即可（最宽）。
+    trend_breakout_near_high: float = 0.98
+    # 同一分支的「新高观察窗口」长度（交易日）。原实现硬编码 20 日，
+    # 默认 **20 与原实现逐位相同** ⇒ 零行为变化。用于检验「越严格越好」
+    # 是否真是剂量反应（0.95 −0.218 → 0.98 +0.082 → 1.00 +0.104 单调）
+    # 还是只在 20 日这个特定窗口上的巧合。
+    trend_breakout_window: int = 20
+    momentum_rank: bool = False      # 只交易 60 日动量前 N 名
+    momentum_top_n: int = 6
+    momentum_lookback: int = 60
+    # ---- 动量闸门「正动量硬过滤」阈值【AM-EVOLVE R28 2026-10-13】----
+    # 两侧现状都要求 60 日动量**严格为正**才进动量池：
+    #   回测 backtest_daily.py  ``if raw <= 0: continue``
+    #   实盘 strategy/daily_context.py::top_momentum  ``if m > 0:``
+    # 2026-10-13 上午实盘日志 7 次（09:15~10:15，数据源=xtdata 真实）
+    #   「无入场信号：动量闸门后候选池为空（当前宇宙无 60 日正动量标的）」
+    #   ⇒ 该硬过滤**当日成为绑定约束**（与前 5 个交易日的「评分 4.0 阈值」不同），
+    #   是连续 6 日零 BUY 的直接原因之一。
+    # 默认 **0.0 与两侧现状逐位相同** ⇒ 零行为变化，不破坏任何历史结论。
+    #   < 0：允许弱负动量进池（矮子里拔将军）；> 0：更严。
+    momentum_min_mom: float = 0.0
+    # ---- 【PM-EVOLVE R31 2026-10-14】弱市「相对动量门槛回退」（研究开关）----
+    # 起因（实盘铁证，非假设）：R28 把 momentum_min_mom 收紧到 0.15 后，入池条件
+    #   变成「60 日涨幅 > +15%」这一**绝对值硬门槛**；2026-10-14 上午 09:15~11:25
+    #   连续 14 次「无入场信号：动量闸门后候选池为空」，tushare 独立复核 23 只 AI
+    #   宇宙 60 日动量最高仅 +5.52%、> +15% 的 **0 只** ⇒ 闸门恒定关闭、账户 100%
+    #   现金 ⇒ KPI#4（live 近 4 周滚动收益 > 0）在现行配置下**数学上不可能达标**。
+    # 机制：绝对门槛在**强势市**完全保留（通过数 ≥ 要求 ⇒ 不触发），只在
+    #   「全宇宙普遍弱、通过数不足」时把门槛回退到**当日宇宙动量的横截面第 q 分位**
+    #   ⇒ 语义是「弱市里只买相对最强的那几只」，而不是「无条件矮子里拔将军」。
+    # 剂量轴（本机制能否成立的判别力来源）：
+    #   mom_rel_fallback = 0   关闭（**默认** ⇒ 与旧行为逐位相同，零行为变化）
+    #                    50/70/80/90 = 取宇宙动量第 q 分位作为回退门槛（越大越严）
+    #   mom_rel_floor    = -9.9 不夹下限（默认）/ 0.0 绝不买入负动量标的
+    # 默认 off ⇒ 不破坏任何历史结论；仅用于**量化「恢复弱市暴露」要付多少 dSh**。
+    mom_rel_fallback: float = 0.0
+    mom_rel_floor: float = -9.9
+    down_day_exit_pct: float = -99.0  # 单日暴跌清仓阈值（-99 关闭）
+    # 强制最小预热长度。walk-forward 调参时必须固定，否则不同参数
+    # （如 momentum_lookback 20 vs 120）会产生不同的交易起点，窗口不可比。
+    min_warmup: int = 0
+    # ---- 市场状态过滤（regime filter）----
+    # 原策略 exposure 恒 ~97%（永远满仓），熊市/震荡市直接骑着下跌。
+    #   "off"     = 不过滤（原行为）
+    #   "index"   = 指数在 MA(regime_ma) 之上才允许开新仓
+    #   "breadth" = 宇宙内「站上 MA(regime_ma) 的比例」超过阈值才开新仓
+    regime_mode: str = "off"
+    regime_index: str = "399006.SZ"
+    regime_ma: int = 60
+    regime_breadth_thresh: float = 0.5
+    regime_force_exit: bool = False   # True=状态转差时强制清仓（防御）
+    # ----【PM-EVOLVE R29 路径②】AI 强势期「信心加仓」（regime-conditional conviction sizing）----
+    # 用户授权方向：AI 动量广度（宇宙内站上 MA(regime_ma) 的比例）高时，策略信号高置信，
+    # 应「**主动放大**」暴露（与 regime_mode 的「弱势期关门」方向相反：那是减暴露，
+    # 这是加暴露）。它是路径①纯杠杆的**条件版**——只在强 AI 景气期加杠杆、弱期维持常态，
+    # 避免在不可避免空仓期也背杠杆成本。
+    # 默认 **off / boost=1.0 / thr=0.6** ⇒ 零行为变化，不破坏任何历史结论与测试。
+    #   conviction_mode        "off"=关闭（原行为）；"breadth"=广度≥阈值时放大新开仓 tgt
+    #   conviction_boost       >1.0 的乘数，作用于 tgt（在 min 上限与 wf/rpw 之后）
+    #   conviction_breadth_thr 触发放大的最小广度（0~1，宇宙内站上 MA 的比例）
+    conviction_mode: str = "off"
+    conviction_boost: float = 1.0
+    conviction_breadth_thr: float = 0.6
+    # ---- regime 抗抖动（anti-whipsaw）----
+    # 二值闸门 close>MA60 在均线附近会反复翻转：每次翻转都触发「全部清仓
+    # → 隔日重新建仓」，双向各付 0.15% 成本，还会错杀刚起步的趋势。
+    # 下面三个旋钮各自独立，全部取默认值时行为与原二值闸门完全一致：
+    #   confirm_days=1 / buffer_pct=0 / slope_days=0
+    regime_confirm_days: int = 1      # 需连续 N 日满足条件才翻转状态
+    regime_buffer_pct: float = 0.0    # 缓冲带：上穿需 >MA*(1+b)，下穿需 <MA*(1-b)
+    regime_slope_days: int = 0        # >0 时额外要求 MA 的 N 日斜率为正
+    # ---- 尾部风险对冲（指数级峰值回撤熔断，研究用，全新方向）----
+    # 与「已否决的指数 MA60 持久闸门」**本质不同**：MA60 闸门在弱势期
+    # 「出得来、回不去」——只要指数低于 MA60 就持续空仓，强趋势反弹里
+    # 反复踏空。本熔断用**两段式状态机**规避该缺陷：
+    #   · 进入防御态（清仓）：指数自「运行峰值」回撤 <= tail_drawdown_pct
+    #     （真崩盘才触发，正常上涨途中的小回撤不触发）。
+    #   · 解除防御态（重开仓）：防御态期间指数自「崩盘低点(trough)」反弹
+    #     >= tail_recover_pct，**或**创出新高（peak 上移）。
+    # 即入场门槛看「峰值回撤」、离场门槛看「低点反弹」——二者解耦，
+    # 崩盘后只需反弹 tail_recover_pct 即回场，不必回到旧峰值，从而
+    # 避免 MA60 闸门「回不去」、长期踏空反弹的问题。
+    # 默认关闭（regime_mode="off" 不加载）：须经 IS/OOS + 多折 walk-forward
+    # 严格验证后才并入生产；可逆（regime_mode 改回 "off" 即恢复）。
+    tail_index: str = "399006.SZ"      # 跟踪的指数（创业板指，与 AI 宇宙高β）
+    tail_drawdown_pct: float = -0.12   # 指数自峰值回撤超此值 → 进入防御态
+    tail_recover_pct: float = 0.15     # 防御态内自低点反弹超此值 → 解除防御
+    tail_force_exit: bool = True       # 防御态强制清仓（资本保全）
+    # ---- 横截面动量指标（选股口径）----
+    # "raw"      = 区间涨幅（原口径，天然偏好高波动股）
+    # "sharpe"   = 风险调整动量（区间日收益 均值/标准差），偏好走得稳的趋势
+    # "residual" = 相对 regime 指数的超额动量，剥离市场 beta
+    # 三者都保留「原始涨幅必须为正」的入池条件，只改变**排序**口径，
+    # 以便把「选股口径」这一变量单独隔离出来检验。
+    mom_metric: str = "raw"
+    # ---- 趋势模式移动止损（锁定利润，防回吐）----
+    # 趋势骑行虽然能吃到主升，但"破位才下车"会把巨大浮盈在回调里吐回去。
+    # 宽幅移动止损：浮盈超过 activation 后，从峰值回撤 stop 即离场，
+    # floor 保本线（默认 0=成本）。与 scalp 的紧移动止损不同，这里更宽，
+    # 只在中期反转时触发，不被正常波动震出。
+    trend_trailing: bool = False
+    trend_trail_activation: float = 0.15   # 浮盈 >= 15% 才激活
+    trend_trail_stop: float = -0.12        # 从峰值回撤 12% 离场
+    trend_trail_floor: float = 0.0         # 止损下限 = 成本×(1+0)，保本
+    # ---- 趋势模式波动率目标仓位（修正 sizing 失真）----
+    # 原 sizing 用紧止损(-4% 或 atr×2.5)算仓位，但趋势模式真实止损是
+    # 宽幅硬止损(-18% / atr×6)，导致 budget/stop_dist 恒大于 30% 上限 →
+    # 每笔都满到 30% 上限，risk_per_trade 形同虚设、且高波动股反而仓位更重。
+    # 开启后改用真实趋势止损距离做风险平价：高波动少买、低波动多买。
+    trend_vol_sizing: bool = False
+    # ----【2026-10-09 第 25 轮 PM-EVOLVE】趋势模式 ATR 止损（研究开关，默认 0=关闭）----
+    # 背景（**结构性缺口**，非标量调参）：
+    #   exit_mode="trend" 的离场集合 = {trend_break(MA20×MA60) / hard_stop −18%
+    #   / crash −3.25% / timeout 120d}。入场时按 max(|stop_loss|, ATR%×atr_stop_mult)
+    #   算出的 pos["stop_price"] **在趋势分支里从未被检查**——它只在 chandelier /
+    #   旧 scalp 分支里被用到，而那两个分支在 exit_mode=="trend" 时根本不执行。
+    #   ⇒ **ATR 止损在趋势模式下是死代码**：它仅通过 stop_dist 影响仓位大小，
+    #     从不真正截断左尾。
+    #   回测（本文件）与实盘（strategy/trend_strategy.py::on_exit 的 trend 分支）
+    #   **两侧同为此行为** ⇒ 不是口径背离，而是双向的结构性缺口，可以放心建模。
+    #   实盘铁证：2026-10-09 300394.SZ 一路阴跌到 −14.9% 才由 trend_break 卖出
+    #   （−18% 硬止损从未触发、单日 −3.25% 也从未触发）⇒ **慢速阴跌完全免疫**。
+    # 两个研究开关，默认 0.0 = 关闭 = 零行为变化（便于先用剂量轴量化再决定是否落盘）：
+    #   trend_atr_stop_mult   >0：静态止损，跌破 entry×(1−ATR%×k) 即离场（截断左尾）
+    #   trend_chandelier_mult >0：吊灯止损，stop=max(stop, peak×(1−ATR%×k))（锁定浮盈）
+    trend_atr_stop_mult: float = 0.0
+    trend_chandelier_mult: float = 0.0
+    # ----【2026-10-12 第 26 轮 AM-EVOLVE】趋势破位「**更慢**离场」双开关（研究用，默认=现状）----
+    # 背景（为什么要开这条轴）：第 25 轮 PM 已把退出侧「**更快**离场」整类闭合——
+    #   静态 ATR 止损 k=1.5 −0.089、k≥2.5 惰性；吊灯止损严格单调负（4.0 −0.019
+    #   → 1.0 −1.551）；hard_stop −0.12 惰性。其判词是「趋势策略的钱是**骑出来**
+    #   的，任何提前下车都在减 alpha，左尾已被 trend_break 截断完（IS MDD 仅
+    #   −6.94%、预算 −20% 只用 35%）」。
+    #   ⇒ 同一枚硬币的**反面此前从未被测过**：既然「更快」减 alpha，那么「更慢」
+    #     是否增 alpha？本项目 26 轮里所有退出侧扫描都只朝「更紧」一个方向走。
+    #   两个正交的「更慢」剂量旋钮（默认均为现状 ⇒ 零行为变化）：
+    #     trend_break_confirm_days  N>1：破位条件需**连续 N 个交易日**成立才离场
+    #       （第 N 日收盘成交）。直接对冲震荡市里「单日插针破 MA60 → 次日反弹」
+    #       的 whipsaw；左尾仍由 hard_stop −18% / crash −3.25% 兜底。
+    #     trend_break_buffer_pct    b>0：判定线由 `cl < MA60` 放宽为
+    #       `cl < MA60×(1−b)`（与 trend_exit_ma 的**均线周期**轴正交：
+    #       周期轴改变的是均线本身，缓冲轴改变的是相对均线的容差）。
+    #   注意：二者都是**放宽**离场 ⇒ 必然抬高 IS MDD。而回撤预算严重欠用
+    #   （−6.94% vs −20%）正是本轴成立的前提。
+    trend_break_confirm_days: int = 1
+    trend_break_buffer_pct: float = 0.0
+    # ---- 组合级动态暴露（回撤控制 DD control，风险预算层）----
+    # 独立于 regime 的"组合级风险预算"：当组合净值自峰值回撤超过
+    # dd_ctrl_start 时，对新开仓的目标仓位按比例缩减（exp_scale 由 1.0
+    # 线性降至 dd_ctrl_floor）；净值创新高（峰值上移）后自动恢复满仓。
+    # 只在「新开仓」上生效（不强制平已有持仓），属防御性减仓，不触发
+    # 「低位卖出」。旨在降低最坏回撤、提升 Calmar / Sharpe。
+    # 默认关闭：需经 IS/OOS + 多折 walk-forward 验证后才并入生产。
+    dd_ctrl: bool = False
+    dd_ctrl_start: float = -0.05       # 回撤超过该值开始减仓
+    dd_ctrl_floor: float = 0.25        # 回撤达到 dd_ctrl_full 时最低暴露比例
+    dd_ctrl_full: float = -0.25        # 回撤达到该值暴露降至 floor
+    # ---- 再入场冷静期（降低无谓换手 / 削减成本侵蚀）----
+    # 标的离场后，间隔不足 reentry_cooldown 个交易日不予重新开仓。
+    # 动量每日重排名会在回调里把刚卖出的股票又买回，产生双向成本且易 whipaw；
+    # 设冷静期可压缩换手、提升净 alpha。默认 0 = 关闭（需验证后启用）。
+    reentry_cooldown: int = 0
+    # ---- regime 恢复快通道【P0-1 2026-10-22，研究开关】----
+    # 背景（REBOUND_CAPTURE_2026-10-22 实测）：深跌后的 V 型反弹第一波，
+    #   入场闸门（close>MA20>MA60 且 MA20 斜率>0 且 MACD>=0，且 60 日动量>15%）
+    #   需数周才满足 ⇒ 5 段已完结深跌段反弹捕获率中位 0.0%、首次建仓滞后中位
+    #   5 日、2/5 段完全零成交。本开关在「等权宇宙净值自近 20 日低点反弹
+    #   >=rf_rebound_pct 且 5 日均线斜率>0」确认后，临时放宽入场门槛
+    #   rf_relax_days 个交易日：动量门槛 momentum_min_mom → rf_mom_threshold，
+    #   并豁免 trend_up 的 MA20 斜率条件；其它（MA60 条件、止损、仓位、退出）
+    #   一律不动。regime 由面板内各票前向填充后等权收盘价自算，不依赖指数序列。
+    # 默认 **False = 关闭**（逐位保持既有回测行为，零行为变化）。
+    recovery_fastpath: bool = False
+    rf_drawdown_threshold: float = -0.15  # 深跌判定：等权宇宙净值自近 20 日高点回撤 <= 此值
+    rf_lookback: int = 20                 # 深跌/反弹判定的近 20 日窗口
+    rf_rebound_pct: float = 0.05          # 反弹确认：净值自近 20 日低点反弹 >= 5%
+    rf_relax_days: int = 10               # 确认后放宽入场的交易日数
+    rf_mom_threshold: float = 0.05        # 放宽后动量门槛（原 0.15）
+    # ---- 「不追高」入场过滤【2026-10-06 PM-EVOLVE 第 18 轮】----
+    # 动机（本轮诊断铁证）：26 折里 4 个负折的**共同特征**是「短持仓(3.1d) +
+    #   多笔数 + 胜率暴跌(0~36%) + 均笔微负(-0.06~-0.15%)」，而强折是
+    #   「长持仓(6~10.5d) + 少笔数 + 均笔 +1.0~+1.8%」⇒ 负折不是「换手太高」
+    #   （笔数与强折相当），而是**每笔都买在短期高点后回落被止损**。
+    # 反向证据：M 系列 `entry_mode="trend"`（要求逼近/创 20 日新高）四窗最差
+    #   −0.059 被 REJECTED ⇒ 「**要求追高**」方向已证伪；本过滤是其**反向剂量**。
+    # 附加证据：reentry_cooldown（限制重入）−0.40~−0.75 全负 ⇒ 策略靠「快速重入」
+    #   赚钱，故正确解法不是少交易，而是**不追在情绪高点买**。
+    # 语义：入场当日涨幅（close/prev_close−1）超过 entry_max_day_gain_pct 则
+    #   当日不予开仓。默认 1.0（=+100%）⇒ 恒不成立 ⇒ **零行为变化**。
+    # 实盘对应：engine 侧按同一语义过滤（当日 change_pct）。
+    entry_max_day_gain_pct: float = 1.0
+    # ---- 趋势延伸度过滤（「趋势尾段追入」研究轴）【2026-10-29 AM-EVOLVE 第 44 轮】----
+    # 动机（R42 §9.5 指定的唯一合法子问题）：B1 段（20260423~20260721）是全样本
+    #   唯一「有票且真落后」的窗口（策略 −4.64% vs 宇宙 +8.10%，超额 −12.74pt），
+    #   特征 = 宽信号（91.1% 天数 ≥2 只过闸）+ 宇宙温和上涨 ⇒ 机理＝**趋势尾段
+    #   追入后反转**。注意与已闭合轴的区别：entry_max_day_gain_pct 是**单日**涨幅
+    #   （「不追高」，已证伪）；trend_breakout_near_high 是 20 日新高距离（已证伪）；
+    #   trend_up_relax 是闸门松紧（已证伪）。本轴量的是**中期趋势成熟度**：
+    #   close 相对 MA60 的延伸度（close/MA60−1），值越大＝趋势走得越晚。
+    # 语义：延伸度 > entry_max_ext_ma60 的标的当日不予开仓。
+    #   默认 0.0 = **关闭**（延伸度恒 ≥ 0，0 会拦掉全部 trend_up 票）⇒ 零行为变化。
+    # 实盘对应：strategy/trend_strategy.py 买入闸门热读 STRATEGY_PARAMS 同名键。
+    entry_max_ext_ma60: float = 0.0
+    # ---- 动量排名加权仓位（横截面 alpha 杠杆，研究用）----
+    # 选股仍用动量排名做闸门（只持前 N），但仓位不再等权：按动量大小对前 N
+    # 名做 rank-weight（最强者更大、最弱者更小，均值=1），把资本集中于
+    # 动量最确定的名字。经济逻辑：动量因子存在截面持续性（Jegadeesh-Titman），
+    # 头部名字的跟随收益更可靠。默认关闭：须经 IS/OOS + 多折 walk-forward
+    # 严格验证（OOS alpha 为正且多折稳健）后才并入生产。
+    momentum_weight: bool = False
+    # 【2026-10-20 AM-EVOLVE 第 39 轮】动量倾斜**剂量**指数：1.0 = 线性 rank-weight
+    #   （与旧公式逐位相同，零行为变化）；>1 = 更强的头部集中。仅研究用，
+    #   生产无需此字段（生产侧只需实现 pow=1 的线性版）。
+    momentum_weight_pow: float = 1.0
+    # ---- 量能突破确认（入场质量门，研究用，全新特征）----
+    # 与上文所有「参数级」旋钮不同，这是**信号质量层的新特征**：
+    # 仅在「因子共振 + 日线闸门」都通过之后，再要求入场当日出现
+    #   (1) 放量：当日成交量 > vol_confirm_mult × 近 vol_confirm_ma 日均量；
+    #   (2) 贴近阶段高位：收盘价 >= 近 vol_confirm_ma 日最高价的 (1-tol)。
+    # 即「放量 + 突破」才算有效突破，过滤无量假突破（whipsaw），
+    # 提升胜率与盈亏比。只在 factor 入场模式生效（trend 突破模式本身已含突破语义）。
+    # 默认关闭：须经 IS/OOS + 多折 walk-forward 严格验证后才并入生产。
+    vol_confirm: bool = False
+    vol_confirm_mult: float = 1.5     # 当日量 >= 1.5 × 近 ma 日均量
+    vol_confirm_ma: int = 20          # 量/价窗口（日）
+    vol_confirm_tol: float = 0.03     # 收盘价距阶段高位 <= 3% 视为突破区
+    # ---- 入场「宽度确认」闸门（信号质量层，研究用）------------------------
+    # 【2026-10-07 PM-EVOLVE 第 21 轮】来源：R18/R19/R20 连续三轮诊断出的唯一
+    #   跨窗口一致信号 —— **四套折划分的末端折全部偏弱**，且弱折有共同指纹：
+    #     暴露 31~43% + 成交 3~15 笔 + 胜率 0~30%（强折：暴露 77~92%、成交 20~36
+    #     笔、胜率 42~60%）。机理假设不是「止损太宽」，而是：弱市里日线闸门把
+    #   绝大多数名字挡在外面，只剩 1 只勉强通过 ⇒ 组合拿一张孤立低置信门票，
+    #   反复被打止损，形成「低暴露 + 极低成交 + 零胜率」的磨损态。
+    #   本闸门即对该机理的直接剂量测试：**当日通过全部入场门的名字少于 K 只时，
+    #   当日完全不开新仓**（退出逻辑不受影响）。
+    #   与已证伪轴的区别：regime/择时类看的是**指数状态**，本闸门看的是
+    #   **策略自身候选池的当日宽度**（截面一致性），且不动任何退出路径。
+    #   默认 0 = 关闭 ⇒ **零行为变化**（须四窗共识达标后才考虑｜含实盘读点补齐）。
+    min_passing_candidates: int = 0
+    # ==================== LAB 2026-11-10（T4 结构型研究专用；生产零读取点）====================
+    # 本文件是 strategy/backtest_daily.py 的**逐字副本**，只新增下面 6 个字段 + 4 处钩子，
+    # 用于裁决三个「结构型」假设（见 reports/LAB_20261110.md）。
+    # 全部 lab 字段保持默认值时，本文件与原文件**逐位相同**（由 _lab_20261110.py 的
+    # verify_bit_identical() 自动核对 IS/OOS 指标，不一致即中止）。
+    #
+    # H-A 宽度闸门替代：全宇宙**仅 1 只**通过全部入场门时，若该票「评分≥X 且 60 日动量
+    #   分位≥Y」则放行（默认 99/101 ⇒ 条件恒不成立 ⇒ 零行为变化）。
+    lab_a_min_score: float = 99.0
+    lab_a_min_mom_pct: float = 101.0
+    lab_a_single_half: bool = True
+    # H-B 非对称 crash 离场：浮动盈利 ≥ 该阈值的仓位**豁免**「单日暴跌 -3.25% 清仓」，
+    #   即「让盈利奔跑」（默认 99.0 ⇒ 关闭 ⇒ 零行为变化）。
+    lab_b_profit_exempt: float = 99.0
+    # H-B' 把「豁免 −18% 之外的一切退出」推广到全仓（默认 False ⇒ 零行为变化）
+    lab_exempt_all: bool = False
+    # H-C 每日资金占用日志（默认关闭）
+    lab_log_daily: bool = False
+    # ---- 横截面风险平价（资本倾斜，研究用，全新特征）----
+    # 与 momentum_weight（按动量强弱集中资本）相反：按个股 ATR% 的**倒数**
+    # 把新增资本分配给新入选名字（权重 = (1/atr_k) / Σ(1/atr)），让低波动(平静)
+    # 的名字拿更多仓位、高波动(剧烈)的名字拿更少，在总风险预算不变的前提下
+    # 降低组合波动、提升 Sharpe/Calmar。注意：当前 vol_sizing 已按"每笔风险预算"
+    # 做了一次风险平价（高波动→每笔下注更小），本开关是在其之上**进一步**按
+    # 横截面波动率倾斜资本。默认关闭：须经 IS/OOS + 多折 walk-forward 严格验证
+    # 后才并入生产。
+    risk_parity: bool = False
+    # ---- 主力资金流 alpha（全新数据轴，研究用）----
+    # 与上文所有「参数级 / 市场择时」旋钮都不同：这是**新数据**——Tushare
+    # 逐日「主力资金净流入」(net_mf_amount)，捕捉机构/大户净买卖方向，
+    # 与价格动量正交（经典「聪明钱」效应，A 股有独立预测力）。
+    #   "off"  = 不使用资金流（原行为）
+    #   "gate" = 入场质量门：动量/因子/闸门都通过后，再要求近 moneyflow_window
+    #            日主力净流>0（机构在Accumulate）才开仓，过滤「无量/派发」假突破。
+    #   "rank" = 横截面动量增强：在动量排名前 N 里，按 (价格动量, 主力净流)
+    #            双因子加权重排，把资本向「量价齐升+机构加持」的强名字倾斜。
+    # 默认关闭：须经 IS/OOS + 多折 walk-forward 严格验证（OOS alpha 为正且稳健）
+    # 后才并入生产。数据来自 data/moneyflow_cache（本地磁盘缓存，零网络重复消耗）。
+    moneyflow_mode: str = "off"     # "off" | "gate" | "rank"
+    moneyflow_window: int = 5       # gate/rank 用的近 N 日主力净流窗口
+    moneyflow_min_amount: float = 0.0   # gate：近 N 日净流阈值(元)，默认>0(净流入)
+    moneyflow_weight: float = 0.30  # rank：主力净流在双因子里的权重(0~1)
+    # ---- 北向资金(沪深港通净买入)市场级择时（全新正交数据轴，研究用）----
+    # 与 moneyflow（个股级主力净流，已证伪噪声大）不同：北向是**市场级**外资
+    # 资金面单一序列，与价格动量正交。本宇宙 alpha 收敛于价格动量+趋势骑行，
+    # 所有「价格/指数择时叠加层」(regime/tailhedge/移动止损)已被证伪；但北向是
+    # 「资金面」而非「价格」，是未试过的正交轴。最适合做组合层择时（对冲隔夜
+    # 跳空/外资系统性撤离），而非选股排名。
+    #   "off"  = 不使用（原行为）
+    #   "gate" = 协同闸门：北向滚动 nb_lookback 日累计净买入<0 时该日不开新仓
+    #            （已有持仓照常走离场逻辑）。机理：外资系统性撤离期防御，不接飞刀。
+    # 默认关闭：须经 IS/OOS + 多折 walk-forward 严格验证（OOS alpha 为正且稳健）
+    # 后才并入生产。数据来自 data/northbound_cache（本地磁盘缓存，零网络重复消耗）。
+    northbound_mode: str = "off"    # "off" | "gate"
+    nb_lookback: int = 20           # gate 用的北向滚动窗口（交易日）
+    # ---- 北向闸门「可信度守卫」（2026-09-28 第 11 轮，与 engine/_nb_state 同款）----
+    # 序列自 2024-08-19 起是恒正成交额口径（非净买入），且本地缓存永不刷新。
+    # 守卫开启时：截至当日若「陈旧」或「退化(trailing N 日全正)」⇒ fail-open，
+    # 使回测与实盘同口径（回测不再白拿 2023-2024 已废止披露制度下的拦截收益）。
+    nb_credibility_guard: bool = True
+    nb_stale_days: int = 10
+    nb_degenerate_days: int = 60
+    # ---- 业绩预告上修（盈利修正，全新基本面数据轴，研究用）----
+    # 与 moneyflow（资金流，对价格动量仅弱相关ρ≈0.36）不同：这是**公司自身披露的
+    # 前瞻盈利指引上修**（同一报告期、后一次指引高于前一次），属"盈利动量 / 预告
+    # 漂移(PEAD)"经典因子，与 20 日价格动量**正交**——捕捉"预期在变好"的边际信息，
+    # 而非价格已反映的趋势。这是本宇宙当前唯一尚未测试、与价格正交的另类 alpha
+    # 来源（记忆点名的下一个突破点：盈利修正 / 评级；consensus/analyst_forecast/
+    # stock_rating 在当前 token 档位不可用，forecast 可用且含 p_change 区间）。
+    #   "off"  = 不使用上修信号（原行为）
+    #   "gate" = 入场质量门：因子/闸门/动量都通过后，再要求近 earnrev_window 交易日
+    #            内出现过**上修事件**(signed_rev>0)才开仓，过滤"无基本面催化"的纯技术突破。
+    #   "rank" = 横截面倾斜：在动量前 N 名里，按 (价格动量分, 上修幅度) 双因子加权重排，
+    #            把资本向"量价齐升 + 盈利上修"的强名字倾斜。
+    # 默认关闭：须经 IS/OOS + 多折 walk-forward 严格验证（OOS alpha 为正且稳健）后才并入生产。
+    # 数据来自 data/earnrev_cache（本地磁盘缓存，零网络重复消耗）。无上修数据的标的
+    # 在 gate 模式下被剔除、rank 模式下 rev 记 0（不影响其它信号），降级安全。
+    earnrev_mode: str = "off"       # "off" | "gate" | "rank"
+    earnrev_window: int = 60        # gate/rank 用的近 N 交易日窗口（约 3 个月）
+    earnrev_min: float = 0.0        # gate：上修幅度阈值(%)，默认>0（须净上修）
+    earnrev_weight: float = 0.30    # rank：上修幅度在双因子里的权重(0~1)
+    # ---- 组合权益回撤硬止损（全新结构性方向，研究用）----
+    # 与「指数 MA60 闸门 / tailhedge 指数熔断」本质不同：后者用**指数**作代理，
+    # 本旋钮直接用**组合自身权益曲线**作触发器——只有当你 actual 的账户在
+    # bleeding（自峰值回撤超限）时才清仓，而非「指数跌了但我持仓没跌」时被误杀。
+    # 也与 dd_ctrl（只缩新开仓、不平已有）不同：这是**硬止损**——触发即清空
+    # 全部持仓转现金；净值自 trough 反弹达到 resume_pct（或创新高）才重新入场。
+    # 两段式设计规避「出得来回不去」：入场门看峰值回撤、离场门看低点反弹（解耦），
+    # 反弹即回场、不必回旧高峰。默认关闭：须经 IS/OOS + 多折 walk-forward 严格
+    # 验证（OOS alpha 为正且多折稳健）后才并入生产。
+    equity_dd_stop_enable: bool = False
+    equity_dd_stop_pct: float = -0.15    # 组合净值自峰值回撤超此值 → 清仓转现金
+    equity_dd_resume_pct: float = 0.10  # 防御态内自低点反弹超此值 → 解除、重开仓
+    # ---- 实时 RiskManager −10% 全局暂停（live 一致性建模，研究用）----
+    # 真实引擎 RiskManager.on_asset_update 在组合净值自峰值回撤 <=
+    # max_drawdown_pct(-0.10) 时**永久熔断**（halted=True：只拦新开仓、不平已有、
+    # 且无自动恢复——全代码无 resume() 调用）。回测默认"无暂停"，与现实之间存在
+    # 建模缺口：回测给出的 Sharpe 在实盘可能因 −10% 暂停而折损。本开关在回测里
+    # 忠实复现该行为，用于评估 risk_per_trade 放大后是否会触发实盘无法实现的回撤。
+    #   rm_dd_pause_pct = 0.0   → 关闭（与旧回测完全一致，默认）
+    #   rm_dd_pause_pct = -0.10 → 建模实盘（净值自峰值回撤 <= -10% 即熔断）
+    #   rm_dd_pause_recoverable = True → 净值创新高后自动解除（建议的修复方向，
+    #       用于量化"永久熔断"的机会成本，决定该旋钮是否应改为可恢复式断路器）。
+    rm_dd_pause_pct: float = 0.0
+    rm_dd_pause_recoverable: bool = False
+    # 【2026-10-19 PM-EVOLVE 第 38 轮】**冷却自愈 + 峰值重置**（生产真语义建模）。
+    #   生产 risk/manager.py::_maybe_recover：halt 后冷却 dd_recover_days(=3) 个
+    #   **自然日**即自动解除，并 `self._peak_asset = total_asset` **重置回撤基线**
+    #   （避免解除后立即再熔断）。旧代理只有两种语义：
+    #     recoverable=False → 永久熔断（比生产**严得多**）
+    #     recoverable=True  → 创新高才解除（仍比生产严：净值须回到崩前峰值）
+    #   ⇒ 两种都不是生产的真实行为。本字段补上第三种：冷却 bars 根后无条件解除
+    #   并重置峰值。默认 0 = 不启用（与改前逐位相同，零行为变化）。
+    rm_dd_pause_bars: int = 0
+
+
+def momentum_rank_weights(codes: List[str], mom_val: Dict[str, float],
+                          pow_: float = 1.0) -> Dict[str, float]:
+    """动量排名 rank-weight（纯函数，供回测与守卫测试共用）。
+
+    按 ``mom_val`` 降序给 ``codes`` 排名，返回每只标的的资金倾斜乘数，
+    **算术均值恒为 1.0**（总资本不变，只是向动量更强者集中）。
+
+    :param pow_: 1.0 = 线性 rank-weight（历史语义，逐位兼容）；
+                 >1 = 更强的头部集中（研究剂量）。
+    """
+    ranked = sorted(codes, key=lambda c: mom_val.get(c, 0.0), reverse=True)
+    k = len(ranked)
+    if k == 0:
+        return {}
+    if pow_ == 1.0:
+        mean_u = (k + 1) / 2.0
+        return {c: (k - r + 1) / mean_u for r, c in enumerate(ranked, start=1)}
+    raw = [(k - r + 1) ** pow_ for r in range(1, k + 1)]
+    mean_u = sum(raw) / float(k)
+    return {c: raw[r - 1] / mean_u for r, c in enumerate(ranked, start=1)}
+
+
+def size_target_with_wf(budget: float, stop_dist: float, wf: float,
+                        cap: float, fixed_amount: float,
+                        vol_sizing: bool = True) -> float:
+    """带资金倾斜乘数的目标仓位（纯函数）。
+
+    ★★ 【2026-10-20 AM-EVOLVE 第 39 轮 · 第 18 例「回测有、实盘无」口径背离修复】
+    ``wf`` **必须作用在风险预算上、并置于 ``min(...)`` 之内**，不能乘在最终
+    目标金额之后。原因：实盘 ``PositionSizer.size`` 的结构是
+    ``min(risk_budget/stop_pct, equity*max_pct, max_order_amount)``，
+    **单仓上限一定会夹紧**；而旧回测实现 ``tgt = tgt * wf`` 发生在夹紧之后
+    ⇒ wf=1.5 会把单仓推到 ``max_single_position_pct × 1.5``（0.40 → 0.60），
+    度量的是「不存在单仓上限的世界」。本函数保证返回值恒 <= cap。
+    """
+    if vol_sizing:
+        return min(budget * wf / stop_dist, cap, fixed_amount)
+    return min(fixed_amount * wf, cap)
+
+
+def _vec_slope(series: List[float], lookback: int = 5) -> List[Optional[float]]:
+    """向量化 I.slope：返回长度 n 的逐索引斜率序列。
+
+    在每一个 i 上，值与 ``I.slope(series[:i + 1], lookback)`` 完全一致
+    （I.slope 只取截断序列里最后 lookback 个有效值做线性斜率）。用于把
+    daily_trend_up / score_daily 里的逐 bar 斜率重算预计算为 O(n) 序列。
+    """
+    n = len(series)
+    out: List[Optional[float]] = [None] * n
+    for i in range(n):
+        valid = [v for v in series[:i + 1] if v is not None]
+        if len(valid) < 2:
+            continue
+        tail = valid[-lookback:] if len(valid) >= lookback else valid[-2:]
+        first, last = tail[0], tail[-1]
+        out[i] = (last - first) / (len(tail) - 1) if first else None
+    return out
+
+
+def _limit_pct_for(code: str, cfg: BacktestConfig) -> float:
+    """该标的适用的涨跌停幅度（主板 10% / 创业板 300/301、科创板 688 为 20%）。
+
+    仅按代码段判定，不新增任何数据依赖；供 limit_up_block=True 时使用。
+    """
+    if code.startswith(("300", "301", "688")):
+        return cfg.limit_pct_growth
+    return cfg.limit_pct_main
+
+
+def _round_to_cent(price: float) -> float:
+    """把价格四舍五入到 0.01（A 股最小报价单位）。"""
+    return round(price, 2)
+
+
+def _limit_price_from_prev_close(prev_close: float, limit_pct: float,
+                                 side: str) -> float:
+    """由前一收盘价算涨/跌停价：round(prev_close × (1 ± limit_pct), 2)。
+
+    用 panel 里已有的 close 序列自算前收（= 前一交易日收盘），不新增数据源。
+    """
+    if side == "up":
+        return _round_to_cent(prev_close * (1.0 + limit_pct))
+    return _round_to_cent(prev_close * (1.0 - limit_pct))
+
+
+def run_backtest(codes: List[str], cfg: BacktestConfig,
+                 count: int = 260, preloaded: dict = None,
+                 mf_data: dict = None, er_data: dict = None,
+                 nb_data: dict = None) -> dict:
+    """日线组合回测（正确事件时序版）。
+
+    事件时序（每个交易日 i）：
+      A) 执行前一日收盘生成的挂单 —— 按 **今日开盘价** 成交
+      B) 用今日 high/low/close 检查离场
+      C) 用今日收盘生成信号 → 挂单，等明日开盘执行
+      D) 用今日收盘标记权益，记录日收益
+
+    这修正了原实现的两个记账错误：
+      1. 原来把「次日开盘成交的持仓」在**当日**就按当日收盘估值，
+         把隔夜跳空当成当日盈亏灌进日收益 → Sharpe 严重失真
+         （实测 -0.94 vs 正确 +0.58）。
+      2. 原来用 min(len) 截断做跨标的对齐，索引与日期不对应。
+    """
+    # 先加载所有数据（或复用外部预加载，避免重复网络拉取）
+    data: Dict[str, Dict[str, List[float]]] = {}
+    if preloaded:
+        data = {c: d for c, d in preloaded.items() if c in codes}
+    if not data:
+        for code in codes:
+            d = load_daily(code, count)
+            if d:
+                data[code] = d
+    if not data:
+        return {"error": "no data"}
+
+    # ---- regime 用的指数一起对齐（但不参与交易/基准）----
+    # 注意：调用方（opt_harness）传入的 preloaded 含指数代码，但 run_backtest
+    # 内部为排除指数出交易池，把 data 限制在 codes（不含 INDEX_CODES）内，
+    # 导致 regime 指数被一并过滤。这里与 tailhedge 一致，显式从 preloaded
+    # 取回指数（或直接 load_daily），否则 regime_panel 为 None、闸门恒为
+    # False、所有交易被静默拦截——这会伪造「regime 全输」的假象。2026-08-29 修复。
+    regime_code = None
+    if cfg.regime_mode in ("index", "dual"):
+        regime_code = cfg.regime_index
+    elif cfg.regime_mode == "tailhedge":
+        regime_code = cfg.tail_index
+    if regime_code is not None and regime_code not in data:
+        _idx = None
+        if preloaded and regime_code in preloaded:
+            _idx = preloaded[regime_code]
+        else:
+            _idx = load_daily(regime_code, count)
+        if _idx:
+            data = dict(data)
+            data[regime_code] = _idx
+        else:
+            regime_code = None      # 拿不到指数则退化为不过滤
+
+    # ---- 跨标的对齐到统一交易日轴 ----
+    dates, panel = align_panel(data)
+    regime_panel = panel.pop(regime_code, None) if regime_code else None
+    n = len(dates)
+    if not panel:
+        return {"error": "no tradable data"}
+
+    # ---- 主力资金流（新数据轴）对齐到统一交易日轴 ----
+    # moneyflow_mode != off 时才加载；mf_data 来自外部预取（回测复用，零重复网络）。
+    mf_net: Dict[str, list] = {}
+    if cfg.moneyflow_mode in ("gate", "rank"):
+        if mf_data is None:
+            from data.moneyflow_cache import preload_moneyflow
+            _mf_start = dates[0] if dates else "20230101"
+            _mf_end = dates[-1] if dates else ""
+            mf_data = preload_moneyflow(list(panel.keys()),
+                                        start=_mf_start, end=_mf_end)
+        for code, d in panel.items():
+            raw = mf_data.get(code, {})
+            arr = [float(raw.get(dt, {}).get("net_mf_amount"))
+                   if raw.get(dt) else None for dt in dates]
+            mf_net[code] = arr
+
+    # ---- 北向资金(沪深港通净买入)市场级对齐（全新正交轴）----
+    # 与 moneyflow（个股级）不同：北向是单一市场级序列 {trade_date: north_money}。
+    # northbound_mode != off 时才加载；nb_data 来自外部预取（回测复用，零重复网络）。
+    # 缺失交易日（缓存覆盖不足时）视为中性（不触发 gate），不阻断交易。
+    nb_series: Dict[str, float] = {}
+    if cfg.northbound_mode != "off":
+        if nb_data is None:
+            from data.northbound_cache import preload_northbound
+            nb_data = preload_northbound(dates[0], dates[-1])
+        nb_series = {str(d): float(v) for d, v in nb_data.items()}
+
+    # ---- 业绩预告上修（盈利修正，全新基本面数据轴）对齐到统一交易日轴 ----
+    # earnrev_mode != off 时才加载；er_data 来自外部预取（回测复用，零重复网络）。
+    # 与 mf_net 一致：把离散的"上修事件(ann_date -> signed_rev)"映射为逐交易日序列，
+    # 仅保留窗口内(近 earnrev_window 交易日)的最近一次上修，过时归 0（避免陈旧事件常驻）。
+    er_net: Dict[str, list] = {}
+    if cfg.earnrev_mode in ("gate", "rank"):
+        if er_data is None:
+            from data.earnrev_cache import preload_earnrev
+            _er_start = dates[0] if dates else "20200101"
+            _er_end = dates[-1] if dates else ""
+            er_data = preload_earnrev(list(panel.keys()),
+                                     start=_er_start, end=_er_end)
+        _win = max(1, int(cfg.earnrev_window))
+        _date_to_idx = {d: k for k, d in enumerate(dates)}
+        for code, d in panel.items():
+            raw = er_data.get(code, {})
+            # 事件列表：(交易日索引, signed_rev)，ann_date 映射到最近的不晚于它的交易日
+            ev_list: List[Tuple[int, float]] = []
+            for _ev_date, _rev in raw.items():
+                if _ev_date in _date_to_idx:
+                    _idx = _date_to_idx[_ev_date]
+                else:
+                    _idx = None
+                    for _kk in range(len(dates) - 1, -1, -1):
+                        if dates[_kk] <= _ev_date:
+                            _idx = _kk
+                            break
+                if _idx is not None:
+                    ev_list.append((_idx, float(_rev)))
+            ev_list.sort()
+            arr = [0.0] * n
+            _ptr = 0
+            _last_idx = None
+            _last_rev = 0.0
+            for _i in range(n):
+                while _ptr < len(ev_list) and ev_list[_ptr][0] <= _i:
+                    _last_idx, _last_rev = ev_list[_ptr]
+                    _ptr += 1
+                if _last_idx is not None and (_i - _last_idx) <= _win:
+                    arr[_i] = _last_rev
+                else:
+                    arr[_i] = 0.0
+            er_net[code] = arr
+
+    # 预计算 MA 数组（趋势破位判定用；exit_ma 跟随配置，原来硬编码 60）
+    exit_ma = max(2, int(cfg.trend_exit_ma))
+    ma20_arr: Dict[str, list] = {}
+    ma_exit_arr: Dict[str, list] = {}
+    for code, d in panel.items():
+        ma20_arr[code] = I.sma(d["close"], 20)
+        ma_exit_arr[code] = I.sma(d["close"], exit_ma)
+
+    # ---- 预计算（性能优化：把 O(n^2) 的逐 bar 指标重算改为一次 O(n)）----
+    # 窗口内序列不变，原实现在每个交易日对每个候选股重算 daily_trend_up /
+    # atr_pct_at / score_daily，使 run_backtest 为 O(n^2)。预计算为全序列数组
+    # 后按 [i] 索引（数值与 I.last(series[:i+1]) 完全一致，已验证 base 指标不变）。
+    trend_up_arr: Dict[str, list] = {}
+    # regime 恢复快通道用的「豁免 MA20 斜率」变体（a & b & d，即 no_slope）。
+    # 仅在 recovery_fastpath=True 时填充；关闭时为空 dict，零开销、零行为变化。
+    trend_up_noslope_arr: Dict[str, list] = {}
+    bias_arr: Dict[str, list] = {}
+    ext60_arr: Dict[str, list] = {}
+    atr_pct_arr: Dict[str, list] = {}
+    score_arr: Dict[str, list] = {}
+    # 量能突破确认（vol_confirm）预计算：放量比 + 是否贴近阶段高位。
+    # 同样改为 O(n) 预计算，避免 walk-forward 里逐 bar 重算。
+    vol_ratio_arr: Dict[str, list] = {}
+    near_high_arr: Dict[str, list] = {}
+    for code, d in panel.items():
+        o = d["open"]; cl = d["close"]
+        hi = d["high"]; lo = d["low"]; vo = d["volume"]
+        n_c = len(cl)
+        # 趋势闸门布尔序列（与 daily_trend_up 等价）
+        _s20 = I.sma(cl, 20); _s60 = I.sma(cl, 60)
+        _s20s = _vec_slope(_s20, 5)
+        _, _, _mh = I.macd(cl, 12, 26, 9)
+        _tu = [False] * n_c
+        _tu_noslope = [False] * n_c
+        _relax = getattr(cfg, "trend_up_relax", "none")
+        _s60s = _vec_slope(_s60, 5) if _relax == "ma60s" else None
+        for i in range(n_c):
+            if i < 60:
+                continue
+            m20 = _s20[i]; m60 = _s60[i]; m20s = _s20s[i]
+            _a = bool(m20 and cl[i] > m20)
+            _b = bool(m20 and m60 and m20 > m60)
+            _c = bool(m20s is not None and m20s > 0)
+            _d = bool((_mh[i] or 0) >= 0)
+            if _relax == "ma60s":
+                _e = bool(_s60s[i] is not None and _s60s[i] > 0)
+                if _trend_up_with_ma60s(_a, _b, _c, _d, _e):
+                    _tu[i] = True
+            elif trend_up_relaxed(_a, _b, _c, _d, _relax):
+                _tu[i] = True
+            # 快通道变体：豁免 MA20 斜率（a & b & d），仅在开关开启时用到
+            if cfg.recovery_fastpath:
+                _tu_noslope[i] = trend_up_relaxed(_a, _b, _c, _d, "no_slope")
+        trend_up_arr[code] = _tu
+        if cfg.recovery_fastpath:
+            trend_up_noslope_arr[code] = _tu_noslope
+        # 综合偏置序列 bias ∈ [-1,1]（与 daily_context.py:180-187 严格同式）
+        # 实盘闸门 ``trend_up or bias >= min_daily_bias`` 的第二路，
+        # 回测原本缺失，此处补齐（默认阈值 2.0 = 该路关闭，行为不变）。
+        _bi = [0.0] * n_c
+        for i in range(n_c):
+            m20 = _s20[i]; m60 = _s60[i]
+            b = 0.0
+            if m20:
+                b += 0.35 * (1.0 if cl[i] > m20 else -1.0)
+            if m60:
+                b += 0.35 * (1.0 if cl[i] > m60 else -1.0)
+            if m20 and m60:
+                b += 0.30 * (1.0 if m20 > m60 else -1.0)
+            _bi[i] = max(-1.0, min(1.0, b))
+        bias_arr[code] = _bi
+        # 趋势延伸度序列（R44 entry_max_ext_ma60）：close/MA60−1；
+        # MA60 缺失/非正 ⇒ 记 9e9 使过滤器**永不拦截**（fail-open，与 warmup 语义一致）。
+        _ext = [9e9] * n_c
+        for i in range(n_c):
+            if _s60[i] and cl[i] > 0:
+                _ext[i] = cl[i] / _s60[i] - 1.0
+        ext60_arr[code] = _ext
+        # ATR% 序列（与 atr_pct_at 等价）
+        _atr = I.atr(hi, lo, cl, 14)
+        _ap = [0.0] * n_c
+        for i in range(n_c):
+            a = _atr[i]
+            if a and cl[i]:
+                _ap[i] = a / cl[i]
+        atr_pct_arr[code] = _ap
+        # 6 因子评分序列（与 score_daily 等价）
+        score_arr[code] = score_daily_series(o, hi, lo, cl, vo,
+                                             cfg.vwap_window,
+                                             cfg.vwap_factor_fixed)
+        # 量能突破确认预计算
+        _vma = I.sma(vo, cfg.vol_confirm_ma)
+        _vr = [0.0] * n_c
+        _nh = [False] * n_c
+        _vma_w = max(2, int(cfg.vol_confirm_ma))
+        for i2 in range(n_c):
+            vma_i = _vma[i2]
+            if vma_i and vma_i > 0:
+                _vr[i2] = vo[i2] / vma_i
+            if i2 >= _vma_w - 1:
+                win = cl[i2 - _vma_w + 1: i2 + 1]
+                hi_win = max(win)
+                _nh[i2] = (cl[i2] >= hi_win * (1 - cfg.vol_confirm_tol))
+        vol_ratio_arr[code] = _vr
+        near_high_arr[code] = _nh
+
+    # ---- 预计算市场状态（regime）逐日布尔序列 ----
+    r_ma = max(2, int(cfg.regime_ma))
+    use_index = (cfg.regime_mode in ("index", "dual")) and regime_panel is not None
+    use_breadth = cfg.regime_mode in ("breadth", "dual")
+    idx_ok: List[bool] = [False] * n
+    br_ok: List[bool] = [True] * n
+    if use_index:
+        icl = regime_panel["close"]
+        ima = I.sma(icl, r_ma)
+        buf = max(0.0, float(cfg.regime_buffer_pct))
+        need = max(1, int(cfg.regime_confirm_days))
+        slope_days = max(0, int(cfg.regime_slope_days))
+        # 带缓冲带 + N 日确认的状态机。默认参数 (need=1,buf=0,slope=0) 下
+        # 每日 up_trig == (close>MA)，翻转立即生效，与原二值实现等价。
+        state = False
+        run_up = run_dn = 0
+        for i in range(n):
+            m = I.last(ima[:i + 1])
+            if not m:
+                idx_ok[i] = False
+                continue
+            slope_ok = True
+            if slope_days > 0:
+                slope_ok = (I.slope(ima[:i + 1], slope_days) or 0.0) > 0
+            up_trig = (icl[i] > m * (1 + buf)) and slope_ok
+            dn_trig = icl[i] < m * (1 - buf)
+            if up_trig:
+                run_up += 1
+                run_dn = 0
+            elif dn_trig:
+                run_dn += 1
+                run_up = 0
+            else:
+                # 落在缓冲带内：既不确认上穿也不确认下穿，维持现状
+                run_up = run_dn = 0
+            if (not state) and run_up >= need:
+                state = True
+            elif state and run_dn >= need:
+                state = False
+            idx_ok[i] = state
+    if use_breadth:
+        ma_b = {c: I.sma(d["close"], r_ma) for c, d in panel.items()}
+        for i in range(n):
+            tot = above = 0
+            for c, d in panel.items():
+                m = I.last(ma_b[c][:i + 1])
+                if m and d["close"][i] > 0:
+                    tot += 1
+                    if d["close"][i] > m:
+                        above += 1
+            br_ok[i] = bool(tot and (above / tot) >= cfg.regime_breadth_thresh)
+
+    # ---- 尾部风险对冲（指数峰值回撤熔断）两段式状态机 ----
+    # 非防御态：跟踪运行峰值 peak；自峰值回撤 <= dd_th 进入防御态（记录崩盘点 trough）。
+    # 防御态：跟踪崩盘低点 trough；自低点反弹 >= rec_th（或创出新高）解除防御，
+    #         并把 peak 重置为当前价（以反弹后价位为新的参考高峰）。
+    # 入场看「峰值回撤」、离场看「低点反弹」——解耦，避免长期踏空反弹。
+    tail_defensive = [False] * n
+    if cfg.regime_mode == "tailhedge" and regime_panel is not None:
+        icl = regime_panel["close"]
+        dd_th = float(cfg.tail_drawdown_pct)
+        rec_th = max(0.0, float(cfg.tail_recover_pct))
+        peak = None
+        trough = None
+        state = False
+        for i in range(n):
+            c = icl[i]
+            if c and c > 0:
+                if not state:
+                    if peak is None or c > peak:
+                        peak = c
+                    dd = (c / peak - 1.0) if peak else 0.0
+                    if peak and dd <= dd_th:
+                        state = True
+                        trough = c          # 进入防御，开始跟踪崩盘低点
+                else:
+                    if trough is None or c < trough:
+                        trough = c
+                    bounce = (c / trough - 1.0) if trough else 0.0
+                    new_high = (peak is not None and c > peak)
+                    if (trough and bounce >= rec_th) or new_high:
+                        state = False
+                        peak = c            # 重置参考峰值为当前价
+                        trough = None
+                tail_defensive[i] = state
+
+    if cfg.regime_mode == "index":
+        regime_ok = list(idx_ok)
+    elif cfg.regime_mode == "breadth":
+        regime_ok = list(br_ok)
+    elif cfg.regime_mode == "dual":
+        # 双过滤：指数站上 MA60「且」宽度健康，才放行。
+        # 比单指数更抗个股/指数失真，避免弱势反弹里误开仓。
+        regime_ok = [a and b for a, b in zip(idx_ok, br_ok)]
+    elif cfg.regime_mode == "tailhedge":
+        # 防御态=不开新仓；regime_ok[i] = not defensive[i]
+        regime_ok = [not d for d in tail_defensive]
+    else:
+        regime_ok = [True] * n
+
+    # ---- regime 恢复快通道（P0-1）预计算 ----
+    # 用**等权宇宙收盘价序列**自算 regime，不依赖指数（面板里可能无指数序列）。
+    # 等权宇宙净值：面板内各票前向填充后的 close（停牌日已由 align_panel 前向填充），
+    # 每票自首个 >0 价归一，逐日取均值。rf_relax_until[i] = 放宽生效的最后一日（含）
+    # 的索引；-1 表示当日不生效。深跌段 = 净值 <= near20max*(1+rf_drawdown_threshold)；
+    # 反弹确认日 t = 净值 >= near20min*(1+rf_rebound_pct) 且 5 日均线斜率>0；
+    # 自 t 起 rf_relax_days 个交易日内放宽。关闭时本段零开销、恒不生效。
+    rf_relax_until: List[int] = [-1] * n
+    if cfg.recovery_fastpath:
+        rf_lb = max(2, int(cfg.rf_lookback))
+        rf_relax = max(1, int(cfg.rf_relax_days))
+        rf_dd = float(cfg.rf_drawdown_threshold)
+        rf_rb = float(cfg.rf_rebound_pct)
+        # 等权宇宙净值（面板含各票 close，停牌已前向填充）
+        _uni = [0.0] * n
+        _cnt = [0] * n
+        for _c, _d in panel.items():
+            _cl = _d["close"]
+            _base = None
+            for _i in range(n):
+                _p = _cl[_i]
+                if _p and _p > 0:
+                    if _base is None:
+                        _base = _p
+                    _uni[_i] += _p / _base
+                    _cnt[_i] += 1
+        _eq = [(_uni[_i] / _cnt[_i]) if _cnt[_i] else 1.0 for _i in range(n)]
+        # 近 20 日高/低点、5 日均线（用 5 日均线的斜率>0 判定反弹确认）
+        _sma5 = I.sma(_eq, 5)
+        _sma5_slope = _vec_slope(_sma5, 5)
+        _rebound_confirmed_at = -1
+        for _i in range(n):
+            # 反弹确认（只看近 20 日低点反弹 + 5 日均线斜率>0）
+            _lo = max(0, _i - rf_lb + 1)
+            _near20min = min(_eq[_lo:_i + 1]) if _i >= _lo else _eq[_i]
+            if (_near20min > 0 and _eq[_i] >= _near20min * (1.0 + rf_rb)
+                    and _sma5_slope[_i] is not None and _sma5_slope[_i] > 0):
+                _rebound_confirmed_at = _i
+            # 放宽生效窗口：自最近一次反弹确认日起 rf_relax 个交易日
+            if _rebound_confirmed_at >= 0 and (_i - _rebound_confirmed_at) < rf_relax:
+                rf_relax_until[_i] = _rebound_confirmed_at + rf_relax - 1
+    # 快通道「当日是否放宽生效」布尔序列（供入场分支读取；关闭时全 False）
+    rf_relax_active: List[bool] = [(_x >= 0) for _x in rf_relax_until]
+
+    # ----【PM-EVOLVE R29 路径②】AI 强势期信心加仓信号 ----
+    # 与 regime_mode 的「弱势期关门」正交：这里在**强 AI 景气期**放大新开仓目标仓位。
+    # 复用与 regime breadth 完全相同的广度定义（宇宙内站上 MA(regime_ma) 的比例），
+    # 当广度 ≥ conviction_breadth_thr 时，conv_boost_sig[i]=conviction_boost，否则=1.0。
+    # 仅 conviction_mode=="breadth" 时计算（关闭时恒为 1.0，零开销、零行为变化）。
+    conv_boost_sig: List[float] = [1.0] * n
+    if cfg.conviction_mode == "breadth":
+        _rma = max(2, int(cfg.regime_ma))
+        _ma_b = {c: I.sma(d["close"], _rma) for c, d in panel.items()}
+        for _i in range(n):
+            _tot = _above = 0
+            for c, d in panel.items():
+                _m = I.last(_ma_b[c][: _i + 1])
+                if _m and d["close"][_i] > 0:
+                    _tot += 1
+                    if d["close"][_i] > _m:
+                        _above += 1
+            if _tot and (_above / _tot) >= cfg.conviction_breadth_thr:
+                conv_boost_sig[_i] = cfg.conviction_boost
+
+    # ---- 北向资金协同闸门（全新正交轴，研究用）----
+    # 北向滚动 nb_lookback 日累计净买入<0 → 该日不开新仓（已有持仓照常离场）。
+    # 机理：外资系统性撤离期防御，对冲隔夜跳空/接飞刀；与价格趋势闸门正交。
+    # 缺失交易日（nb_series 无该日）→ 视为净流中性，不触发 gate。
+    if cfg.northbound_mode == "gate" and nb_series:
+        nb_roll = [0.0] * n
+        for _i in range(n):
+            _s = 0.0
+            _lo = max(0, _i - cfg.nb_lookback + 1)
+            for _k in range(_lo, _i + 1):
+                _v = nb_series.get(dates[_k])
+                if _v is not None:
+                    _s += _v
+            nb_roll[_i] = _s
+        # 可信度守卫（与 engine/_nb_state 同款）：不可信的 bar 一律 fail-open，
+        # 保证回测口径 == 实盘口径（守卫自身异常时保守取「可信」= 旧行为）。
+        if cfg.nb_credibility_guard:
+            try:
+                from data.northbound_cache import nb_gate_credible
+            except Exception:                      # pragma: no cover
+                nb_gate_credible = None
+            if nb_gate_credible is not None:
+                _nb_keys = sorted(nb_series.keys())
+                nb_ok = [True] * n
+                for _i in range(n):
+                    try:
+                        nb_ok[_i] = nb_gate_credible(
+                            nb_series, _nb_keys, dates[_i],
+                            stale_days=cfg.nb_stale_days,
+                            degenerate_days=cfg.nb_degenerate_days)[0]
+                    except Exception:
+                        nb_ok[_i] = True
+                nb_roll = [(s if nb_ok[_k] else 0.0)
+                           for _k, s in enumerate(nb_roll)]
+        regime_ok = [a and (nb_roll[_k] >= 0.0)
+                     for _k, a in enumerate(regime_ok)]
+
+    equity = 1_000_000.0
+    cash = equity
+    positions: Dict[str, dict] = {}   # code -> {qty, entry, entry_day, peak}
+    last_exit_day: Dict[str, int] = {}  # code -> 最后离场日（再入场冷静期用）
+    pending: List[dict] = []          # 待明日开盘执行的买单
+    rot_sell_pend: List[str] = []     # 待明日开盘执行的「轮动换出」卖单（见 rotation_*）
+    equity_curve: List[float] = [equity]
+    trades: List[dict] = []
+    # ---- LAB（T4 研究钩子）----
+    _lab_daily: List[dict] = []          # H-C：每日 cash/mv/持仓数
+    _lab_breadth_hist: Dict[int, int] = {}   # 宽度分布（诊断）
+    _lab_single_days: List[dict] = []        # 当日唯一通过者的质量画像
+    daily_rets: List[float] = []
+    days_in_market = 0
+    # ---- 连亏降仓代理状态（见 BacktestConfig.consec_loss_scale 注释）----
+    _SCALE_LADDER = (1.0, 0.8, 0.6, 0.4, 0.0)
+    _consec_loss = 0          # 连续亏损卖出笔数（遇盈利卖出归零）
+    _halt_bar = None          # 触发熔断的 bar 下标；None = 未熔断
+    _scale_blocked_bars = 0   # 统计：因 scale<=0 而整日无买入的 bar 数（诊断用）
+    _batch_pnl = 0.0          # 当日离场净盈亏累计（consec_loss_batch 用）
+    # ---- 日内已实现亏损熔断代理状态（见 BacktestConfig.daily_loss_halt 注释）----
+    _dl_day_pnl = 0.0         # 当日（本 bar）离场已实现盈亏累计，日切归零
+    _dl_halt_bar = None       # 触发日内亏损熔断的 bar 下标；None = 未熔断
+    _flatten_today = False    # 日内强平：次日开盘清仓标志
+    # 【2026-10-08 第 23 轮】trend_break 顺延到次日开盘成交的挂单（exit_next_open）
+    _deferred_trend_exit: List[str] = []
+    _prev_close_equity = 0.0  # 昨日收盘权益（强平判定的「开盘资产」口径）
+    # 【2026-10-21 B9】涨跌停不可成交计数（limit_up_block=True 时统计，默认 False 恒为 0）
+    limit_blocked_buy = 0     # 因涨停不可成交而放弃/顺延的买入信号数
+    limit_blocked_sell = 0    # 因跌停封死不可卖出而顺延的离场次数
+
+    WARMUP = max(65, int(cfg.momentum_lookback) + 5, exit_ma + 5,
+                 int(cfg.min_warmup))
+    if n <= WARMUP + 10:
+        return {"error": f"data too short: n={n} warmup={WARMUP}"}
+
+    prev_equity = equity
+    peak_equity = equity          # 组合级 DD 控制：跟踪净值峰值
+    # 组合权益回撤硬止损状态机（研究用，默认关闭）
+    eq_dd_active = False
+    eq_dd_trough = None
+    # 实时 RiskManager −10% 全局暂停建模（研究用，默认关闭）：
+    # 净值自峰值回撤 <= rm_dd_pause_pct 即熔断，只拦新开仓、不平已有。
+    rm_halted = False
+    rm_halted_ever = False
+    rm_halted_days = 0
+    rm_halted_bars = 0      # 【R38】熔断已持续的交易日数（生产按自然日 dd_recover_days）
+    for i in range(WARMUP, n):
+        # ================= A0) 顺延离场（trend_break 次日开盘成交） =================
+        # exit_next_open=True 时生效，默认 False ⇒ 本段恒为空、零行为变化。
+        # 语义：上一根已收盘日线判定 trend_break ⇒ 次日开盘以 open 卖出，
+        # 与入场侧「信号 day i 收盘 → day i+1 开盘成交」同口径（消除 exit 前视）。
+        if _deferred_trend_exit:
+            _still: List[str] = []
+            for _dc in _deferred_trend_exit:
+                _dp = positions.get(_dc)
+                if _dp is None:
+                    continue
+                if not panel[_dc]["valid"][i]:
+                    _still.append(_dc)      # 停牌：顺延到下一个交易日
+                    continue
+                _px = panel[_dc]["open"][i]
+                if _px <= 0:
+                    _still.append(_dc)
+                    continue
+                _net = _px * (1 - cfg.cost_pct)
+                _net_entry = _dp["entry"] * (1 + cfg.cost_pct)
+                cash += _net * _dp["qty"]
+                trades.append({
+                    "code": _dc,
+                    "pnl_pct": (_net - _net_entry) / _net_entry,
+                    "hold": i - _dp["entry_day"], "reason": "trend_break",
+                })
+                if cfg.consec_loss_scale and not cfg.consec_loss_batch:
+                    if _net < _net_entry:
+                        _consec_loss += 1
+                    elif _net > _net_entry:
+                        _consec_loss = 0
+                    if (_consec_loss >= cfg.consec_loss_halt
+                            and _halt_bar is None):
+                        _halt_bar = i
+                elif cfg.consec_loss_scale and cfg.consec_loss_batch:
+                    _batch_pnl += (_net - _net_entry) * _dp["qty"]
+                if cfg.daily_loss_halt:
+                    _dl_day_pnl += (_net - _net_entry) * _dp["qty"]
+                last_exit_day[_dc] = i
+                del positions[_dc]
+            _deferred_trend_exit = _still
+        # ================= A) 执行昨日挂单（今日开盘成交） =================
+        # 组合级动态暴露（DD control）：仅在「新开仓」上缩放目标仓位，
+        # 不强制平已有持仓。净值创新高后 exp_scale 自动回到 1.0。
+        exp_scale = 1.0
+        if cfg.dd_ctrl:
+            dd = (equity / peak_equity - 1.0) if peak_equity > 0 else 0.0
+            if dd < cfg.dd_ctrl_start:
+                frac = min(1.0, (cfg.dd_ctrl_start - dd)
+                           / (cfg.dd_ctrl_start - cfg.dd_ctrl_full))
+                exp_scale = (cfg.dd_ctrl_floor
+                             + (1.0 - cfg.dd_ctrl_floor) * (1.0 - frac))
+        # 组合权益回撤硬止损（防御态）：不执行任何买单，待净值反弹再恢复。
+        _pending_exec = pending
+        if cfg.equity_dd_stop_enable and eq_dd_active:
+            _pending_exec = []
+        # ---- 连亏降仓（position_scale）：实盘有、回测原本无 ----
+        # 语义对齐 risk/manager.py：
+        #   ① 熔断冷却自愈：halt 后 consec_loss_halt_bars 个交易日清零连亏、恢复开仓；
+        #   ② 未熔断但连亏达 trigger → 按阶梯缩放**新开仓**目标金额（已有仓不受影响）；
+        #   ③ scale <= 0 → 当日全部买单丢弃（对应 _handle_buy 的 `if scale <= 0: return`）。
+        _scale = 1.0
+        # 同批退出合并计数：本日开市前先结算**昨日**离场的净盈亏（一次性 ±1）
+        if cfg.consec_loss_scale and cfg.consec_loss_batch:
+            if _batch_pnl < 0:
+                _consec_loss += 1
+            elif _batch_pnl > 0:
+                _consec_loss = 0
+            _batch_pnl = 0.0
+            if (_consec_loss >= cfg.consec_loss_halt and _halt_bar is None):
+                _halt_bar = i
+        if cfg.consec_loss_scale:
+            if _halt_bar is not None:
+                if (i - _halt_bar) >= cfg.consec_loss_halt_bars:
+                    _consec_loss = 0          # 冷却自愈，重置风险基线
+                    _halt_bar = None
+                else:
+                    _pending_exec = []        # 熔断未解除，禁止一切开仓
+            if _consec_loss >= cfg.consec_loss_trigger:
+                _idx = min(len(_SCALE_LADDER) - 1,
+                           _consec_loss - cfg.consec_loss_trigger + 1)
+                _scale = _SCALE_LADDER[_idx]
+                if cfg.consec_loss_floor > _scale:
+                    _scale = cfg.consec_loss_floor   # 「保留地板」对照用
+            if _scale <= 0:
+                _pending_exec = []
+                _scale_blocked_bars += 1
+        # ---- 日内已实现亏损熔断：结算**昨日**离场的已实现盈亏并判定 ----
+        # 与实盘同语义：_daily_pnl 只累计已实现盈亏，触发即 halt，
+        # 冷却 daily_loss_halt_bars 个交易日后自愈并清零基线。
+        if cfg.daily_loss_halt:
+            _fired = False
+            if cfg.daily_loss_abs_pct > 0 and equity > 0:
+                if _dl_day_pnl <= -cfg.daily_loss_abs_pct * equity:
+                    _fired = True
+            if not _fired and equity > 0:
+                if _dl_day_pnl <= cfg.daily_loss_pct * equity:
+                    _fired = True
+            _dl_day_pnl = 0.0        # 日切归零（实盘 reset_daily）
+            if _fired and _dl_halt_bar is None:
+                _dl_halt_bar = i
+            if _dl_halt_bar is not None:
+                if (i - _dl_halt_bar) >= cfg.daily_loss_halt_bars:
+                    _dl_halt_bar = None        # 冷却自愈
+                else:
+                    _pending_exec = []         # 熔断未解除，禁止一切开仓
+        # ---- 日内强平：以今日开盘价平掉全部可卖持仓（T+1 下当日建仓除外）----
+        if _flatten_today:
+            _flatten_today = False
+            _pending_exec = []
+            for _fc in list(positions.keys()):
+                _fp = positions[_fc]
+                if _fp["entry_day"] >= i:      # A 股 T+1：当日建仓不可卖
+                    continue
+                if not panel[_fc]["valid"][i]:
+                    continue
+                _px = panel[_fc]["open"][i]
+                if _px <= 0:
+                    continue
+                _net = _px * (1 - cfg.cost_pct)
+                _qty = _fp["qty"]
+                cash += _net * _qty
+                trades.append({
+                    "code": _fc,
+                    "pnl_pct": (_net - _fp["entry"]) / _fp["entry"],
+                    "hold": i - _fp["entry_day"], "reason": "daily_stop_flatten",
+                })
+                if cfg.consec_loss_scale and not cfg.consec_loss_batch:
+                    if _net < _fp["entry"]:
+                        _consec_loss += 1
+                    elif _net > _fp["entry"]:
+                        _consec_loss = 0
+                    if (_consec_loss >= cfg.consec_loss_halt
+                            and _halt_bar is None):
+                        _halt_bar = i
+                elif cfg.consec_loss_scale and cfg.consec_loss_batch:
+                    _batch_pnl += (_net - _fp["entry"]) * _qty
+                if cfg.daily_loss_halt:
+                    _dl_day_pnl += (_net - _fp["entry"]) * _qty
+                last_exit_day[_fc] = i
+                del positions[_fc]
+        # ---- 轮动「weak→strong」换出：与换入同为「次日开盘」成交 ----
+        # 排在 _pending_exec（换入买单）**之前**执行 ⇒ 槽位与现金先释放，
+        # 与实盘 _maybe_rotate「先卖最弱、再买候选」的时序一致（event_engine.py:873+）。
+        if rot_sell_pend:
+            for _rc in list(rot_sell_pend):
+                _rp = positions.get(_rc)
+                if _rp is None:          # 已因破位/止损提前离场
+                    continue
+                if cfg.t1_restriction and _rp["entry_day"] == i:
+                    continue             # T+1：当日建仓不可卖（与 _handle_sell 同语义）
+                if not panel[_rc]["valid"][i]:
+                    continue
+                _px = panel[_rc]["open"][i]
+                if _px <= 0:
+                    continue
+                _net = _px * (1 - cfg.cost_pct)
+                _qty = _rp["qty"]
+                cash += _net * _qty
+                trades.append({
+                    "code": _rc,
+                    "pnl_pct": (_net - _rp["entry"]) / _rp["entry"],
+                    "hold": i - _rp["entry_day"], "reason": "rotation_swap",
+                })
+                if cfg.consec_loss_scale and not cfg.consec_loss_batch:
+                    if _net < _rp["entry"]:
+                        _consec_loss += 1
+                    elif _net > _rp["entry"]:
+                        _consec_loss = 0
+                    if (_consec_loss >= cfg.consec_loss_halt
+                            and _halt_bar is None):
+                        _halt_bar = i
+                elif cfg.consec_loss_scale and cfg.consec_loss_batch:
+                    _batch_pnl += (_net - _rp["entry"]) * _qty
+                if cfg.daily_loss_halt:
+                    _dl_day_pnl += (_net - _rp["entry"]) * _qty
+                last_exit_day[_rc] = i
+                del positions[_rc]
+            rot_sell_pend = []
+        for order in _pending_exec:
+            code = order["code"]
+            if code in positions or len(positions) >= cfg.max_positions:
+                continue
+            if not panel[code]["valid"][i]:
+                continue          # 停牌不成交
+            entry = panel[code]["open"][i]
+            if entry <= 0:
+                continue
+            # 【2026-10-21 B9】涨停禁买（limit_up_block=True 时才进入，默认零行为变化）
+            # 语义：买「60 日动量最强、创 20 日新高」的票，信号次日开盘常一字/大幅涨停，
+            #   实盘无法以涨停价成交。若当日 open 或 high 触及涨停价（前一交易日收盘
+            #   ×(1+limit) 四舍五入到 0.01）⇒ 视为不可成交，**放弃**该笔（见
+            #   docs/Spec_B9_backtest_realism.md 的「放弃 vs 顺延」理由）。
+            # 前收用 panel 已有的 close[i-1] 自算，不新增数据依赖。
+            if cfg.limit_up_block and i > 0:
+                _pc = panel[code]["close"][i - 1]
+                if _pc > 0:
+                    _lp = _limit_price_from_prev_close(
+                        _pc, _limit_pct_for(code, cfg), "up")
+                    if entry >= _lp or panel[code]["high"][i] >= _lp:
+                        limit_blocked_buy += 1
+                        continue          # 涨停不可成交 → 放弃该买单
+            stop_dist = order["stop_dist"]
+            target_dist = order["target_dist"]
+            wf = order.get("wf", 1.0)   # 动量排名加权因子（均值=1，强者>1弱<1）
+            rpw = order.get("weight", 1.0)  # 横截面风险平价权重（均值=1，低波动>1）
+            # 仓位（波动率目标）—— 用昨日收盘标记的权益，无未来函数
+            _cap = equity * cfg.max_single_position_pct
+            if cfg.vol_sizing:
+                budget = equity * cfg.risk_per_trade
+            else:
+                budget = 0.0
+            # 【2026-10-20 AM-EVOLVE 第 39 轮】momentum_weight 的 wf 作用在**风险
+            #   预算**上并置于 min(...) 之内（见 size_target_with_wf 的注释），
+            #   保证单仓上限仍然夹紧 —— 这是第 18 例「回测有、实盘无」背离的修复。
+            #   momentum_weight=False 时 wf 恒按 1.0 处理，随后仍走旧的后置乘法
+            #   （保 entry_half_when_one 的 0.5 语义逐位不变）。
+            tgt = size_target_with_wf(budget, stop_dist,
+                                      wf if cfg.momentum_weight else 1.0,
+                                      _cap, cfg.fixed_amount,
+                                      vol_sizing=cfg.vol_sizing)
+            tgt = tgt * (rpw if cfg.momentum_weight else wf * rpw)
+            # 【PM-EVOLVE R29 路径②】AI 强势期信心加仓：广度达标时再乘 conviction_boost
+            if cfg.conviction_mode == "breadth":
+                tgt = tgt * conv_boost_sig[i]
+            # 组合级 DD 控制：缩放新开仓目标仓位（exp_scale<=1.0）
+            if cfg.dd_ctrl and exp_scale < 1.0:
+                tgt = tgt * exp_scale
+            # 连亏降仓：实盘 PositionSizer 的 position_scale 乘在新开仓目标金额上
+            if _scale < 1.0:
+                tgt = tgt * _scale
+            qty = int(tgt // (entry * 100)) * 100
+            if qty <= 0:
+                continue
+            cost = qty * entry * (1 + cfg.cost_pct)
+            if cost > cash:
+                qty = int((cash / (1 + cfg.cost_pct)) // (entry * 100)) * 100
+                if qty <= 0:
+                    continue
+                cost = qty * entry * (1 + cfg.cost_pct)
+            cash -= cost
+            positions[code] = {
+                "qty": qty, "entry": entry, "entry_day": i,
+                "peak": entry,
+                "stop_price": entry * (1 - stop_dist),
+                "target_price": entry * (1 + target_dist),
+                # 【2026-10-09 第 25 轮】建仓时点 ATR%（静态 ATR 止损用，研究开关）
+                "entry_ap": (atr_pct_arr[code][i]
+                             if (atr_pct_arr.get(code) is not None
+                                 and i < len(atr_pct_arr[code])) else 0.0),
+            }
+        pending = []
+
+        # ================= B) 离场检查（今日 high/low/close） =================
+        for code in list(positions.keys()):
+            pos = positions[code]
+            # A 股 T+1：建仓当日不可卖出（仅持仓，次日才能离场）。
+            # 原实现里 A 段刚建的仓立即就能在本段被止损/破位卖出。
+            if cfg.t1_restriction and pos["entry_day"] == i:
+                # 仍跟踪峰值（影响后续吊灯/移动止损），但不做离场判定
+                if panel[code]["valid"][i]:
+                    pos["peak"] = max(pos["peak"], panel[code]["high"][i])
+                continue
+            if not panel[code]["valid"][i]:
+                continue          # 停牌：持仓不动
+            hi = panel[code]["high"][i]
+            lo = panel[code]["low"][i]
+            cl = panel[code]["close"][i]
+            entry = pos["entry"]
+            pos["peak"] = max(pos["peak"], hi)
+            # 【2026-09-30 第 15 轮】观察篮「退出豁免」标记：exempt 的仓位只保留
+            # 硬止损，豁免趋势破位 / 单日暴跌 / 超时（实盘 manual_entry_exit_exempt
+            # 语义）。放在此处定义而非分支内，保证任何 exit_mode 下都有值。
+            _exempt = (cfg.lab_exempt_all
+                       or (cfg.manual_entry_exit_exempt
+                           and code in cfg.manual_entry_codes))
+            exit_price = None
+            reason = ""
+            # 组合权益回撤硬止损（防御态）：清仓全部持仓转现金
+            if (exit_price is None and cfg.equity_dd_stop_enable
+                    and eq_dd_active):
+                exit_price, reason = cl, "equity_dd_stop"
+            if cfg.exit_mode == "trend":
+                # 【2026-09-30 第 15 轮】观察篮豁免（_exempt 定义见本遍历更早处）
+                # 趋势骑行：MA20 下穿 exit_ma 或 收盘跌破 exit_ma → 离场
+                _m20 = I.last(ma20_arr[code][:i + 1])
+                _mex = I.last(ma_exit_arr[code][:i + 1])
+                # 【2026-10-12 第 26 轮】更慢离场双旋钮（默认 1 / 0.0 ⇒ 逐位等同旧行为）
+                _broken = ((_m20 and _mex and _m20 < _mex)
+                           or (cl < _mex * (1 - cfg.trend_break_buffer_pct)
+                               if _mex else False))
+                pos["_tb_streak"] = (pos.get("_tb_streak", 0) + 1) if _broken else 0
+                if (not _exempt and pos["_tb_streak"]
+                        >= max(1, int(cfg.trend_break_confirm_days))):
+                    exit_price, reason = cl, "trend_break"
+                elif (cl / entry - 1) <= cfg.hard_stop_pct:
+                    exit_price, reason = cl, "hard_stop"
+                elif not _exempt and (i >= 1 and panel[code]["close"][i - 1] > 0
+                      and (cl / panel[code]["close"][i - 1] - 1) * 100
+                      <= cfg.down_day_exit_pct):
+                    # ---- LAB H-B（T4 2026-11-10）：盈利仓豁免「单日暴跌清仓」----
+                    if (entry > 0
+                            and (cl / entry - 1.0) >= cfg.lab_b_profit_exempt):
+                        pass      # 不清仓：交给 hard_stop / trend_break / timeout
+                    else:
+                        exit_price, reason = cl, "crash"
+                elif cfg.trend_trailing and entry > 0:
+                    # 宽幅移动止损：浮盈足够后从峰值回撤即锁定利润
+                    pnl = cl / entry - 1
+                    if pnl >= cfg.trend_trail_activation:
+                        trail = pos["peak"] * (1 + cfg.trend_trail_stop)
+                        floor = entry * (1 + cfg.trend_trail_floor)
+                        if trail < floor:
+                            trail = floor
+                        if lo <= trail:
+                            exit_price, reason = trail, "trend_trail"
+                # 【2026-10-09 第 25 轮 PM-EVOLVE】趋势模式 ATR 止损（研究开关）
+                # 见 BacktestConfig.trend_atr_stop_mult 的完整背景。默认 0.0 ⇒ 不进入。
+                elif cfg.trend_atr_stop_mult > 0 and pos.get("entry_ap", 0) > 0:
+                    _s = entry * (1 - pos["entry_ap"] * cfg.trend_atr_stop_mult)
+                    if lo <= _s:
+                        exit_price, reason = _s, "atr_stop"
+                elif cfg.trend_chandelier_mult > 0 and atr_pct_arr[code][i] > 0:
+                    # 吊灯止损：stop 随峰值上移，只升不降（与引擎 chandelier 同语义）
+                    _ch = pos["peak"] * (1 - atr_pct_arr[code][i]
+                                         * cfg.trend_chandelier_mult)
+                    pos.setdefault("chand", 0.0)
+                    if _ch > pos["chand"]:
+                        pos["chand"] = _ch
+                    if _ch > 0 and lo <= pos["chand"]:
+                        exit_price, reason = pos["chand"], "trend_chandelier"
+            elif cfg.chandelier:
+                # 吊灯止损：stop = 峰值 - atr_stop_mult * ATR；随峰值上移
+                ap = atr_pct_at(panel[code]["high"][:i + 1],
+                                panel[code]["low"][:i + 1],
+                                panel[code]["close"][:i + 1], i)
+                if ap > 0:
+                    chand = pos["peak"] * (1 - cfg.atr_stop_mult * ap)
+                    if chand > pos["stop_price"]:
+                        pos["stop_price"] = chand
+                if lo <= pos["stop_price"]:
+                    exit_price, reason = pos["stop_price"], "chandelier"
+            else:
+                # 旧逻辑：固定止损价 + 目标价 + 可选移动止损
+                sl_price = pos["stop_price"]
+                if lo <= sl_price:
+                    exit_price, reason = sl_price, "stop_loss"
+                tp_price = pos["target_price"]
+                if exit_price is None and hi >= tp_price:
+                    exit_price, reason = tp_price, "take_profit"
+                if exit_price is None and cfg.trailing and entry > 0:
+                    if (pos["peak"] - entry) / entry >= cfg.trailing_activation:
+                        trail = pos["peak"] * (1 + cfg.trailing_stop)
+                        floor = entry * (1 + cfg.trailing_floor)
+                        trail = max(trail, floor)
+                        if lo <= trail:
+                            exit_price, reason = trail, "trailing"
+            # 市场状态转差 → 强制清仓（防御，可选）
+            # tailhedge 模式：防御态恒强制清仓（资本保全），与 regime_force_exit 解耦
+            if (exit_price is None
+                    and (cfg.regime_force_exit or cfg.regime_mode == "tailhedge")
+                    and not regime_ok[i]):
+                exit_price, reason = cl, "regime_exit"
+            # 超时（趋势模式放长到 trend_max_hold_days）
+            _hold_cap = (cfg.trend_max_hold_days if cfg.exit_mode == "trend"
+                         else cfg.max_hold_days)
+            # 观察篮豁免：也不受最长持仓天数约束（实盘同语义）
+            if (exit_price is None and not _exempt
+                    and (i - pos["entry_day"]) >= _hold_cap):
+                exit_price, reason = cl, "timeout"
+            if (exit_price is not None and cfg.exit_next_open
+                    and reason == "trend_break" and i < n - 1):
+                # 顺延到次日开盘成交（默认关闭 ⇒ 本分支不进入，零行为变化）
+                _deferred_trend_exit.append(code)
+                continue
+            # 【2026-10-21 B9】跌停禁卖（limit_up_block=True 时才进入，默认零行为变化）
+            # 语义：跌停封死（当日 low 触及跌停价）时卖单无法成交 ⇒ 顺延到下一交易日，
+            #   持仓保留、次日 B 段重新判定（见 docs/Spec_B9_backtest_realism.md）。
+            #   前收用 panel 已有的 close[i-1] 自算；顺延不改 entry，只推迟成交。
+            if (exit_price is not None and cfg.limit_up_block
+                    and i > 0 and panel[code]["low"][i] > 0):
+                _pc = panel[code]["close"][i - 1]
+                if _pc > 0:
+                    _ld = _limit_price_from_prev_close(
+                        _pc, _limit_pct_for(code, cfg), "down")
+                    if panel[code]["low"][i] <= _ld:
+                        limit_blocked_sell += 1
+                        continue          # 跌停封死 → 顺延（持仓保留，明日重判）
+            if exit_price is not None:
+                cash += pos["qty"] * exit_price * (1 - cfg.cost_pct)
+                net_entry = entry * (1 + cfg.cost_pct)
+                net_exit = exit_price * (1 - cfg.cost_pct)
+                trades.append({
+                    "code": code,
+                    "pnl_pct": (net_exit - net_entry) / net_entry,
+                    "hold": i - pos["entry_day"], "reason": reason,
+                })
+                # ---- 连亏降仓代理：与 RiskManager.on_fill 同语义 ----
+                # 亏损卖出 → 连亏 +1；盈利卖出 → 归零。达到 halt 阈值即置熔断。
+                if cfg.consec_loss_scale and not cfg.consec_loss_batch:
+                    # 实盘现状：逐笔计数（同批退出被计成 N 次连亏）
+                    if net_exit < net_entry:
+                        _consec_loss += 1
+                    elif net_exit > net_entry:
+                        _consec_loss = 0
+                    if (_consec_loss >= cfg.consec_loss_halt
+                            and _halt_bar is None):
+                        _halt_bar = i
+                elif cfg.consec_loss_scale and cfg.consec_loss_batch:
+                    # 修复变体：只累计金额，等下一交易日开市前一次性判定（1 次/日）
+                    _batch_pnl += (net_exit - net_entry) * pos["qty"]
+                # ---- 日内已实现亏损熔断：累计本 bar 已实现盈亏（实盘 _daily_pnl）----
+                if cfg.daily_loss_halt:
+                    _dl_day_pnl += (net_exit - net_entry) * pos["qty"]
+                last_exit_day[code] = i   # 再入场冷静期：记录最后离场日
+                del positions[code]
+
+        # ================= C) 生成信号（今日收盘）→ 明日开盘执行 =================
+        # 市场状态闸门：状态不佳时不开新仓（已有持仓按原规则管理）
+        # rm_halted：实时 RiskManager −10% 全局暂停（忠实建模 live 行为），
+        # 熔断期间只拦新开仓，已有持仓照常走离场逻辑。
+        if (len(positions) < cfg.max_positions and i < n - 1 and regime_ok[i]
+                and not (cfg.equity_dd_stop_enable and eq_dd_active)
+                and not rm_halted):
+            # ---- 【2026-09-30 第 15 轮】观察篮代理：绕过一切信号闸门优先占槽 ----
+            # 实盘语义：篮子里的代码不经过动量排名 / 日线闸门 / 评分阈值 /
+            # min_signals，直接调用 _handle_buy ⇒ 只受现金、max_positions、
+            # 单标的金额上限、风控熔断约束。此处按同一优先级建模：
+            # 先定篮子要占的槽位，再把**剩下的**槽位留给动量候选。
+            _basket_todo: list = []
+            if cfg.manual_entry_codes:
+                _rem_cap = cfg.max_positions - len(positions)
+                for _c in cfg.manual_entry_codes:
+                    if len(_basket_todo) >= min(cfg.manual_entry_slots, _rem_cap):
+                        break
+                    if _c not in panel or _c in positions:
+                        continue
+                    if not panel[_c]["valid"][i]:
+                        continue                     # 停牌不入
+                    _basket_todo.append(_c)
+            _mom_slots = (cfg.max_positions - len(positions)
+                          - len(_basket_todo))
+            # 动量闸门：只交易动量前 N 名（且动量>0）
+            allowed = None
+            mom_val: Dict[str, float] = {}
+            _raws: Dict[str, float] = {}   # LAB：动量分位（H-A 用）
+            if cfg.momentum_rank:
+                lb = int(cfg.momentum_lookback)
+                # 指数区间涨幅（residual 口径用；取不到则退化为 raw）
+                idx_ret = None
+                if cfg.mom_metric == "residual" and regime_panel:
+                    _ic = regime_panel["close"]
+                    if i >= lb and _ic[i] > 0 and _ic[i - lb] > 0:
+                        idx_ret = _ic[i] / _ic[i - lb] - 1
+                # ---- 【PM-EVOLVE R31 2026-10-14】弱市「相对动量门槛回退」 ----
+                # 旧路径是「一遍算 raw 一遍按绝对门槛过滤」。改为**两遍**：
+                # 先把全宇宙 raw 收齐，再决定当日生效门槛 —— 这是回退机制能
+                # 看见「宇宙整体强弱」的前提（单遍无法知道通过数）。
+                # mom_rel_fallback=0（默认）时两遍与旧单遍**逐位相同**。
+                _raws: Dict[str, float] = {}
+                for code, d in panel.items():
+                    cc = d["close"]
+                    if i < lb or cc[i] <= 0:
+                        continue
+                    base = cc[i - lb]
+                    if base <= 0:
+                        continue
+                    _raws[code] = cc[i] / base - 1
+                _thr = float(cfg.momentum_min_mom)
+                # ---- regime 恢复快通道：确认后放宽动量门槛（仅放宽，不改其它）----
+                if cfg.recovery_fastpath and i < len(rf_relax_active) and rf_relax_active[i]:
+                    _thr = float(cfg.rf_mom_threshold)
+                if cfg.mom_rel_fallback > 0 and _raws:
+                    # 触发条件：绝对门槛下通过数 < 入场宽度要求（min_passing_candidates）
+                    _need = max(1, int(cfg.min_passing_candidates or 1))
+                    _n_abs = sum(1 for v in _raws.values() if v > _thr)
+                    if _n_abs < _need:
+                        _vals = sorted(_raws.values())
+                        _q = max(0.0, min(100.0, float(cfg.mom_rel_fallback)))
+                        _idx = int(round(_q / 100.0 * (len(_vals) - 1)))
+                        _pct = _vals[_idx]
+                        # 回退门槛 = 分位值（弱市里必然 < 绝对门槛），再夹到下限
+                        _thr = max(min(_thr, _pct), float(cfg.mom_rel_floor))
+                moms = []
+                for code, raw in _raws.items():
+                    d = panel[code]
+                    cc = d["close"]
+                    if raw <= _thr:
+                        continue          # 入池条件：动量必须高于当日生效门槛
+                    if cfg.mom_metric == "sharpe":
+                        seg = cc[i - lb:i + 1]
+                        rr = [seg[k] / seg[k - 1] - 1
+                              for k in range(1, len(seg)) if seg[k - 1] > 0]
+                        if len(rr) < 10:
+                            continue
+                        mu = sum(rr) / len(rr)
+                        sd = math.sqrt(sum((x - mu) ** 2 for x in rr) / len(rr))
+                        val = (mu / sd) if sd > 0 else 0.0
+                    elif cfg.mom_metric == "residual" and idx_ret is not None:
+                        val = raw - idx_ret
+                    else:
+                        val = raw
+                    moms.append((val, code))
+                moms.sort(reverse=True)
+                if cfg.moneyflow_mode == "rank" and mf_net:
+                    # 新数据轴：在动量候选池内按 (价格动量分, 主力净流分) 混合重排，
+                    # 再取前 N —— 让资金流强势但动量略弱的名字也能入选，突破纯动量候选集。
+                    # 注：line 1107 的「scored 重排」仅在已截断池内调序、无法改变入选集合，
+                    # 故真正的融合必须在此处（候选生成）完成。moneyflow_mode=off 时完全不改路径。
+                    fv = {}
+                    for _val, code in moms:
+                        arr = mf_net.get(code)
+                        lo = max(0, i - int(cfg.moneyflow_window))
+                        seg = [x for x in (arr[lo:i + 1] if arr else []) if x is not None]
+                        fv[code] = sum(seg) if seg else 0.0
+                    by_flow = sorted(moms, key=lambda t: fv[t[1]], reverse=True)
+                    flow_rank = {c: r for r, (_, c) in enumerate(by_flow)}
+                    score_rank = {c: r for r, (_, c) in enumerate(moms)}
+                    wt = max(0.0, min(1.0, float(cfg.moneyflow_weight)))
+                    blended = sorted(
+                        moms,
+                        key=lambda t: wt * flow_rank[t[1]] + (1.0 - wt) * score_rank[t[1]],
+                    )
+                    allowed = set(c for _, c in blended[:cfg.momentum_top_n])
+                else:
+                    allowed = set(c for _, c in moms[:cfg.momentum_top_n])
+                mom_val = {c: v for v, c in moms}
+            scored = []
+            breadth_n = 0      # 全宇宙「通过全部入场门」的票数（宽度统计，研究用）
+            _lab_breadth_one = None   # LAB H-A：当日第 1 只通过者的 (score, code)
+            for code, d in panel.items():
+                if code in positions:
+                    continue
+                # ★ 宽度统计模式下**先看全宇宙**通过率（不计动量池限制）：
+                #   记广度票数后再按 ``allowed`` 决定是否真的能买（见下方 append）。
+                _need_breadth = cfg.min_passing_candidates > 0
+                _allowed_ok = allowed is None or code in allowed
+                if not _allowed_ok and not _need_breadth:
+                    continue
+                # 再入场冷静期：近期刚离场的标的，间隔不足则不重新开仓，
+                # 降低动量重排名造成的无谓换手、削减交易成本侵蚀。
+                if (cfg.reentry_cooldown > 0 and code in last_exit_day
+                        and (i - last_exit_day[code]) < cfg.reentry_cooldown):
+                    continue
+                if not d["valid"][i]:
+                    continue      # 停牌股不产生信号
+                c, h, l, v = d["close"], d["high"], d["low"], d["volume"]
+                # 「不追高」入场过滤（默认关闭，见 BacktestConfig 注释）
+                if (cfg.entry_max_day_gain_pct < 1.0 and i > 0
+                        and c[i - 1] > 0
+                        and (c[i] / c[i - 1] - 1.0) > cfg.entry_max_day_gain_pct):
+                    continue
+                # 趋势延伸度过滤（R44，默认 0.0=关闭 ⇒ 零行为变化）
+                if (cfg.entry_max_ext_ma60 > 0.0
+                        and ext60_arr[code][i] > cfg.entry_max_ext_ma60):
+                    continue
+                # 量能突破确认（全新特征，研究用）：放量 + 贴近阶段高位
+                # 才视为有效突破，过滤无量假突破（whipsaw）。仅 factor 模式生效。
+                if cfg.vol_confirm and cfg.entry_mode != "trend":
+                    if (vol_ratio_arr[code][i] < cfg.vol_confirm_mult
+                            or not near_high_arr[code][i]):
+                        continue
+                if cfg.entry_mode == "trend":
+                    # 日线突破追涨：处于日线主升 + 价格逼近 20 日新高
+                    _tu_pass = trend_up_arr[code][i]
+                    if cfg.recovery_fastpath and rf_relax_active[i]:
+                        _tu_pass = _tu_pass or trend_up_noslope_arr[code][i]
+                    if not _tu_pass:
+                        continue
+                    hi20 = max(c[max(0, i - int(cfg.trend_breakout_window)):i + 1])
+                    if c[i] < hi20 * cfg.trend_breakout_near_high:
+                        continue
+                    score = 10.0
+                else:
+                    score, factors = score_arr[code][i]
+                    # 代理建模：轮动「日内突破绕过日线闸门」（默认 99.0 关闭，
+                    # 见 BacktestConfig.breakout_bypass_gate 注释）。日线上用
+                    # 「当日涨幅 vs 昨收」代理实盘的 tick.change_pct。
+                    _bypass = (cfg.breakout_bypass_gate <= 50.0
+                               and i > 0 and c[i - 1] > 0
+                               and (c[i] / c[i - 1] - 1.0) * 100.0
+                               >= cfg.breakout_bypass_gate)
+                    if not (_bypass and cfg.breakout_bypass_score):
+                        if score < cfg.buy_score_threshold:
+                            continue
+                        if sum(1 for x in factors.values() if x > 0) < cfg.min_signals:
+                            continue
+                    if cfg.use_gate and not _bypass and not (
+                            (trend_up_noslope_arr[code][i]
+                             if (cfg.recovery_fastpath and rf_relax_active[i])
+                             else trend_up_arr[code][i])
+                            or bias_arr[code][i] >= cfg.min_daily_bias):
+                        continue
+                # 宽度统计：无论是否在动量池内，只要通过全部入场门就算一票
+                # （默认关闭时本分支零开销、结果逐位不变）。
+                if _need_breadth:
+                    breadth_n += 1
+                    if breadth_n == 1:
+                        _lab_breadth_one = (score, code)   # LAB H-A
+                if _allowed_ok:
+                    scored.append((score, code))
+            if cfg.lab_log_daily:
+                _lab_breadth_hist[breadth_n] = (
+                    _lab_breadth_hist.get(breadth_n, 0) + 1)
+                if _lab_breadth_one is not None:
+                    _sc1_, _cd1_ = _lab_breadth_one
+                    _den_ = max(1, len(_raws))
+                    _pct1_ = 100.0 * sum(
+                        1 for _v_ in _raws.values()
+                        if _v_ < _raws.get(_cd1_, -9e9)) / _den_
+                    _lab_single_days.append(dict(
+                        date=dates[i], code=_cd1_, score=_sc1_,
+                        mom_pct=_pct1_, breadth=breadth_n))
+            scored.sort(key=lambda x: x[0], reverse=True)
+
+            # ---- 主力资金流：入场质量门(gate) / 双因子重排(rank) ----
+            if cfg.moneyflow_mode in ("gate", "rank") and mf_net:
+                w = max(1, int(cfg.moneyflow_window))
+                lo = max(0, i - w + 1)
+                if cfg.moneyflow_mode == "gate":
+                    # 质量门：要求近 w 日主力净流 > 阈值（机构 Accumulate），
+                    # 过滤「无量 / 派发」假突破。无数据则降级为不设防。
+                    thr = float(cfg.moneyflow_min_amount)
+                    gated = []
+                    for sc, code in scored:
+                        arr = mf_net.get(code)
+                        if arr is None:
+                            gated.append((sc, code))
+                            continue
+                        seg = [x for x in arr[lo:i + 1] if x is not None]
+                        trailing = sum(seg) if seg else 0.0
+                        if trailing > thr:
+                            gated.append((sc, code))
+                    scored = gated
+                else:  # rank：因子分排名 + 主力净流排名 加权
+                    items = list(scored)
+                    by_score = sorted(items, key=lambda t: t[0], reverse=True)
+                    score_rank = {c: r for r, (_, c) in enumerate(by_score)}
+                    flow_vals = {}
+                    for sc, code in items:
+                        arr = mf_net.get(code)
+                        seg = ([x for x in arr[lo:i + 1] if x is not None]
+                               if arr else [])
+                        flow_vals[code] = sum(seg) if seg else 0.0
+                    by_flow = sorted(items, key=lambda t: flow_vals[t[1]],
+                                     reverse=True)
+                    flow_rank = {c: r for r, (_, c) in enumerate(by_flow)}
+                    wt = max(0.0, min(1.0, float(cfg.moneyflow_weight)))
+                    n_items = len(items)
+                    def _blend(t):
+                        _, code = t
+                        sr = score_rank.get(code, n_items)
+                        fr = flow_rank.get(code, n_items)
+                        return wt * fr + (1.0 - wt) * sr   # 名次小=好
+                    scored = sorted(items, key=_blend)
+            # ---- 业绩预告上修（盈利修正）：入场质量门(gate) / 双因子倾斜(rank) ----
+            if cfg.earnrev_mode in ("gate", "rank") and er_net:
+                if cfg.earnrev_mode == "gate":
+                    # 质量门：近 earnrev_window 交易日内出现过"上修事件"(signed_rev>阈值)
+                    # 才开仓，过滤「无基本面催化」的纯技术突破。无上修数据(rev=0)则剔除。
+                    thr = float(cfg.earnrev_min)
+                    gated = []
+                    for sc, code in scored:
+                        arr = er_net.get(code)
+                        if arr is None:
+                            gated.append((sc, code))   # 无数据降级为不设防
+                            continue
+                        if arr[i] > thr:
+                            gated.append((sc, code))
+                    scored = gated
+                else:  # rank：因子分排名 + 上修幅度排名 加权
+                    items = list(scored)
+                    by_score = sorted(items, key=lambda t: t[0], reverse=True)
+                    score_rank = {c: r for r, (_, c) in enumerate(by_score)}
+                    rev_vals = {}
+                    for sc, code in items:
+                        arr = er_net.get(code)
+                        rev_vals[code] = arr[i] if arr is not None else 0.0
+                    by_rev = sorted(items, key=lambda t: rev_vals[t[1]],
+                                    reverse=True)
+                    rev_rank = {c: r for r, (_, c) in enumerate(by_rev)}
+                    wt = max(0.0, min(1.0, float(cfg.earnrev_weight)))
+                    n_items = len(items)
+
+                    def _blend_er(t):
+                        _, code = t
+                        sr = score_rank.get(code, n_items)
+                        rr = rev_rank.get(code, n_items)
+                        return wt * rr + (1.0 - wt) * sr   # 名次小=好
+                    scored = sorted(items, key=_blend_er)
+            # ---- 入场「宽度确认」闸门（min_passing_candidates>0 时生效）----
+            # 见 BacktestConfig.min_passing_candidates 注释：针对 R18~R20 反复
+            # 观测到的「弱段 = 低暴露 + 极少成交 + 零胜率」指纹。
+            # 只砍**新开仓**，不触碰任何退出判定 ⇒ 可与退出侧结论叠加阅读。
+            # 默认 0 → 恒不触发（零行为变化，守卫测试见
+            # tests/test_min_passing_candidates.py）。
+            _broad_half_codes: set = set()
+            if cfg.min_passing_candidates > 0 and breadth_n < int(
+                    cfg.min_passing_candidates):
+                # ---- LAB H-A（T4 2026-11-10）：单只 + 质量条件替代「≥2 只」----
+                _lab_a_ok = False
+                if (cfg.lab_a_min_score < 90.0 and breadth_n == 1
+                        and _lab_breadth_one is not None and scored):
+                    _sc1, _cd1 = _lab_breadth_one
+                    _ok_in_pool = any(c_ == _cd1 for _s_, c_ in scored)
+                    _den = max(1, len(_raws))
+                    _pct1 = 100.0 * sum(
+                        1 for _v in _raws.values()
+                        if _v < _raws.get(_cd1, -9e9)) / _den
+                    if (_ok_in_pool and _sc1 >= cfg.lab_a_min_score
+                            and _pct1 >= cfg.lab_a_min_mom_pct):
+                        _lab_a_ok = True
+                        scored = [(s_, c_) for s_, c_ in scored if c_ == _cd1][:1]
+                        if cfg.lab_a_single_half:
+                            _broad_half_codes = {_cd1}
+                if _lab_a_ok:
+                    pass          # 放行：只买这一只（半仓与否由 lab_a_single_half 决定）
+                elif (cfg.entry_half_when_one and breadth_n == 1
+                        and int(cfg.min_passing_candidates) >= 2 and scored):
+                    # 降级：仅 1 只通过全部门 → 半仓开这 1 只（不动信号质量门）。
+                    # 与 R24 trend_up_relax 放宽信号门灾难严格区分：此处只放宽仓位。
+                    _broad_half_codes = {scored[0][1]}
+                    scored = scored[:1]
+                else:
+                    scored = []
+            # ---- 分行业分散持仓（max_per_sector>0 时生效）----
+            # 在"总持仓上限"之内，进一步限制同一产业链环节最多持几只，
+            # 强制组合跨环节铺开、降低环节内隐性集中风险。
+            # 默认 max_per_sector=0 → 退化为原"取前 N 名"行为。
+            picks = []
+            if cfg.max_per_sector > 0:
+                _held_sec: Dict[str, int] = {}
+                for _c in positions:
+                    _s = SECTOR_OF.get(_c)
+                    _held_sec[_s] = _held_sec.get(_s, 0) + 1
+                _sel_sec: Dict[str, int] = {}
+                _slots = _mom_slots
+                for _score, _code in scored:
+                    if len(picks) >= _slots:
+                        break
+                    _s = SECTOR_OF.get(_code)
+                    _cur = _held_sec.get(_s, 0) + _sel_sec.get(_s, 0)
+                    if _s is not None and _cur >= cfg.max_per_sector:
+                        continue
+                    picks.append((_score, _code))
+                    _sel_sec[_s] = _sel_sec.get(_s, 0) + 1
+            else:
+                picks = scored[:max(0, _mom_slots)]
+            # 观察篮追加到 picks 末尾：与实盘一致地绕过信号闸门建仓。
+            # score 置 0.0 仅为占位（篮子不参与 momentum_weight / risk_parity 的
+            # 语义排序，wf / weight 会取 getattr 默认值 1.0）。
+            for _bc in _basket_todo:
+                picks.append((0.0, _bc))
+            # ---- ★ 板块轮动代理（rotation_enabled；默认关闭，零行为变化）----
+            # 语义对齐 engine/event_engine.py::_maybe_rotate：
+            #   仅在持仓 >= max_positions-1 时介入；(a) 差一仓 → 补强空槽；
+            #   (b) 满仓 → 批量「弱换强」（换出评分最低的持仓，换入热板块候选）。
+            #   候选 = hot 池（动量榜 top_n 之后 hot_top_n 只，**绕过动量闸门**）
+            #   ∩ 通过日线闸门（rotation_require_daily_gate=True，09-23 已落盘）
+            #   ∩ （日内突破 或 日线 BUY）。
+            if cfg.rotation_enabled and len(positions) >= cfg.max_positions - 1:
+                if cfg.momentum_rank:
+                    _hot = [c for _v, c in moms[
+                        cfg.momentum_top_n:
+                        cfg.momentum_top_n + int(cfg.rotation_hot_top_n)]]
+                else:
+                    _hot = [c for _s, c in sorted(
+                        ((score_arr[c][i][0], c) for c in panel
+                         if c in score_arr and i < len(score_arr[c])),
+                        reverse=True)]
+                _picked = set(c for _s, c in picks)
+                _rot_cands = []
+                for _hc in _hot:
+                    if _hc in positions or _hc in _picked:
+                        continue
+                    _d = panel.get(_hc)
+                    if _d is None or not _d["valid"][i]:
+                        continue
+                    # 日线闸门（实盘 _rotation_daily_gate_ok）
+                    if cfg.rotation_require_daily_gate and not (
+                            trend_up_arr[_hc][i]
+                            or bias_arr[_hc][i] >= cfg.min_daily_bias):
+                        continue
+                    _cc = _d["close"]
+                    _brk = (i > 0 and _cc[i - 1] > 0
+                            and (_cc[i] / _cc[i - 1] - 1.0) * 100.0
+                            >= cfg.rotation_intraday_breakout_pct)
+                    _sc, _fac = score_arr[_hc][i]
+                    _buy = (_sc >= cfg.buy_score_threshold
+                            and sum(1 for x in _fac.values() if x > 0)
+                            >= cfg.min_signals)
+                    if not (_brk or _buy):
+                        continue
+                    _rot_cands.append((_sc, _hc, _brk))
+                _rot_cands.sort(key=lambda x: x[0], reverse=True)
+                # (a) 补强空槽：把普通路径**没填满**的槽位用热板块候选补上
+                if cfg.rotation_fill_empty_slot:
+                    _rem = cfg.max_positions - len(positions) - len(picks)
+                    for _sc, _hc, _brk in _rot_cands[:max(0, _rem)]:
+                        if _hc in _picked:
+                            continue
+                        picks.append((_sc, _hc))
+                        _picked.add(_hc)
+                # (b) 弱换强：换出评分最低的可卖持仓（T+1），换入更强候选
+                if cfg.rotation_weak_to_strong:
+                    _swaps = 0
+                    _queued = set(rot_sell_pend)
+                    for _sc, _hc, _brk in _rot_cands:
+                        if _swaps >= int(cfg.rotation_max_swaps_per_eval):
+                            break
+                        if _hc in _picked:
+                            continue
+                        _weak, _wsc = None, float("inf")
+                        for _pc, _pp in positions.items():
+                            if _pc in _queued:
+                                continue
+                            if (cfg.t1_restriction and _pp["entry_day"] == i
+                                    and not cfg.rotation_oversize_on_t1_block):
+                                continue     # T+1 锁死，不能换出
+                            _psc = (score_arr[_pc][i][0]
+                                    if _pc in score_arr
+                                    and i < len(score_arr[_pc]) else 0.0)
+                            if _psc < _wsc:
+                                _wsc, _weak = _psc, _pc
+                        if _weak is None:
+                            break
+                        _gap = (cfg.rotation_min_score_gap_hot if _brk
+                                else cfg.rotation_min_score_gap)
+                        if _sc - _wsc < _gap:
+                            continue
+                        rot_sell_pend.append(_weak)
+                        _queued.add(_weak)
+                        picks.append((_sc, _hc))
+                        _picked.add(_hc)
+                        _swaps += 1
+            # 动量排名加权：在前 N 名新入选里，按动量降序赋 rank-weight
+            # （最强者更大、最弱者更小，均值=1），把资本集中于动量最确定的名字。
+            wf_map: Dict[str, float] = {}
+            if cfg.momentum_weight and cfg.momentum_rank and mom_val and picks:
+                _pw = float(getattr(cfg, "momentum_weight_pow", 1.0) or 1.0)
+                wf_map = momentum_rank_weights(
+                    [c for _, c in picks], mom_val, pow_=_pw)
+            # 横截面风险平价（资本倾斜，全新特征，研究用）：新入选名字按 ATR%
+            # 倒数分配权重（低波动拿更多、高波动拿更少），在总风险预算不变下
+            # 降低组合波动。权重之和=1，单名权重<=1，仅缩小、不放大，安全。
+            rp_map: Dict[str, float] = {}
+            if cfg.risk_parity and picks:
+                _inv = {}
+                for _, code in picks:
+                    a = atr_pct_arr[code][i]
+                    if a and a > 0:
+                        _inv[code] = 1.0 / a
+                if _inv:
+                    _tot = sum(_inv.values())
+                    for code, v in _inv.items():
+                        rp_map[code] = v / _tot
+            for score, code in picks:
+                d = panel[code]
+                ap = atr_pct_arr[code][i]
+                if ap <= 0:
+                    ap = abs(cfg.stop_loss)
+                # 仓位用真实止损距离（趋势模式开启 trend_vol_sizing 时）
+                if cfg.exit_mode == "trend" and cfg.trend_vol_sizing:
+                    # 真实趋势止损 = 宽幅硬止损 或 atr×6（与引擎 _handle_buy 一致）
+                    stop_dist = max(abs(cfg.hard_stop_pct), ap * 6.0)
+                else:
+                    stop_dist = max(abs(cfg.stop_loss), ap * cfg.atr_stop_mult)
+                pending.append({
+                    "code": code,
+                    "signal_day": i,     # 信号生成日（成交日的前一交易日）
+                    "stop_dist": stop_dist,
+                    "target_dist": max(abs(cfg.take_profit), ap * cfg.tp_atr_mult),
+                    "wf": wf_map.get(code, 1.0) * (0.5 if code in _broad_half_codes else 1.0),
+                    "weight": rp_map.get(code, 1.0),
+                })
+
+        # ================= D) 标记权益（今日收盘） =================
+        mv = 0.0
+        for code, pos in positions.items():
+            mv += pos["qty"] * panel[code]["close"][i]
+        equity = cash + mv
+        if cfg.lab_log_daily:
+            _lab_daily.append(dict(
+                date=dates[i], cash=cash, mv=mv, equity=equity,
+                n_pos=len(positions),
+                invested=(mv / equity if equity > 0 else 0.0)))
+        if equity > peak_equity:          # 组合级 DD 控制：更新净值峰值
+            peak_equity = equity
+        # ---- 实时 RiskManager −10% 全局暂停建模（忠实复现 live 行为）----
+        # on_asset_update 在净值自峰值回撤 <= max_drawdown_pct 时永久熔断，
+        # 无自动恢复。recoverable=True 时净值创新高即解除（建议的修复方向）。
+        if cfg.rm_dd_pause_pct < 0 and equity > 0:
+            _rm_dd = equity / peak_equity - 1.0
+            if rm_halted:
+                # 【2026-10-19 R38】生产语义：冷却 rm_dd_pause_bars 根后**无条件**
+                # 解除并重置峰值（向 risk/manager.py::_maybe_recover 对齐）。
+                # 旧语义（创新高才解除）保留在 else 分支，默认路径逐位不变。
+                if cfg.rm_dd_pause_bars > 0:
+                    if rm_halted_bars >= cfg.rm_dd_pause_bars:
+                        rm_halted = False
+                        rm_halted_bars = 0
+                        peak_equity = equity   # 重置回撤基线（与生产一致）
+                elif cfg.rm_dd_pause_recoverable and equity >= peak_equity:
+                    rm_halted = False      # 创新高解除（可恢复式断路器）
+            elif _rm_dd <= cfg.rm_dd_pause_pct:
+                rm_halted = True
+                rm_halted_ever = True
+                rm_halted_bars = 0
+        if rm_halted:
+            rm_halted_days += 1
+            if cfg.rm_dd_pause_bars > 0:
+                rm_halted_bars += 1
+        # ---- 组合权益回撤硬止损状态机（两段式）----
+        # 入场门看「峰值回撤」：净值自峰值回撤超 stop_pct → 进入防御态（清仓）。
+        # 离场门看「低点反弹」：防御态内自 trough 反弹超 resume_pct 或创新高
+        # → 解除防御、以反弹后价位重置参考峰值。解耦规避「出得来回不去」。
+        if cfg.equity_dd_stop_enable:
+            if eq_dd_active:
+                if eq_dd_trough is None or equity < eq_dd_trough:
+                    eq_dd_trough = equity
+                bounce = (equity / eq_dd_trough - 1.0) if eq_dd_trough > 0 else 0.0
+                if bounce >= cfg.equity_dd_resume_pct or equity >= peak_equity:
+                    eq_dd_active = False
+                    eq_dd_trough = None
+                    peak_equity = equity   # 重置参考峰值到反弹后价位
+            else:
+                cur_dd = (equity / peak_equity - 1.0) if peak_equity > 0 else 0.0
+                if cur_dd <= cfg.equity_dd_stop_pct:
+                    eq_dd_active = True
+                    eq_dd_trough = equity
+        equity_curve.append(equity)
+        if prev_equity > 0:
+            daily_rets.append(equity / prev_equity - 1)
+        # ---- 日内强平（daily_stop_flatten_pct）判定 ----
+        # 实盘以「开盘资产口径（含隔夜重估）」算当日亏损，达阈值即置
+        # flatten_requested + 停牌，引擎次日开盘强平全部可卖持仓。
+        # 日线代理：用「昨日收盘权益」近似开盘资产，触发则次日开盘清仓。
+        if cfg.daily_stop_flatten_pct > -90.0 and _prev_close_equity > 0:
+            _dlp = (equity - _prev_close_equity) / _prev_close_equity
+            if _dlp <= cfg.daily_stop_flatten_pct:
+                _flatten_today = True
+                if cfg.daily_loss_halt and _dl_halt_bar is None:
+                    _dl_halt_bar = i        # 同时停牌（实盘 _halt）
+        _prev_close_equity = equity
+        prev_equity = equity
+        if positions:
+            days_in_market += 1
+
+    # ============================== 指标 ==============================
+    def _curve_stats(curve: List[float], periods: int) -> dict:
+        tot = curve[-1] / curve[0] - 1 if curve and curve[0] else 0.0
+        yrs = periods / 245.0
+        cg = ((curve[-1] / curve[0]) ** (1 / yrs) - 1) if (yrs > 0 and curve[0] > 0) else 0.0
+        pk, dd = curve[0], 0.0
+        for e in curve:
+            pk = max(pk, e)
+            dd = min(dd, e / pk - 1)
+        rr = [curve[k] / curve[k - 1] - 1
+              for k in range(1, len(curve)) if curve[k - 1] > 0]
+        m = sum(rr) / len(rr) if rr else 0.0
+        vr = (sum((x - m) ** 2 for x in rr) / len(rr)) if len(rr) > 1 else 0.0
+        sd = math.sqrt(vr)
+        sh = (m / sd * math.sqrt(245)) if sd > 0 else 0.0
+        # Sortino：只罚下行波动
+        dn = [x for x in rr if x < 0]
+        dsd = math.sqrt(sum(x * x for x in dn) / len(dn)) if dn else 0.0
+        so = (m / dsd * math.sqrt(245)) if dsd > 0 else 0.0
+        return {"total_return": tot, "cagr": cg, "max_drawdown": dd,
+                "sharpe": sh, "sortino": so, "vol": sd * math.sqrt(245)}
+
+    bars = n - WARMUP
+    st = _curve_stats(equity_curve, bars)
+
+    # ---- 等权买入持有基准（同窗口，含一次买入成本）----
+    bench_curve = [1_000_000.0]
+    valid_codes = [c for c in panel
+                   if panel[c]["close"][WARMUP] > 0 and panel[c]["valid"][WARMUP]]
+    if valid_codes:
+        w = 1_000_000.0 / len(valid_codes) * (1 - cfg.cost_pct)
+        base_px = {c: panel[c]["close"][WARMUP] for c in valid_codes}
+        for i in range(WARMUP, n):
+            tot = sum(w * panel[c]["close"][i] / base_px[c] for c in valid_codes)
+            bench_curve.append(tot)
+    bst = _curve_stats(bench_curve, bars)
+
+    wins = [t for t in trades if t["pnl_pct"] > 0]
+    losses = [t for t in trades if t["pnl_pct"] <= 0]
+    gross_win = sum(t["pnl_pct"] for t in wins)
+    gross_loss = abs(sum(t["pnl_pct"] for t in losses))
+    reasons: Dict[str, int] = {}
+    for t in trades:
+        reasons[t["reason"]] = reasons.get(t["reason"], 0) + 1
+
+    return {
+        "config": cfg,
+        "n_stocks": len(panel),
+        "n_bars": bars,
+        "start_date": dates[WARMUP] if n > WARMUP else "",
+        "end_date": dates[-1] if dates else "",
+        "start_equity": equity_curve[0],
+        "end_equity": equity_curve[-1],
+        "total_return": st["total_return"],
+        "cagr": st["cagr"],
+        "max_drawdown": st["max_drawdown"],
+        "sharpe": st["sharpe"],
+        "sortino": st["sortino"],
+        "vol": st["vol"],
+        "calmar": (st["cagr"] / abs(st["max_drawdown"])) if st["max_drawdown"] else 0.0,
+        "n_trades": len(trades),
+        "win_rate": len(wins) / len(trades) if trades else 0,
+        "avg_win": (gross_win / len(wins)) if wins else 0,
+        "avg_loss": (-gross_loss / len(losses)) if losses else 0,
+        "profit_factor": (gross_win / gross_loss) if gross_loss > 0 else 0.0,
+        "avg_hold": (sum(t["hold"] for t in trades) / len(trades)) if trades else 0,
+        "exposure": days_in_market / bars if bars else 0.0,
+        "exit_reasons": reasons,
+        "equity_curve": equity_curve,
+        "lab_daily": _lab_daily,
+        "lab_breadth_hist": _lab_breadth_hist,
+        "lab_single_days": _lab_single_days,
+        # 基准
+        "bench_return": bst["total_return"],
+        "bench_sharpe": bst["sharpe"],
+        "bench_mdd": bst["max_drawdown"],
+        "bench_cagr": bst["cagr"],
+        "bench_curve": bench_curve,
+        "alpha": st["total_return"] - bst["total_return"],
+        # 实时 RiskManager −10% 全局暂停建模指标（研究用，默认 0）
+        "rm_halted_ever": rm_halted_ever,
+        "rm_halted_days": rm_halted_days,
+        # 涨跌停不可成交计数（B9 研究开关，默认 False 恒为 0）
+        "limit_blocked_buy": limit_blocked_buy,
+        "limit_blocked_sell": limit_blocked_sell,
+    }
+
+
+# ============================================================ 入口
+
+def _cfg_from_preset(name: str) -> BacktestConfig:
+    if name == "baseline":
+        # 原策略语义：无趋势闸门、固定 3%/10%、无移动止损、固定 5 万仓位、不计成本
+        return BacktestConfig(
+            use_gate=False, stop_loss=-0.03, take_profit=0.10,
+            atr_stop_mult=0.0, tp_atr_mult=0.0,
+            trailing=False, vol_sizing=False, max_hold_days=5,
+            cost_pct=0.0,
+        )
+    # optimized（本次优化）：日线闸门 + 趋势骑行退出 + 动量排名 + 信念仓位 + 成本
+    return BacktestConfig(
+        use_gate=True, stop_loss=-0.04, take_profit=0.12,
+        atr_stop_mult=2.0, tp_atr_mult=4.0,
+        trailing=True, trailing_activation=0.06, trailing_stop=-0.03,
+        trailing_floor=-0.005, vol_sizing=True,
+        max_hold_days=20, cost_pct=0.0015, chandelier=False,
+        down_day_exit_pct=-9.0,
+        # ---- 本次优化核心 ----
+        exit_mode="trend", trend_exit_ma=60, hard_stop_pct=-0.18,
+        trend_max_hold_days=120,
+        momentum_rank=True, momentum_top_n=6, momentum_lookback=60,
+        risk_per_trade=0.02, fixed_amount=300000.0,
+    )
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--mode", choices=["baseline", "optimized", "both"],
+                    default="both")
+    ap.add_argument("--code", default=None, help="只回测单只（用 UNIVERSE 名称）")
+    ap.add_argument("--top", type=int, default=0,
+                    help="只取市值/表现靠前的 N 只（默认全宇宙）")
+    args = ap.parse_args()
+
+    if args.code:
+        codes = [args.code]
+    else:
+        codes = list(STOCK_CODES)
+
+    modes = (["baseline", "optimized"] if args.mode == "both"
+             else [args.mode])
+
+    print("=" * 78)
+    print(f"日线回测  |  标的数={len(codes)}  |  时间≈{datetime.now():%Y-%m-%d}")
+    print("=" * 78)
+
+    results = {}
+    for m in modes:
+        cfg = _cfg_from_preset(m)
+        r = run_backtest(codes, cfg)
+        results[m] = r
+        if "error" in r:
+            print(f"[{m}] 错误: {r['error']}")
+            continue
+        print(f"\n### {m.upper()} ###")
+        print(f"  期末资产 : {r['end_equity']:,.0f}  (起始 {r['start_equity']:,.0f})")
+        print(f"  累计收益 : {r['total_return']*100:+.2f}%")
+        print(f"  年化收益 : {r['cagr']*100:+.2f}%")
+        print(f"  最大回撤 : {r['max_drawdown']*100:.2f}%")
+        print(f"  Sharpe   : {r['sharpe']:.2f}")
+        print(f"  交易次数 : {r['n_trades']}  胜率 {r['win_rate']*100:.1f}%"
+              f"  均盈 {r['avg_win']*100:+.2f}% / 均亏 {r['avg_loss']*100:+.2f}%")
+        print(f"  平均持仓 : {r['avg_hold']:.1f} 天")
+
+    if args.mode == "both" and "baseline" in results and "optimized" in results:
+        b, o = results["baseline"], results["optimized"]
+        if "total_return" in b and "total_return" in o:
+            print("\n--- 对比（优化 - 原）---")
+            print(f"  累计收益 : { (o['total_return']-b['total_return'])*100:+.2f} pt")
+            print(f"  年化收益 : { (o['cagr']-b['cagr'])*100:+.2f} pt")
+            print(f"  最大回撤 : { (o['max_drawdown']-b['max_drawdown'])*100:+.2f} pt"
+                  f"（负=更优）")
+            print(f"  Sharpe   : { o['sharpe']-b['sharpe']:+.2f}")
+            print(f"  胜率     : { (o['win_rate']-b['win_rate'])*100:+.1f} pt")
+
+
+if __name__ == "__main__":
+    main()

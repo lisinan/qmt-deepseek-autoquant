@@ -1126,3 +1126,469 @@ python scripts/seed_zone_timeline.py --to paper --apply    # 实际写（幂等�
 — 证据：`logs_paper/gate_timeline.jsonl`（868 行）· `logs/gate_timeline.jsonl`（872 行，未改）·
 `engine/observability.py:404-421` · `engine/event_engine.py:255-291,3946-3970` · `web/routes.py:121-192`
 — 发现于 主理人 2026-11-08 — `[已修，两处重启后生效]`
+
+---
+
+## 2026-11-09 08:52 · 盘前检查（距开盘 38 分钟）— 三态①准备态，2 个 P0
+
+完整报告：`reports/PREOPEN_CHECK_20261109.md`
+
+- [P0] [INFO] **熔断今天首轮必解除，回撤保护被削 7,672.90 元**：`halt_day=11-06`，`held=3 ≥ halt_recover_days=1` ⇒
+  解除时 `risk/manager.py:352-353` 无条件 `_peak_asset = total_asset` ⇒ −20% 线从 **53,962.90 抬到 46,289.99**。
+  **但存在第二结局**：若首轮券商值不新鲜（>120s）致 `_risk_total_asset()` 返 None，则解除但 peak 不重置，旧线仍有效。
+  两者差 7,672.90 元保护。**开盘首轮后请以 `/api/snapshot` 的 `risk.peak_asset` 实测确认走了哪条。**
+  — 证据：`engine_state.risk_state.halt_day=2026-11-06` · `risk/manager.py:341-353` — 发现于 主理人 2026-11-09
+
+- [P0] [FORBIDDEN→待 OWNER] **两只持仓 `open_date=null`，T+1 与建仓保护期双双失效**：`is_t1_locked(None)` 返 False
+  （`event_engine.py:94`）。今天两只都是老仓（300308 建仓 11-03）不触发；**若今天开新仓且盘中重启 ⇒ 新仓当日可卖 ⇒ 违反 T+1 的废单**。
+  修法：从 `fills` 回灌建仓日到 `engine_state`（只写 DB、不改参数、不需重启）。**未执行，等 OWNER 一句话。**
+  — 证据：`engine_state.positions[300308.SZ].open_date=null` — 发现于 主理人 2026-11-09
+
+- [P1] [INFO] **今天大概率仍是零 BUY**：`gate_funnel.momentum_pass_n=0 / universe_n=37`（live 与 paper 逐位相同），
+  `min_mom=0.15` 是最后硬卡点。⇒ 熔断即使解除，`passorder` 真实落单首验**仍无法完成**（ORDER 累计仍 0）。
+  — 证据：`/api/snapshot` gate_funnel — 发现于 主理人 2026-11-09
+
+- [P1] [INFO] **首次可动用现金仅 8,700 元，30 只候选里 11 只买得起一手**：现金 11,611.49 − 5% 缓冲 2,893.12 ⇒
+  单价上限 **87.00 元/股**，19 只（63%）一手都买不起。最便宜 600522.SH 23.15（2,315 元/手）。
+  — 证据：独立探针 `daily(trade_date=20261106)` 全量取价 — 发现于 主理人 2026-11-09
+
+- [P1] [INFO] **卖出空档仅 0.48%**：解熔后 −6% 日线（300308≈413.28）距 −18% 灾难止损 411.286 只差约 2.00 元，
+  期间两只豁免仓只停开仓不减仓。「卖出被完全拦掉」**不成立**（修正 risk-controller-4 初稿）。
+  — 证据：`engine_state.positions[300308].stop_price=411.286` · `settings.py:exit_exempt_codes` — 发现于 risk-controller-4 / 主理人复核 2026-11-09
+
+- [P1] [SAFE 已处置] **观察区 5001 与看板 5002 进程已死，本次已拉起**：`logs_paper/engine.pid` 仍写 5416 但进程不存在。
+  已用 `QMT_ZONE=paper QMT_QUOTE_SOURCE=auto` 重启 paper（首包 22.4s 冷启动后就绪，候选池 30 只 @08:45:48），看板 5002 0.002s。
+  `scripts/startup_all.bat` **仍无 paper/看板分支** ⇒ 每次整机重启都要人工拉起（见下方 22:40 挂起项）。
+  — 证据：`tasklist` 仅 17488 · `curl :5001` `:5002` — 发现于 主理人 2026-11-09
+
+- [P2] [INFO] 北向缓存陈旧 76 天（fail-open）、分钟线预热就绪 1/38（tushare stk_mins 限频 1 次/小时，评分走日线不受影响）、
+  交易日历不可用按周内判定（今天周一判定正确）。
+  — 证据：`logs/quant_system.log` 08:40-08:43 — 发现于 主理人 2026-11-09
+
+- [P2] [INFO] **两项历史疑点已验证无碍**：① `mock_trade_block_reason()` 首行 `data_mode != "mock" → return None`
+  （`event_engine.py:81`）仍在 ⇒ tushare 不会被误判成 mock 全禁单；② 桥的 `m_dTotalAsset=137,321.50` 坏值已被
+  `_total_asset_of()` 拦下，回落 cash+市值 57,862.49，与账本差 0.08（佣金）。
+  — 证据：`C:/pazq_qmt_bridge/boot.log` 08:41:01 — 发现于 主理人 2026-11-09
+
+- [P1] [INFO] **桥本身正常**（重要澄清）：`XtItClient.exe` pid 19364（969 MB）存活，心跳 **age=1 秒**、`rev=2026-11-08T21:31-mv-from-positions`，
+  引擎 `broker_connected=True`（`broker_bridge.py:46` 阈值 6s）。**桥不需要任何操作。**
+  — 证据：`heartbeat.json` mtime 08:47:11 — 发现于 主理人 2026-11-09
+
+- [P0] [FORBIDDEN-待 OWNER] **桥的总资产漏加冻结资金（frozen），挂单未成交会造成假回撤**：
+  `qmt_bridge/qmtide_bridge.py:614 derived = cash + mv`，而 `cash` 取的是 `m_dAvailable`（**可用**），
+  `frozen`（`:577` 单独返回）**没有计入**。现在 frozen=0 无差；**一旦今天挂出未成交买单，可用资金下降而冻结未加回
+  ⇒ total_asset 被低估 ⇒ 假回撤 ⇒ 可能触发 `daily_stop_flatten_pct=-6%` 与 daily_limit 熔断**（与 11-02「−89.25% 假亏→强平」同类机制）。
+  **实际后果评估**：两只持仓都在 `exit_exempt_codes` ⇒ 强平提交 0 手 ⇒ **不会造成真实亏损，只会让当日停开仓空转**。
+  修法 `derived = cash + frozen + mv`，需改 QMT 侧代码 + 重新部署 + 在 QMT 里重跑策略 ⇒ **开盘前无法完成，只能登记 + 监控**。
+  — 证据：`qmtide_bridge.py:546/577/614` · 发现于 live-ops-engineer-zone 2026-11-09（主理人已复核代码）
+
+- [P1] [INFO] **熔断解除的时机已在买入决策之前，所以大概率走「重置 peak」分支**：`_run_once` 内
+  `_sync_broker_positions()`（:2155）→ `risk.on_asset_update()`（:2194）→ `_maybe_recover(today, total_asset)`（manager.py:136）
+  ⇒ `_handle_buy` 读 `position_scale` 时已是 1.0。**前提是同一轮 `_risk_total_asset()` 非 None（桥活着即成立）**。
+  这修正了上一版报告「两种结局概率相当」的说法：**重置是默认路径，不重置只在桥被判断开时发生**。
+  — 证据：`event_engine.py:2155/2194` · `risk/manager.py:136` — 发现于 live-ops-engineer-zone 2026-11-09
+
+- [P1] [INFO] **09:30 首 1~2 轮可能以 `market_stale` 拒单**（不是无信号）：`MARKET_STALE_SEC=120`，
+  tushare 首轮可能带上一交易日收盘时间戳（age 数小时）⇒ 判陈旧 ⇒ `_handle_buy` 拒单；等 09:30 价刷出后自动恢复。
+  — 证据：`event_engine.py:1790/3486` · `core/tushare_quote.py:249/583-587` — 发现于 live-ops-engineer-zone 2026-11-09
+
+- [P1] [INFO] **桥判死阈值只有 2 倍余量**：`HEARTBEAT_STALE_SEC=6.0`（`broker_bridge.py:46`），实测心跳间隔
+  1.50/1.505/3.002 秒（空闲时）。若某次 poll 阻塞 >6s（如 `passorder` 阻塞）⇒ 引擎判 bridge 断开 ⇒
+  `_sync_broker_positions` 首行 return ⇒ 券商口径停更 ⇒ 熔断/强平判定跳过（不会瞎下单，但会"看不见账户"）。
+  **今日 watch 点**：`C:/pazq_qmt_bridge/heartbeat.json` 的 ts 间隔出现 >6s 即会打 `心跳过期（age=…）` 日志。
+  — 证据：`qmtide_bridge.py:82-83`（POLL_MS=500/HEARTBEAT_SEC=1.0）+ 实测采样 — 发现于 live-ops-engineer-zone 2026-11-09
+
+- [P2] [INFO] **两处文案会让复盘误判通道与数据质量**（不影响任何逻辑）：
+  ① `event_engine.py:1317` 硬编码 `"实盘券商已连接 (XtQuantTrader)"`，实际走 bridge；
+  ② `data_mode=tushare` 的告警写「行情可能为模拟/回退数据，仅用于自检」，而 tushare 是**真实行情**（优先级 xtdata→tushare→mock）。
+  — 证据：`engine/event_engine.py:1317/1376-1378` — 发现于 live-ops-engineer-zone 2026-11-09
+
+- [P2] [INFO] **今天开盘第一批落盘会有「11-06 → 11-09」跨日断层**：`_persist_equity` 只在 `risk_asset is not None` 时落盘，
+  11-07/11-08 两天 broker 不可用 ⇒ 全程未写 `engine_state`（ts 仍 11-06T15:04:54，wal 0 字节）。
+  对今日 EOD 复盘口径有影响，已告知 data-ledger 方向。
+  — 证据：`event_engine.py:2261-2262` · `storage/qmt.db` mtime — 发现于 live-ops-engineer-zone 2026-11-09
+
+- [P1] [INFO] **今天新买的仓位不受 `open_date=null` 影响**（修正前一版说法）：`_pos_meta` 在进程内写入
+  `open_date=datetime.now()`（`:3612`），T+1 与 30 分钟保护期对新仓照常生效。**前提：今天不再重启引擎**
+  （重启后 `_pos_meta` 丢失，从 DB 恢复时 open_date 仍为 null）。老仓的 open_date=null 在 DB 里已无从恢复。
+  — 证据：`event_engine.py:2005/3612/4361` — 发现于 live-ops-engineer-zone 2026-11-09
+
+---
+
+## 2026-11-09 09:36 · 开盘首轮实测（零委托，原因=动量闸门；熔断已解除、peak 已重写）
+
+- [P1] [INFO] **今日零委托，唯一拦单环节是 `momentum`**：`no_entry_reason='动量闸门后候选池为空（min_mom=0.15 lookback=60 top_n=3）'`，
+  `gate_funnel` 恒为 `universe=37 / trend_up=3 / score_ok=8 / momentum_pass=0 / bias_ok=0`。
+  逐条排除：**不是** `market_stale`（桥每 4s 返回新市值）、**不是** `insufficient_cash`（cash 11,611.49 全程未动）、
+  **不是** `position_scale=0`（09:30:17 已解除为 1.0）。⇒ `passorder` 真实落单首验**继续推迟**，ORDER 累计仍 0。
+  — 证据：`/api/snapshot` no_entry_reason + gate_funnel — 发现于 live-ops-engineer-zone / 主理人复核 2026-11-09
+
+- [P0] [INFO] **熔断已于 09:30:17 解除，`peak_asset` 被重写 67,453.62 → 58,162.49**（走了「重置」分支，此前预测的默认路径）：
+  新 −20% 线 = 58,162.49×0.8 = **46,529.99**，旧线 53,962.90 ⇒ **保护被削 7,432.91 元**。
+  注意实测 reset 值是 **58,162.49** 而非预估的 57,862.49（复位瞬间按当时价重估，差 +300）。
+  `halted=False`、`position_scale=1.0`，即**今天账户已具备开仓能力**，只是没有信号。
+  — 证据：`/api/snapshot` 09:30:17 risk 段 — 发现于 live-ops-engineer-zone 2026-11-09
+
+- [P1] [INFO] **`frozen` 缺陷今天未被触发**：`frozen` 全程 **0.0**，`cash` 恒 11,611.49 未动。
+  期间 `total_asset` 的跳降（58,162.49 → 57,861.99 → 57,372.99）**全部跟随 300308 市值波动**
+  （market_value 46,250.5 → 45,761.5），不是「恰好等于一笔买入金额」的台阶。判定依据：frozen 缺陷要求 cash 下降且 frozen>0。
+  — 证据：QUERY_ASSET 四字段连续三笔原值（09:30:27 / 09:30:44 / 09:31:15）— 发现于 live-ops-engineer-zone 2026-11-09
+
+- [P1] [INFO] **心跳空洞与查询负载无关（已反证）**：开盘后 7 分钟内 QUERY_ASSET/POSITION/TRADE 各 **95 次**（≈每 4.4s 一轮），
+  而该段 `max_dts` 仅 **2.50s**、`gaps=[]`、无 PID 变更、无 init 重载。
+  ⇒ 08:52 的 20.94s 与 09:14 的 11.07s **只与 `init()` 重载相关**。今天 QMT 侧共 4 次 init，策略名后缀全不同
+  （`00030010 / 0003003 / 00030016 / 30030823`），pid 始终 17080 ⇒ **多个策略条目在同一进程内被反复加载**，
+  `WinError 183` 与「多写者争抢同一 heartbeat.json.tmp」假说一致。**需 OWNER 在 QMT 界面确认条目数并停掉多余的。**
+  — 证据：`boot.log` 四次 init 原文 + `/api/snapshot` 采样 — 发现于 live-ops-engineer-zone 2026-11-09
+
+- [P2] [INFO] **`signals` 表今日 0 行，`blocked_by` 无法交付**：最后一次写入仍是 11-03 10:59，11-06 与今天均为 0。
+  已用 `no_entry_reason` + `gate_funnel` 替代，并明确「表里没有」而非编造原因。
+  — 证据：`select count(*) from signals where ts>='2026-11-09'` = 0（7 次轮询）— 发现于 live-ops-engineer-zone 2026-11-09
+
+### 2026-11-09 09:40 开盘 10 分钟实盘复测（含此前未暴露的日内熔断路径冲突）
+
+- [P1] [BUG] **日内亏损熔断存在「判定不一致」：`can_open` 说可以开，`on_fill` 说成交即熔断。**
+  `can_open` 取 `_daily_loss_limit=max(5000, 3%×权益)=5000 元`（`risk/manager.py:222-229`）；
+  但 `on_fill` 在 abs 分支之下多挂了一个**未合并的原始 pct 兜底**（`:324-327`）：
+  `elif total_asset>0: if loss_pct <= daily_loss_limit_pct(-0.03): _halt(...)`。
+  **今天正好落在两者之间的缝里**：`daily_pnl=-1,911.00`（`total_asset` 56,251.49）= **-3.40%**，
+  已越过 -3% 却远未到 5,000 元 ⇒ `can_open` 判「可开仓」，而**只要今天成交第一笔**，`on_fill` 立即
+  以 `daily_loss_pct -3.40%` 熔断，当天再开不了第二个仓。
+  - 今日未触发的原因：`daily_trade_count=0`，`on_fill` 一次都没跑 ⇒ 不是「风控放行」，是「风控根本没被调用」。
+  - 不亏真钱：`_halt()` 只置 `_halted`，**不设 `_flatten_requested`**（`risk/manager.py:_halt`），只停开仓不强平。
+  - 建议修法（收盘后）：把 `:324-327` 的 `elif` 并进 `_daily_loss_limit` 口径，两处用**同一个函数**判定。
+  — 证据：`/api/snapshot` risk 块 09:38:xx；`risk/manager.py:222-229 / 324-327` — 发现于主理人 2026-11-09
+
+- [P1] [INFO] **盘中真实回撤 -3.26%，但风险阶梯的最严一档在 -6%（豁免名单使其不成交）**。
+  `total_asset` 56,264.49（09:39）/ `peak` 58,162.49 ⇒ **-3.26%**；同口径对旧 peak 67,453.62 是 **-16.59%**。
+  可执行阶梯：`daily_stop_flatten_pct=-6%`（3,490 元，距 1,579 元）→ 触发则请求强平全部，但两只均豁免 ⇒ 提交 0 手；
+  `300308` 灾难止损 `hard_stop_pct=-0.18` ⇒ 501.568×0.82=**411.29**，现价 432.02 距 **-4.8%**（20.73 元/股）；
+  账户熔断 `max_drawdown=-0.20` ⇒ 新线 **46,529.99**，距 **-17.30%**（旧线 53,962.90，重写后退了 7,432.90 元）。
+  — 证据：`/api/snapshot` 09:38-09:39 三次采样；`config/settings.py` RISK/STRATEGY 参数读取 — 发现于主理人 2026-11-09
+
+- [P2] [INFO] **持仓浮亏口径**：`300308` 501.568→432.02（**-13.87%**，浮亏 6,954.79），`510050` 2.879→2.906（+0.94%，+13.50）。
+  今日跌的是 300308（-3.57%），510050 微涨；`cash` 全天 11,611.49 未动。
+  — 证据：`/api/snapshot.positions` — 发现于主理人 2026-11-09
+
+- [P0] [FORBIDDEN-待 OWNER] **熔断恢复把回撤基线重置了，−20% 硬线被放宽 7,432.91 元**：11-06 日亏熔断于今日 09:30:10 自动解除，
+  `_peak_asset` 由 67,453.62 → 58,162.49（`risk/manager.py:352-353`「重置基线，避免解除后立即再熔断」）⇒ 面板回撤 −3.42%，
+  而真实峰值回撤 −16.72%；−20% 触发位由 53,962.90 降到 46,529.99，等于要真实亏损约 31% 才触发最后防线。
+  对照 `risk/manager.py:376` 僵尸解封路径**刻意不重置** peak（注释「max_drawdown 保护不弱化」）⇒ 两条恢复路径口径自相矛盾。
+  `asset_trusted=True` 不覆盖此问题：`observability.py:165-166` 只校验当期 basis==broker，不校验 peak 历史连续性。
+  — 证据：`engine_state.peak_asset=58162.49` · `risk/manager.py:352-353/376` · `logs/quant_system.log` 09:30:10 — 发现于 开盘接口预验证 2026-11-09
+
+- [P1] [INFO] **七项开盘预验证 6 PASS / 1 FAIL（预期内）**：`data_mode=tushare`（非 mock ⇒ `mock_trade_block_reason()` 不生效）、
+  `broker_connected=true`（桥心跳 age≈1s）、`halted=false`、`asset_trusted=true`、持仓 2 只已回灌（券商 available 全额）、paper 5001 在跑。
+  唯一 FAIL = `xtdata.get_full_tick → not authenticated`（大 QMT 白名单已知问题，引擎已降级 tushare，非新故障）。
+  今日 09:30~09:40 零委托、零拒单、零 market_stale；漏斗 `trend_up 3 / bias>=2 0 只` ⇒ 零成交归因为**无信号**，非接口故障。
+  — 证据：`scripts/zone_preflight.py` PASS18 WARN0 FAIL0 · `scripts/iface_probe.py` PASS30 WARN3 FAIL1 — 发现于 开盘接口预验证 2026-11-09
+
+- [P1] [INFO] **引擎与账本同刻一致（0.00%），09:36 报的 −0.19% 是时间差伪差**：09:38:17 快照 56,174.49 == 引擎同刻 56,174.49。
+  `iface_probe.py` D 段用「引擎当前值比最近一条快照」（快照间隔 ~60s），盘中波动大时会误报 >0.5%，属脚本口径问题非估值错。
+  — 证据：`equity_snapshots` 09:38:17.024212 · `/api/snapshot.total_asset` — 发现于 开盘接口预验证 2026-11-09
+
+- [P2] [INFO] **510050.SH 的 tushare 日线兜底是死路径**：`daily_context.py:151` 用 `pro.daily`，ETF 返回空表（实测 0 根）；
+  数据在 `pro.fund_daily`（203 根，末根 11-06 close 2.902）。今日靠 xtdata 本地日线兜住；xtdata 本地一旦停更则两条路全断。
+  — 证据：`strategy/daily_context.py:142-174` · 实测 `pro.daily` 0 根 / `fund_daily` 203 根 — 发现于 开盘接口预验证 2026-11-09
+
+- [P2] [INFO] **「日线更新到今天」判据在盘中不成立（口径修正）**：`_expected_last_trade_date()` 盘中返回上一交易日，
+  实测两只票末根均为 2026-11-06（300308 close 448.000 / 510050 close 2.902）= 期望值 ⇒ 日线新鲜、未滞后。
+  — 证据：`strategy/daily_context.py:176-191` — 发现于 开盘接口预验证 2026-11-09
+
+- [P0] [SAFE-待修/需重启] **权益曲线的回撤分母 `_peak_equity` 每次 live 重启都归零**（与上面那条 `risk._peak_asset` 是两个独立缺陷）：
+  `event_engine.py:565` 初值 0.0；live 以 `restore_ledger=False` 启动，`:4021` 的 `if not restore_ledger:` 分支恢复风控字段后**早退**，
+  跳过 `:4055` 的 `_peak_equity` 恢复与 `:4056` `_sanitize_restored_peaks()` ⇒ 第一次落盘即等于当日首 tick 资产（今日 58,162.49 == day_open_asset）。
+  **这解释了记忆里悬而未决的「两套 peak 差 3.74pp」**：11-06 表内 −10.48% 的分母≈64,635.7（11-05 重启后重新起算），而非真实峰值 67,453.62。
+  今日 `equity_snapshots.drawdown_pct=-0.0321`，真实峰值回撤 −16.55%。**不熔断的日子也在悄悄刷分母**，比熔断重置更常触发。
+  修法（不碰交易参数）：早退分支补 `_peak_equity = max(_credible_peak_equity(), 0)`，或 `_persist_equity` 改用 `max(_peak_equity, risk._peak_asset)`。
+  — 证据：`event_engine.py:565/3944-3949/4021-4032/4055-4056` · `engine_state.peak_equity=58162.49` — 发现于 开盘接口预验证 2026-11-09（data-ledger-auditor 定性，主理人复核代码）
+
+- [P2] [INFO] **实时价其实来自新浪，代码与面板都写「tushare」**：今日 tushare `rt_tick` 无权限，`core/tushare_quote.py` 自动走新浪实时（~8s、仅最新价、无五档）。
+  连带 `event_engine.py:1377-1379` 的告警仍写「行情可能为模拟/回退数据，仅用于自检」⇒ 对真实行情是**假警报**。不影响市价单撮合。
+  — 证据：`core/tushare_quote.py` realtime_quote · `engine/event_engine.py:1377-1379` — 发现于 开盘接口预验证 2026-11-09（live-ops-engineer 实证）
+
+- [P2] [INFO] **今日三张交易表全空 + 账本基线数字修正**：`signals`/`orders`/`fills` 今日均 0 行，与「无入场信号」互证（不是下了单没记）。
+  11-06 收盘应为 **57,862.57**、现金 **11,611.57**（记忆里 57,862.49/11,611.49 差 0.08 佣金舍入）。
+  — 证据：`storage/qmt.db` signals/orders/fills · `equity_snapshots` 11-06 末行 — 发现于 开盘接口预验证 2026-11-09
+
+- [P2] [UPDATE 09:50] 上条 P1（`on_fill` pct 冲突）**今日已休眠**：`total_asset` 回升至 57,917.49（09:46 分段最高），
+  对 `day_open_asset=58,162.49` 仅 **-0.42%**，已回到 `-3%` 线内 ⇒ 除非再跌穿 -3%，第一笔成交不会触发该分支。
+  缺陷本身未修，仍成立，只是今天大概率踩不到。
+  — 证据：`/api/snapshot` 09:46:02；live-ops-engineer-zone 720 次心跳采样 — 发现于主理人 2026-11-09
+
+### 2026-11-09 10:00 盘中收尾（盯盘任务结束点）
+
+- [P2] [INFO] **日内已转正，09:40 那份「-3.26%」是早盘瞬时值，勿作结论**：10:00:58 `total_asset=59,106.99`
+  （`day_open_asset=58,162.49` ⇒ **+1.62%**，`daily_pnl=+944.50`）；`300308` 从 432.02 反弹至 **460.40**（浮亏收窄到 -8.21%）。
+  — 证据：`/api/snapshot` 10:00:58 — 发现于主理人 2026-11-09
+
+- [P2] [INFO] **`peak_asset` 解除后「尾随新高上行」已确认**：58,162.49（09:30）→ 58,796.99（09:59）→ **59,115.99**（10:00:58）。
+  ⇒ `-20%` 线 **47,292.79**、缓冲 11,814.20 元（19.99%）。
+  **但不要读成「保护变宽」**：新口径回撤 -0.02%、真实口径（对历史峰值 67,453.62）仍是 **-12.37%**；
+  上行的是分母，不是账户。历史高点丢失这件事没有因为反弹而恢复。
+  — 证据：`/api/snapshot.risk`；`risk/manager.py:352-353` — 发现于主理人 2026-11-09
+
+- [P3] [INFO] 心跳：盘前 2 次断档（08:52:50 档 20.94s 换进程 / 09:14:40 档 11.07s 同进程重载），
+  **09:14:51 之后 46 分钟、约 2,750 次 1s 采样零缺口**（max_dts 1.51~2.50s）。
+  采样盲区 9 段合计约 280s（68 分钟的 7%），落在盲区内的 >6s 缺口会漏。— live-ops-engineer-zone 2026-11-09
+
+- [P2] [INFO] **「观察区没有数据」已完全闭环（11-09 10:01）**：`storage_paper/qmt.db` 现为 220 KB，
+  `equity_snapshots=31 / sector_recommendations=441 / signals=1 / orders=1 / fills=1`，仍在写入。
+  唯一那笔是 **09:30:52 `manual_entry(观察篮·绕过信号闸门)` 510050.SH 500 股 @2.905**（`mode=paper`，`_NoTradeBroker` 内存撮合）
+  ⇒ **不是 `passorder` 验证**，实盘落单链路仍为未验证项。
+  — 证据：`sqlite3 storage_paper/qmt.db` 只读查询 — 发现于主理人 2026-11-09
+
+- [P2] [VALIDATED] **「闸门卡点时间线是市场属性」被今日实盘数据证实**：两区 `gate_timeline.jsonl` 今日（2026-11-09）各写一行，
+  除 `source`（live/paper）与 `origin_zone` 外**逐字段相同**：`universe_n=16`、`above_ma20=7`、`above_ma60=1`、
+  `macd_ok=11`、`mom_ok=0`、`best=002415.SZ(passed_n=5, blocked_key=mom_ok, mom60=-0.0587)`。
+  ⇒ 昨晚「同一固定宇宙 + 同一份日线 ⇒ 两区应算出一模一样的行」的论证成立，分库只影响累积起点，不影响内容。
+  — 证据：`logs/gate_timeline.jsonl` 与 `logs_paper/gate_timeline.jsonl` 尾行对照 — 发现于主理人 2026-11-09
+
+- [P1] [DISPUTE] **不采纳 live-ops-engineer-zone 对 `WinError 183` 多写者假说的撤回**：他撤回的依据是「只有 1 个 QMT 实例」，
+  但那句话是我 09:19 **已经公开收回**的判断，不能再当前提。`pid` 恒定 **不能**证明单写者 ——
+  同一进程内多个策略条目各起线程写同一 `heartbeat.json`，pid 依然只有一个；今日 4 次 `init`、策略名后缀全不同
+  （`00030010 / 0003003 / 00030016 / 30030823`）正说明同一进程内被反复加载。
+  ⇒ 该假说维持「未定」，唯一判定手段仍是 OWNER 在 QMT 界面看 `_M_QMTIDE_BRIDGE*` 条目数。
+  — 证据：`boot.log` 四次 init 原文 — 主理人 2026-11-09
+
+### 2026-11-09 10:08 【P0 升级】`WinError 183` 盘中复现，已造成真实断线（根因改写）
+
+- [P0] [BUG] **`result.json` 原子写失败 → 查询超时 → 通道被判断开 → 重订阅 38 只 + 重同步持仓。今天 10:03 已发生一次。**
+  ```
+  C://pazq_qmt_bridge//boot.log
+  [10:03:24] pid=17080 result write failed: [WinError 183] result.json.tmp -> result.json
+  logs/quant_system.log
+  [10:03:34] WARNING core.broker_bridge: 桥接超时 action=QUERY_TRADE（10.0s 无 result）
+  [10:03:37] INFO 券商重连成功：已重发行情订阅(38 只)并同步持仓   broker_reconnects 1→2
+  ```
+  **根因（非多写者）**：引擎侧 `core/broker_bridge.py::_read_json` 用普通 `open()`，Windows 下不共享 `FILE_SHARE_DELETE`；
+  桥侧 `qmt_bridge/qmtide_bridge.py:254-267` 的 `os.replace(tmp,path)` 要求目标文件所有打开者都给 DELETE 共享 ⇒ 撞上即 183。
+  调用密度极高：`_request()` 每次先 `connect()`→`_heartbeat_age()` 读 heartbeat（失败还 sleep 0.01 重读一次），
+  等 result 时每 50ms 读一次 result.json。
+  **不对称**：引擎侧写 signal 的 `_atomic_write_json` 已有 8 次退避重试；桥侧写 result/heartbeat **一次重试都没有**。
+  另：`:259-267` 的 `except` 回退是 `os.remove(path)` + `os.rename`，非原子且再失败时**已删掉有效 result.json**，应删除该回退。
+  — 证据：两份日志原文 + `boot.log.1` 08:48:52 heartbeat 183（pid 19364，同一机制的另一受害文件）— 主理人 2026-11-09
+
+- [P0] [OPEN] **重复下单风险待证**：回执丢失 ≠ 未成交。若 `place_order` 超时后引擎用**新 signal_id** 重发，桥侧幂等失效 ⇒ 可能重复下单。
+  已派 release-engineer-zone 只读取证（要求给 file:line，不接受推断），结论未回。
+  — 主理人 2026-11-09
+
+- [P2] [UPDATE] **QMT 策略条目数一条从 P0 降级**：183 已由「读写共享模式竞争」完整解释，**单写者即可复现**，
+  不再需要「多个 `_M_QMTIDE_BRIDGE*` 并存」这个假说。条目数仍值得看一眼（多条目会放大 `init` 频率与心跳空洞），
+  但已不是今天唯一未闭环的解释。同时**主理人收回 09:5x 对多写者假说的坚持**。
+  — 主理人 2026-11-09
+
+- [P2] [DECISION] **`bridge_probe.py` 不批准执行（含午休）**：单槽文件桥 + 引擎实测每 1.5s 连发三条 QUERY
+  （`boot.log` 10:03:02/03/03 三条连排）⇒ 探针写入必然与引擎互相覆盖，探针只会超时，且会让引擎多误判一次断线。
+  另：`qmtide_bridge.py:577` 的 `_attr(a, ["m_dFrozenCash","m_dFrozen"], 0)` **字段缺失即回落 0**，
+  ⇒ frozen 补丁在字段不存在时自动退化为现值，**不需要前置 DUMP 验证**，验证法随之降级。
+  — 主理人 2026-11-09
+
+- [P0] [UPDATE 应答上一条「重复下单风险待证」] **机制已闭证，且真实主路径不是超时，是 `ok=True` + `order_id=None`。**
+  ① 幂等确实失效：`core/broker_bridge.py:23` 与 `:57` 两句注释声称"重发复用同一 signal_id"，而 `:213 sid = uuid.uuid4().hex`
+  每次请求都新建 ⇒ 引擎层任何重发在桥接看来都是全新一笔（`:978-982` 的跨重启黑名单也拦不到）。
+  ② 更常见的重复路径完全不经过 `ok=False`：QMT 侧 `qmt_bridge/qmtide_bridge.py:804` 在 passorder 成功后返回 `{"order_id": None}`
+  （该文件 `:769` 自述 "usually None"）⇒ `place_order:412-416` 反查 3s 若查不到 ⇒ `:419` 返回 **`ok=True, order_id=None`**
+  ⇒ `event_engine.py:3607` 判定成功、`:3616` 建乐观仓、`:3627-3629` 只打 warning 不登记跟踪
+  ⇒ 下一轮 `:4390-4397` 以券商为准把这个幻影仓归零 ⇒ 信号重新出现 ⇒ **第二次 passorder**。
+  **触发条件正是「资金不足 / 涨停无对手盘 / 柜台静默废单」——最常见的三种拒单都会走这条路。**
+  ③ 更坏一格：`place_order:413` 的 `before is not None` 意味着下单前 `QUERY_ORDER` 失败时**反查被整体跳过**，
+  必然落进 ②。桥一抖，每一笔买入都变幻影。
+  **要 OWNER 知道的一句**：这不是理论风险，是"明天开盘就可能发生、且发生时账面上完全看不出来（只留一行 warning）"的形态。
+  **今晚已批准的对策（B2d，不含守卫）**：`place_order` 增加 `submitted` 三态（True 只在真拿到 oid 时给），
+  超时/无 oid 统一落 `None` + 可 grep 的 `reason`；**BUY 侧延后到后天**（先跑一天看这条路径的真实频次）。
+  — 风控审计官 魏守线 2026-11-09
+
+- [P0] [FORBIDDEN] **今晚禁止在 `engine/event_engine.py` 给 SELL 侧加任何"在途/丢回执"守卫。**
+  理由（已量化，非原则）：300308 的 −18%（411.286）是豁免仓**唯一**的自动出场路径，靠 `:2286-2304` 每轮重试。
+  一旦被守卫按 code 封住，价格滑到 **353.863** 就触发 −20% 熔断且**仓仍在手上**：
+  从止损价再亏 **5,742.30 元 = 剩余回撤空间的 51.13%**（峰值 60,568.49，10:41 权益 59,684.49）。
+  而它要防的重复买入最坏只有 **1,552.91 元**（8,627.27 上界 × −18%）。**保护 : 代价 = 1 : 3.70，且失败方式是止损失效。**
+  — 风控审计官 魏守线 2026-11-09
+
+- [P0] [SAFE] **B2d（通道三态区分）今晚可上，条件已写明**：`signal.json` 的 payload 字段集合必须逐字节不变；
+  `_request` 既有调用点返回值不得变化；`submitted` 不得用 `False` 表示"不知道"；不得顺手收紧 `_attribute_order_id` 的松匹配；不得动 `qmt_bridge/`。
+  另：B2d 会在超时路径追加一次反查，**单轮最长由 3.015s 拉长到约 20s**（`get_orders` 自身超时 10s，`_attribute_order_id:353` 的 deadline 只在循环顶部检查）
+  ⇒ 该轮行情/退出检查被跳过 6~7 轮。已要求实现压成"最多一次尝试"。**这不是零成本改动，只是成本远小于收益。**
+  — 风控审计官 魏守线 2026-11-09
+
+- [P0] [SAFE 附加条件] **`_daily_trade_count` 口径改为 `submitted is True` 必须与「幻影退避冷却」同批上，单独上不批准。**
+  原因（量化）：现行 `if res.get("ok")` 会把 `ok=True, order_id=None` 的幻影单也计数 ⇒ 30 秒内刷满 `max_daily_trades=10`
+  ⇒ 10-30 那次闸门关 36 分 05.8 秒。但**单把计数改成不数幻影**，幻影重试就从"30 秒后被拦住"变成"每 3 秒一次、全天不停"
+  （约 4,800 次/日：4,800 次 `signal.json` 写入 + 4,800 行 `orders`，因为 `:3799` 在 ok 判断之前落库）
+  ⇒ 单槽文件桥被打满 ⇒ `get_positions` 返回 None ⇒ `_risk_asset_basis=untrusted` ⇒ `asset_untrusted` 把所有新开仓关掉。
+  **即：从"30 秒后显性关闸"变成"5 小时后隐性关闸"，且日志里看不出根因。**
+  附带条件：判据必须写 `res.get("submitted", True) is True`（默认 `True`），否则 `QMTBroker`（无该键）下计数恒不增、闸门整体失效。
+  — 风控审计官 魏守线 2026-11-09
+
+- [P0] [FORBIDDEN] **幻影重试的限幅器不得实现为「同 code 同方向每天最多 N 次」。**
+  必须是有时间属性、会自解的退避（30s→60→120→240→300 上限）。无时间属性的计数上限一旦用完，
+  就会把 300308 的 −18%（411.286，豁免仓唯一自动出场路径）**永久封死**——即我们已否决过的那条止损失效，只是换了名字。
+  — 风控审计官 魏守线 2026-11-09
+
+
+- [P0-闭合] **桥接写失败 WinError 183：根因已闭证，修复已上线并验收通过（11:24:58 写盘 / 11:37:24 重载）。**
+- 以下各块合起来才是完整结论，缺一块就会重犯「把次生错误当根因」的老毛病。
+
+  **① 三步因果链（此前一直查错方向）**
+  `os.replace(tmp, result.json)` 失败（WinError 5，被 `except Exception:` 无声吞掉）
+  → 回退 `os.remove(result.json)` 失败（PermissionError，被 `except: pass` 吞掉）
+  → 回退第二步 `os.rename(tmp, result.json)` 撞上仍存在的目标 ⇒ **`FileExistsError [WinError 183]`**。
+  **日志里那句 183 是第三步报的，不是 `os.replace` 报的。** 前三步中真正该被看见的两个错误全被静默吞掉，
+  ⇒ 过去所有排查都在追一个"只出现在错误链末端"的错。
+  实测补充（不改结论）：给足 `FILE_SHARE_DELETE` **也不能**让 `os.replace` 在目标被任何进程持句柄时成功
+  （本进程/跨进程一律 WinError 5）；共享位只能让 `os.remove` 通过。所以**主修只能是写侧重试**，
+  读侧共享位只用于堵住那条次生链的入口。至于 `os.replace` 为什么在给足共享位时仍失败（Defender / 索引器 / QMT 自身瞬时占用）
+  —— **明确列为已知未知，不深挖**：8 次退避共 0.72s 的语义本来就是"不管谁短暂占着，等它松手"。
+
+  **② 今日 183 与断线 4/4 一一对应（不是"偶发噪声"）**
+
+  | # | 183 时间戳 | 当日 `broker_reconnects` | 备注 |
+  |---|---|---|---|
+  | 1 | 10:03:24 | 1 → 2 | 盘初 |
+  | 2 | 10:23:33 | 2 → 3 | +20 min |
+  | 3 | 10:38:41 | 3 → 4 | +15 min |
+  | 4 | 11:27:30 | 4 → 5 | +49 min（**修复未生效期**，见下） |
+
+  **4 次写失败 ⇒ 4 次重连，一次不落。** 机制：写失败 ⇒ `result.json` 没更新 ⇒ 引擎等结果超时 ⇒ 重连。
+  第 4 条 11:27:30 的日志原文（`result.json.tmp` → `result.json`，正是上面的 `os.rename` 那一步）：
+  ```
+  [2026-11-09 11:27:30] result write failed: [WinError 183] 当文件已存在时，无法创建该文件。:
+                        C:/pazq_qmt_bridge/result.json.tmp -> C:/pazq_qmt_bridge/result.json
+  ```
+  这条特别有价值：11:24:58 补丁版文件**已在盘上**，但 OWNER 尚未重载 ⇒ 进程跑的仍是旧代码 ⇒ **旧代码又失败了一次**。
+  这是天然的"修复前"对照，也再次证明**只改文件不重启 = 没上线**。
+  另：间隔为 20 / 15 / 49 分钟 ⇒ **阵发型，不是定时器**。所以**不能**用"重载后 N 分钟没出现"当主判据。
+
+  **③ 上线验收四项全 PASS（11:37:24）**
+
+  | # | 判据 | 实测 | 结果 |
+  |---|---|---|---|
+  | 1 | `heartbeat.rev` 变新值 | `2026-11-09T1125-write-retry` | PASS |
+  | 2 | 出现第 2 条 `init done` 且 rev 为新值 | `11:37:24` 新条 rev=新值；旧的 `10:53:27` 留在 `boot.log.1` | PASS |
+  | 3 | 重载后新增 183 = 0 | `boot.log*` 仅 `11:27:30` 一条，早于重载时刻 | PASS |
+  | 4 | `broker_reconnects` 不再 +1 | 仍为 **5** | PASS |
+
+  附带三条硬旁证（不是从心跳倒推的）：
+  - `python=3.6.8 (default, Dec 19 2022) [MSC v.1900 64 bit]` —— QMT 内嵌解释器**实测**，
+    补丁版经它编译并跑通 `init done`。此前我们只能做静态扫描，措辞只能写"无 3.6 不支持语法"；现在可以写"实测兼容"。
+  - `poll #1 alive` → `poll #2 alive` —— `run_time 500nMilliSecond` 定时器真在跑。
+  - `[IO] ...QMTIDE_BRIDGE.py -> ctypes_ok=48066` —— 桥自己把部署版读成 **48066 字节**，
+    与写盘字节数逐字节吻合，证明进程读的就是新文件。
+  - `seen 已恢复 200 条（跨重启幂等）` —— 重启后幂等去重表仍在。
+
+  **④ 顺带关掉一个悬着的 P2**：本次重载 `boot name='_M_QMTIDE_BRIDGE_30030831'` 只起了 **1 个**条目，
+  未见同名重复启动 ⇒ "策略列表里多个残留条目互抢 signal" 这条至少在本日重载现场**不成立**。
+  原"待 OWNER 数条目"可结案。
+
+  **⑤ 还没做、留给收盘后的**：驱动脚本 `scripts/apply_b1_20261109.py` 的 `find_backup` 用 mtime 判"刚生成的备份"，
+  而备份用 `shutil.copy2`（**连 mtime 一起复制**）⇒ 刚生成的备份被判成老文件 ⇒ 自检 1 假红，
+  且**回滚分支调同一个 finder，最需要它的时候是哑的**（这次它想回滚但找不到备份，等于什么都没还原，
+  万幸补丁本身是对的）。已定位、已记录，**收盘后修 + 补守卫测试**，13:00 开盘前不动工具代码。
+  — 交付与版本工程师 毕提交 2026-11-09
+
+### 2026-11-10 11:58 盘中发现（主理人）
+
+- [P1] [SAFE] **行情从 mock 恢复后不会重建日线特征** ⇒ 启动早期行情未就绪的进程会带着合成 MA/动量/宽度跑一整天。
+  证据：`core/qmt_client.py:82-95` 的 mock 生成器（`c = o*(1+random.uniform(...))`，基准价任意）；
+  `engine/event_engine.py:617 _reattach_market_data()` 只切换实时报价源，未触发 `daily.refresh(force=True)`；
+  实测 paper 今日 09:19 `data=mock` 启动 → 09:19/09:30 两次「日线上下文刷新完成 n=40」用的都是合成序列 →
+  11:58 接口实测 paper `300308.SZ close=122.22`，而新拉真实日线 = **452.03**（同一台机、同一份代码、两个 zone 都拉到 452.03）。
+  后果：闸门逐只明细/动量/宽度全部失真；若发生在有持仓且需靠 MA60 破位退出的日子，会据假数据做退出决策。
+  live 今日 09:30–11:35 同样被污染（`trend_up 13` / `动量通过 1` 均为合成数据算出），是 11:35 重启洗掉的，非机制修复。
+  建议修法：`_reattach_market_data()` 成功切到真实源后强制 `daily.refresh(codes=..., force=True)`。
+  影响面：paper 面板全部不可信；live 仅在"启动早于行情就绪"的交易日受影响。
+
+- [P1] [SAFE] **每次引擎重启都会强制重选动态候选池** ⇒ 同一交易日上下午的池子可以不同，策略结论不可横比。
+  证据：`engine/event_engine.py:786 self.dynamic_universe.refresh(force=True)`；
+  实测 2026-11-10：09:24 池 vs 11:35 池 交集仅 **20/30**，移出 10 只全为 688 科创板、新增 10 只全为主板/创业板；
+  随之 `universe_n 43→37`、`trend_up_n 13→3`、`mom_pass_n 1→0`、`score_ok_n 25→7`。
+  处置：OWNER 2026-11-10 裁定 **A（不冻结）**，今日不修；待办是把 `refresh(force=True)` 改为「同一交易日只刷一次」。
+
+### 2026-11-10 12:15 下单前排查（主理人）
+
+- [P1] [SAFE] **同代码分笔建仓被券商合并成一个持仓 ⇒ 引擎丢失「当日新仓」的 T+1 语义**。
+  现场：`engine_state` 显示 `510050.SH qty=600 avg=2.893 open_date=2026-11-03T09:30:21`，
+  而其中 **100 股是 2026-11-10 手工买入**（`storage` 内今日 `orders=0 / fills=0`，即非经引擎成交，
+  仓位与均价来自 `_sync_broker_positions` 的券商回灌）。
+  后果：引擎认为 600 股全部可卖（open_date 为 11-03），实际券商侧只有 500 股可卖；
+  若下 `SELL 600`，券商整单或部分拒单，`_handle_sell` 的"清仓"语义与真实成交不一致。
+  当前不阻断：OWNER 指令单 `max_amount=1000`（510050 约 290 元/手），本日只会测 100 股，券商侧可满足。
+  建议修法（收盘后）：`_sync_broker_positions` 对"券商数量 > 本地已知数量"的差额单独记一个
+  `open_date=today` 的影子批次，卖出可用量 = 券商数量 − 当日新增批次；或直接按 `fills` 分笔维护批次。
+
+- [P1] [SAFE] **OWNER 指令单加仓会把整仓 `open_date` 重置为当日 ⇒ 同日老仓也卖不掉**。
+  现场 2026-11-10 13:04:40：510050.SH 原 600 股（`open_date=2026-11-03`，券商侧当日可卖 500 股）
+  加仓 100 股成交后，`Position.open_date` 被写成 `2026-11-10T13:04:40` ⇒ `is_t1_locked` 对**整仓 700 股**
+  判锁定 ⇒ 当日任何卖出请求都会被 `run_step` 的 T+1 预检拒掉（`core/owner_order.py:339-347`）。
+  券商会拒绝卖当日买入部分，所以不构成违规下单；真正的损失是"老仓也动不了"，
+  若当日暴跌需要靠止损离场，这条持仓将无法退出。
+  附注：`target_price=28.97`（=现价×10）**不是 bug**，见 `engine/event_engine.py:3578` 的 `# 实质不触发`。
+  建议修法（与 12:15 那条合并做）：按 `fills` 维护分笔批次，`open_date` 取各批次加权/最早可用批次，
+  卖出可用量 = 券商数量 − 当日新增批次。
+
+- [P0] [SAFE] **OWNER 指令单的 `lots` 在卖出方向被完全忽略 ⇒ 要卖 1 手实际卖了 5 手**（真实资金已发生）。
+  现场 2026-11-10 13:52：指令 `{"side":"SELL","lots":100}`，实际 `orders#1108 SELL 510050.SH 500股 @2.898`
+  → `fills#393` 成交 500 股 1,449.00，持仓 800 → 300，实现亏损约 −4.45 元 + 双边佣金 10 元。
+  根因：`engine/event_engine.py:3888 qty = int(pos.quantity)`，只按券商可用量夹紧，
+  **没有接受"这次卖多少"的入参** —— `_handle_sell` 的语义一直是"清仓该持仓"，
+  而 OWNER 通道按"指定股数"理解。修法：给 `_handle_sell` 加 `lots: int|None = None`，
+  None 保持清仓语义（所有既有调用点不变），OWNER 通道传 `qty`。
+- [P1] [SAFE] **OWNER 通道把 `_handle_sell` 的 False 当成"卖出失败"，但 live 分支成功下单后也返回 False**。
+  依据 `engine/event_engine.py:3932-3933` 的注释："卖出委托已提交但尚未成交：…返回 False 调用方据此不补位"。
+  于是 13:52 那笔**下单成功**的卖单在 `owner_orders_done.json` 里被记成
+  `reject / 落单口未成交（保护期/委托失败/零仓位）` —— 账本与事实相反，且 `max_per_day` 未计数。
+  修法：给落单口加一个"是否真的提交了委托"的显式回传（如 `self._last_placed_order`），
+  而不是靠布尔返回值推断。
+
+### 2026-11-10 收盘落地（主理人）
+
+- [P0-已落地] **峰值基线不再被熔断恢复下移（+4,485.95 元回撤预算）**
+  根因不是 README #3 说的「重启归零」，是 `risk/manager.py:352-353` 在**任何类型**熔断
+  解除时把 `_peak_asset` 重置为当前总资产。实证（`risk_snapshots`，两次都在 09:30:1x）：
+  11-03 66,542.31→63,207.94（−3,334.37）、11-09 67,453.62→58,162.49（−9,291.13）。
+  修复：峰值**只上不下**；「解除即再熔断」改由 `_dd_rearm_floor` 承担（解除时记当前权益，
+  再跌破才熔断），随 `risk_state` 持久化。存量值已由 61,846.18 修正为 **67,453.62**，
+  −20% 硬线 49,476.94 → **53,962.90**。备份 `storage/qmt.db.bak-peakfix-20261110-150407`
+  （`sqlite3.backup()` 一致快照，**不能** copy2 单拷主库 —— WAL 里还有最近提交）。
+
+- [P0-已落地] **未知态委托（`ok=True` 但无 `order_id`）登记占位 + 按墙钟自解**
+  `_handle_sell` 原实现只 `logger.warning` 就 `return False` ⇒ 同一退出信号每轮重发。
+  新增 `_register_unknown_order` + `_expire_unknown_orders`；**过期扫描必须在
+  `get_trades` 之前**（`if trades is None: return` 会让扫描永不执行 ⇒ `_pending_sells[code]`
+  永久占住 ⇒ 连 `force=True` 强平都被拦）。集成测试已验：11 条守卫全绿。
+
+- [P1-已落地] **宽度闸门口径对齐回测（第 20 例「回测有、实盘无」）**
+  生产数的是 momentum top_n 截断后的 BUY 数（上限恒 3，`mom_pass_n<=1` 时恒 1 ⇒ K=2
+  必然触发；今日 688981 被挡 24 次）；回测数的是**全宇宙**通过入场门的票数。
+  已改 `pool_all` 快照 + 全量池计数 + 判据切 `_breadth_n`；回滚开关
+  `STRATEGY_PARAMS["breadth_gate_basis"]="truncated"`。
+  价签：四窗收益差均值 **+11.56pt**、四窗全正、window t=+7.12（Calmar 幅度不可引用）。
+
+- [仪器缺陷-已登记] **逐折 Calmar 的小分母会把均值撑爆**（某折 MDD 3.8% ⇒ Calmar 236.89）。
+  OWNER 今日把 Calmar 定为验收口径，后续提案应改用「四窗 Calmar 符号全正 + 逐折中位数」
+  或 window 级收益差 t 值，否则任何提案都能靠「让某折 MDD 变小」通过。
+
+- [P0-待办·最优先] **假 `daily_stop` 触发强平（今日 14:17 实盘发生）**
+  14:17:21 买 510500 500 股（3,347 元）→ 14:17:36 总资产少算一个持仓（资金已扣、持仓未刷新）
+  → 读出 `daily_stop −7.04%`（真实约 −1.7%）→ 置 `_flatten_requested` 并熔断，随后每 4.5s
+  空转一次强平到收盘（实测 14:18 后 `place_order` 为 0，未再造成新损失）。
+  去抖补丁（连续 3 轮确认）已写进 `scripts/patch_20261110_v2.py::V7` 且锚点通过，但
+  `ENABLE_V7=False`：它会改风控底座语义并打破 4 条既有测试（含
+  `test_risk_asset_trust.test_positive_control_old_path_still_halts` 正向对照）。
+  **下一轮头号任务**：更新那 4 条测试 + 定确认轮数 + 补双向守卫，然后启用。
+  另：13:52:30 的 `SELL 510050 500` 是否为更早的同类假信号所致，**尚未取证**。
+
+- [观测纠正] 今日 4 笔 live 委托的 `order_id` **全部为真值**
+  （0165885057/0165954023/0165958027/0165315089）⇒ 桥侧 `_attribute_order_id` 可用，
+  「ok=True 但无 order_id」**不是**默认结局，未知态占位只是兜底。
+  此前「8 天 live 经桥委托 0 笔」的判断今日被推翻。
+
+- [验收] 全量回归 **1112 通过 / 36 失败 / 1148 例**（落盘前沙箱同构基线 1101/36/1137；
+  失败数未上升，新增 11 例全部是新守卫且全绿）。七项验收 A1~A6 全 PASS，
+  A5（宽度日志出现 `口径=universe`）需下一交易日开盘后触发才可见。
+  运行版已含本批补丁（引擎启动 15:04:12 > 全部源码 mtime）。
+
+- [待 OWNER 裁决] `risk_per_trade` 0.040→0.030（Calmar 23.68→26.31、IS MDD −12.95%→−10.58%，
+  代价 IS 收益 −28.4pt）。详见 `reports/EXPOSURE_PROPOSAL_20261110.md`。
+  在 300308 清仓前不建议动它 —— 一手即占 78.43% 权益，降 rpt 救不了存量集中度。

@@ -2957,6 +2957,9 @@ class EventEngine:
         if self.dynamic_universe is not None:
             candidate_codes.update(self.dynamic_universe.active_codes)
         candidate_codes -= INDEX_CODES
+        # 【2026-11-10 P0 第 20 例口径背离】动量截断**之前**的全量池快照。
+        # 宽度闸门必须数它，而不是截断后的 top_n=3（详见下方 _min_breadth 段注释）。
+        pool_all = set(candidate_codes)
         candidate_codes = self._apply_momentum_gate(candidate_codes)
 
         # 可观测性 + 轮换：满仓报踏空；4/5 起允许轮换补强空槽（不改变默认交易行为）
@@ -2983,6 +2986,32 @@ class EventEngine:
         #   「通过全部入场门的票数」同义；日线特征一天内不变 ⇒ 日内稳定）。
         # 热读 STRATEGY_PARAMS（不在 __init__ 缓存）⇒ 改值**无需重启**即可验证。
         _min_breadth = int(STRATEGY_PARAMS.get("min_passing_candidates", 0) or 0)
+        # 【2026-11-10 P0 第 20 例口径背离修复】宽度必须量「全宇宙通过入场门的
+        # 票数」（回测 backtest_daily.py:2104-2167 的口径），而不是动量截断后的
+        # BUY 数。原先 :2959 数 len(pending_buys) ⇒ 上限恒为 top_n=3，mom_pass_n<=1
+        # 时恒为 1 ⇒ K=2 必然触发（今日 688981 被挡 24 次）。
+        # 这里只做**计数**：不存信号、不进 pending_buys ⇒ 不改变任何落单行为。
+        # 必须用 strategy.on_daily_features（纯函数、无副作用；它不查
+        # momentum_min_mom，与回测 breadth_n 同义）。若改用
+        # daily_context.top_momentum 会再叠一层 min_mom，等于把背离复现一遍。
+        # 回滚：STRATEGY_PARAMS["breadth_gate_basis"] = "truncated"。
+        _breadth_basis = str(
+            STRATEGY_PARAMS.get("breadth_gate_basis", "universe") or "universe")
+        _breadth_scoped_universe = bool(
+            _min_breadth > 0 and _breadth_basis != "truncated")
+        _universe_buy_sigs: Dict[str, object] = {}
+        if _breadth_scoped_universe:
+            for _c in pool_all:
+                if _c in held_codes or not regime_ok:
+                    continue
+                try:
+                    _f = self.daily.features(_c) if self.daily else None
+                    _s = self.strategy.on_daily_features(_c, _c, _f)
+                except Exception as _e:          # noqa: BLE001 — 计数失败不得阻断开仓
+                    logger.debug("[宽度确认] 全量池评估失败 %s: %s", _c, _e)
+                    continue
+                if getattr(_s, "side", "") == "BUY":
+                    _universe_buy_sigs[_c] = _s
 
         best = None   # 本轮最高分候选（可观测性用）
         pending_buys: List[tuple] = []
@@ -3029,15 +3058,20 @@ class EventEngine:
                 continue
             pending_buys.append((sig, tick, _sid))
 
-        if _min_breadth > 0 and len(pending_buys) < _min_breadth:
+        _breadth_n = (len(_universe_buy_sigs)
+                      if _breadth_scoped_universe else len(pending_buys))
+        if _min_breadth > 0 and _breadth_n < _min_breadth:
             if pending_buys:
                 logger.info("[宽度确认] 本轮 BUY 信号仅 %d 只 < %d ⇒ 当日不开新仓"
-                            "（%s）", len(pending_buys), _min_breadth,
+                            "（口径=%s；%s）", _breadth_n, _min_breadth,
+                            _breadth_basis,
                             ",".join(s.code for s, _t, _i in pending_buys[:5]))
                 # 把「被宽度确认拦下」写回信号行（此前只存在于日志里，
                 # UI 与 DB 都是裸 BUY ⇒ 用户只能反推）。
+                # 前缀约定 breadth_lt_<N>( 保持不变（tests 按 startswith 搜）。
                 _reason = (f"breadth_lt_{_min_breadth}"
-                           f"(本轮仅 {len(pending_buys)} 只 BUY < {_min_breadth})")
+                           f"(本轮仅 {_breadth_n} 只 BUY < {_min_breadth}"
+                           f"；口径={_breadth_basis})")
                 _stage = _reason
                 sids = [i for _s, _t, i in pending_buys if i]
                 if sids:
@@ -3432,6 +3466,67 @@ class EventEngine:
         if side == "SELL":
             self._pending_sells[code] = str(oid)
 
+    def _register_unknown_order(self, code: str, side: str, qty: int,
+                                price: float, avg_cost: float,
+                                account: str) -> str:
+        """登记一笔「已投递但拿不到 order_id」的未知态委托（占位）。
+
+        为什么需要：文件桥的 ``passorder`` 不返回可用 order_id
+        （``qmt_bridge/qmtide_bridge.py:823``：成功也回 ``None``），而成交对账
+        完全按 order_id 匹配 ⇒ 未知态既不进 ``_pending_sells``、也无法对账
+        ⇒ 同一条退出信号每轮重发（2026-10-30 那 654 笔的形态）。
+
+        占位只做两件事：① 让 ``_handle_sell`` 开头的既有去重闸生效；
+        ② 到 ``ORDER_TIMEOUT_SEC`` 由 ``_expire_unknown_orders`` 按墙钟释放。
+
+        **刻意不做**「猜一笔成交」：伪造 fill 会经 ``_apply_trade`` 对 SELL 调
+        ``risk.on_fill`` ⇒ 直接污染日内亏损熔断（10-30 假 −86.58% 同类）。
+        **刻意不引入**「同 code 每天 N 次」计数上限：那会把该 code 的唯一自动
+        出场路径永久封死，是已明确否决的形状。
+        """
+        key = "UNK:%s:%d" % (code, int(time.time() * 1000))
+        self._pending_orders[key] = {
+            "code": code, "side": side, "qty": int(qty), "price": float(price),
+            "ts": time.time(), "filled": 0, "avg_cost": float(avg_cost or 0.0),
+            "account": account, "cancelled": False, "unknown": True,
+        }
+        if side == "SELL":
+            self._pending_sells[code] = key
+        return key
+
+    def _expire_unknown_orders(self) -> None:
+        """按**墙钟**释放过期未知态占位。
+
+        ★ 必须在 ``_reconcile_pending_orders`` 里、``get_trades`` **之前**调用：
+          该函数开头是 ``if trades is None: return``，而桥 QUERY_TRADE 超时/未连接
+          时 ``get_trades()`` 返回 None ⇒ 若把过期扫描放在它后面，占位永不过期
+          ⇒ ``_pending_sells[code]`` 永久占住 ⇒ ``_handle_sell`` 顶部去重闸对该
+          code 恒 False，**连 force=True 强平都被拦**（2026-11-10 评审发现）。
+        """
+        now = time.time()
+        for key, po in list(self._pending_orders.items()):
+            if not po.get("unknown"):
+                continue
+            side = str(po.get("side") or "")
+            timeout = float(self.ORDER_TIMEOUT_SEC.get(side, 90))
+            age = now - float(po.get("ts") or now)
+            if age <= timeout:
+                continue
+            code = str(po.get("code") or "")
+            if side == "SELL":
+                # 释放去重闸，允许下一轮重新尝试（这是唯一的自解路径）。
+                if self._pending_sells.get(code) == key:
+                    self._pending_sells.pop(code, None)
+            self._pending_orders.pop(key, None)
+            logger.warning(
+                "[未知态占位] %s %s %s 已按墙钟释放（%ds，无 order_id 无法对账，"
+                "未伪造成交），下一轮允许重新尝试",
+                code, side, key, int(age))
+            system_notice(
+                "WARNING", "交易",
+                f"{code} {side} 占位到期释放（{int(age)}s，无 order_id）："
+                f"未伪造成交，下一轮可重试")
+
     def _apply_trade(self, trade: dict) -> int:
         """按 (oid, traded_time, traded_volume) 去重后落实一笔成交回报。
 
@@ -3472,6 +3567,9 @@ class EventEngine:
         任何异常只 ``logger.warning``，绝不打断主循环；get_trades/get_orders
         可能返回 None（查询失败），视为本轮无回报。
         """
+        # 【2026-11-10 P0】未知态占位的过期必须在这里先扫，且**不受**
+        # get_trades 返回 None 的影响（见 _expire_unknown_orders 的 docstring）。
+        self._expire_unknown_orders()
         try:
             trades = qmt_broker.get_trades("cash")
         except Exception as e:
@@ -3487,6 +3585,11 @@ class EventEngine:
 
         now = time.time()
         for oid, po in list(self._pending_orders.items()):
+            # 未知态占位没有真 order_id：既不匹配成交回报，也不该拿去撤单
+            # （券商必报错，且错误日志会掩盖「委托到底成没成」）。过期由
+            # _expire_unknown_orders 负责。
+            if po.get("unknown"):
+                continue
             try:
                 code = po["code"]
                 side = po["side"]
@@ -3996,8 +4099,16 @@ class EventEngine:
                         _oid, sig.code, "SELL", qty, price, pos.avg_cost,
                         order.account)
                 else:
-                    logger.warning("卖出委托返回 ok 但无 order_id（%s），无法跟踪成交",
-                                   sig.code)
+                    # 【2026-11-10 P0 三态化】ok 只表示「信号已投递给桥」，不等于
+                    # 「委托已受理」。桥侧结构性拿不到 order_id，所以这是**未知态**：
+                    # 必须登记占位，否则下面的去重闸读不到 _pending_sells，
+                    # 同一退出信号每轮重发（10-30 那 654 笔的形态）。
+                    self._register_unknown_order(
+                        sig.code, "SELL", qty, price, pos.avg_cost, order.account)
+                    logger.warning(
+                        "卖出委托返回 ok 但无 order_id（%s）⇒ 未知态，已登记占位"
+                        "抑制重发（%ss 后按墙钟自动释放）", sig.code,
+                        int(float(self.ORDER_TIMEOUT_SEC.get("SELL", 90))))
                 # 【2026-11-10 P1】显式回传「这笔卖出到底提交了没有」。
                 # live 分支恒返回 False（委托已提交未成交，调用方不得补位），
                 # 调用方仅凭布尔值无法区分「被 T+1/保护期拦下」与「已提交待成交」。
@@ -4267,9 +4378,16 @@ class EventEngine:
         """
         try:
             conn = self.storage._conn_get()
+            # 【2026-11-10】按 mode 过滤。本库 equity_snapshots 混有 paper 的
+            # 百万级轨迹（实测 1,020,446.6），而 credible_peak_from_daily 只剔除
+            # 「多快照零方差」脏日，剔不掉 paper 的正常轨迹。
+            # 注：live 路径只在 peak_asset<=0 的冷启动兜底才会走到这里；
+            # paper 路径的 _sanitize_restored_peaks 会用到 ⇒ 不过滤会把 paper 的
+            # 兜底拉成 live 的百万级（假 −94% 回撤）。属于**潜在**缺陷，非现存事故。
             rows = conn.execute(
                 "SELECT COUNT(*), MAX(total_asset), MIN(total_asset) "
-                "FROM equity_snapshots GROUP BY substr(ts, 1, 10)"
+                "FROM equity_snapshots WHERE mode=? GROUP BY substr(ts, 1, 10)",
+                (getattr(self, "exec_mode", "live"),),
             ).fetchall()
         except Exception as ex:      # 量测通道故障不得影响主流程
             logger.debug("可信峰值查询失败（跳过自愈）: %s", ex)
