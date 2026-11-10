@@ -36,9 +36,11 @@ class _Tick(object):
 
 
 class _Pos(object):
-    def __init__(self, qty, open_date=None):
+    def __init__(self, qty, open_date=None, available=None):
         self.quantity = qty
         self.open_date = open_date
+        # None = 该 Position 没有券商可用量字段（回退到 open_date 判 T+1）
+        self.available = available
 
 
 class _Storage(object):
@@ -462,3 +464,51 @@ def test_sell_is_not_subject_to_max_amount():
         e.queue({"id": "big4", "code": "300308.SZ", "side": "SELL", "lots": 100})
         st = _run(e, ticks={"300308.SZ": _Tick(470.0)})
         assert st["ok"] == 1 and st["reject"] == 0 and e.eng.sells == ["300308.SZ"]
+
+
+# ------------------------------------------- 券商可用量优先于 open_date（2026-11-10）
+def test_sell_uses_broker_available_over_merged_open_date():
+    """加仓把 open_date 刷成当日，但券商可用 500 股 ⇒ 必须能卖 100 股。
+
+    实盘现场：510050 券商可卖 500，13:36 加仓后 open_date=当日，
+    旧逻辑对整仓 800 股判 T+1 锁定，连 11-03 买的老仓都卖不出去。
+    """
+    with _Env() as e:
+        e.eng._positions["510050.SH"] = _Pos(
+            800, open_date=datetime(2026, 11, 10, 13, 36), available=500)
+        e.queue({"id": "av1", "code": "510050.SH", "side": "SELL", "lots": 100})
+        st = _run(e, ticks={"510050.SH": _Tick(2.9)})
+        assert st["ok"] == 1 and e.eng.sells == ["510050.SH"]
+
+
+def test_sell_rejected_when_broker_available_is_zero():
+    """券商明说可用 0（今天买的）⇒ 拒绝，哪怕 open_date 是老的。"""
+    with _Env() as e:
+        e.eng._positions["510050.SH"] = _Pos(
+            100, open_date=datetime(2026, 11, 3, 9, 30), available=0)
+        e.queue({"id": "av2", "code": "510050.SH", "side": "SELL", "lots": 100})
+        _run(e, ticks={"510050.SH": _Tick(2.9)})
+        assert e.eng.sells == []
+        assert "可用量为 0" in e.done()["av2"]["reason"]
+
+
+def test_sell_rejected_when_lots_exceed_broker_available():
+    """可用 200 却要卖 300 ⇒ 拒绝，并说清上限来源。"""
+    with _Env() as e:
+        e.eng._positions["510050.SH"] = _Pos(
+            800, open_date=datetime(2026, 11, 3, 9, 30), available=200)
+        e.queue({"id": "av3", "code": "510050.SH", "side": "SELL", "lots": 300})
+        _run(e, ticks={"510050.SH": _Tick(2.9)})
+        assert e.eng.sells == []
+        assert "超过券商可用 200" in e.done()["av3"]["reason"]
+
+
+def test_sell_falls_back_to_open_date_when_available_unknown():
+    """拿不到 available（字段为 None）⇒ 仍按 open_date 判 T+1，行为不变。"""
+    with _Env() as e:
+        e.eng._positions["510050.SH"] = _Pos(
+            300, open_date=datetime(2026, 11, 10, 9, 31), available=None)
+        e.queue({"id": "av4", "code": "510050.SH", "side": "SELL", "lots": 100})
+        _run(e, ticks={"510050.SH": _Tick(2.9)})
+        assert e.eng.sells == []
+        assert "T+1" in e.done()["av4"]["reason"]

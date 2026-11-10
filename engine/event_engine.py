@@ -3830,10 +3830,35 @@ class EventEngine:
         # 当日买入的仓位当日不可卖出，否则会生成实盘不可能成交的「同日 round-trip」
         # （如 2026-09-08 300394 于 10:21:14 买入、10:21:17 即被「趋势破位」卖出）。
         # 所有卖出路径（破位/止损/日线兜底/轮动换出/regime 强平）都经此处，单点拦截。
-        if self.t1_restriction and is_t1_locked(pos.open_date, date.today()):
-            logger.warning(
-                "[T+1] 拦截当日卖出 %s：买入于 %s（T+1 当日不可卖，锁定至下一交易日）",
-                pos.code, pos.open_date)
+        #
+        # 【2026-11-10 P1】判据改成「券商可用量优先」：
+        #   live 下 `pos.available` 取自券商 `m_nCanUseVolume`（qmtide_bridge.py:666），
+        #   它**已经**扣掉当日买入与冻结，是 T+1 的唯一权威口径。
+        #   拿合并后的 `open_date` 去猜会在「同票加仓」时把老仓一起锁死 ——
+        #   实测 2026-11-10：510050 券商可卖 500 股，但 13:36 加仓 100 股后
+        #   `open_date` 被刷成当日 ⇒ 引擎认定整仓 800 股全部锁定，老仓也卖不出去，
+        #   且 broker 断链时这些仓位不受任何退出逻辑管理（见 OWNER_INBOX P1）。
+        #   现在：available 可用时以它为准（0 = 券商说不可卖）；拿不到才回退猜日期。
+        _avail_known = (self.exec_mode == "live"
+                        and getattr(pos, "available", None) is not None)
+        _avail_now = int(getattr(pos, "available", 0) or 0)
+        _merged_today = (pos.open_date is not None
+                         and pos.open_date.date() == date.today())
+        if not self.t1_restriction:
+            _t1_blocked = False
+        elif _avail_known:
+            _t1_blocked = _avail_now <= 0
+        else:
+            _t1_blocked = is_t1_locked(pos.open_date, date.today())
+        if _t1_blocked:
+            if _avail_known:
+                logger.warning(
+                    "[T+1] 拦截卖出 %s：券商可用量=%d（当日买入/冻结部分不可卖）",
+                    pos.code, _avail_now)
+            else:
+                logger.warning(
+                    "[T+1] 拦截当日卖出 %s：买入于 %s（T+1 当日不可卖，锁定至下一交易日）",
+                    pos.code, pos.open_date)
             if self._should_emit_block_notice(pos, "T1"):
                 system_notice(
                     "WARNING", "交易",
@@ -3844,7 +3869,10 @@ class EventEngine:
         # 首个可卖交易日开盘后 ENTRY_PROTECT_MINUTES 分钟内不退出，避免轮动换入候选
         # 被分钟级波动「换入即误伤」。与 T+1 同理，所有卖出路径经此处单点拦截。
         # force=True（日内硬止损强平）时**绕过**本保护期——硬止损优先级高于防误伤。
+        # 【2026-11-10】`open_date` 被加仓刷成当日、而券商可用量>0 时，说明这批股票
+        # 早已过了首个可卖日 ⇒ 保护期无从谈起，跳过（否则老仓被新仓的日期误伤）。
         if (not force and self.entry_protect_minutes > 0
+                and not (_avail_known and _avail_now > 0 and _merged_today)
                 and is_in_entry_protection(pos.open_date, self.entry_protect_minutes, now)):
             logger.warning(
                 "[保护期] 拦截卖出 %s：买入于 %s，首个可卖日早盘保护窗内（%d 分钟）",

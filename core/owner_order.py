@@ -363,8 +363,24 @@ def run_step(engine, ticks: Dict[str, Any], current_prices: Dict[str, float],
 
         # SELL：T+1 与保护期的判定交给 _handle_sell，这里先做一次显式预检，
         # 让「被 T+1 拦下」在账本里留下 reject 而不是含糊的 submit。
+        # 【2026-11-10 P1】预检也改成「券商可用量优先」：live 下 `pos.available`
+        # 来自券商 `m_nCanUseVolume`，已扣掉当日买入；用合并后的 `open_date` 判
+        # 会在同票加仓后把老仓一起锁死（实测 510050 可卖 500 股却被判全锁）。
         pos = engine._positions.get(code)
-        if t1_lock is not None and pos is not None:
+        _avail = getattr(pos, "available", None) if pos is not None else None
+        if pos is not None and _avail is not None:
+            if int(_avail or 0) <= 0:
+                record(engine, done, oid, ST_REJECT, "券商可用量为 0（当日买入不可卖）",
+                       logger=logger, notify=notify)
+                stats["reject"] += 1
+                continue
+            if qty > int(_avail or 0):
+                record(engine, done, oid, ST_REJECT,
+                       "卖出 %d 股超过券商可用 %d 股" % (qty, int(_avail or 0)),
+                       logger=logger, notify=notify)
+                stats["reject"] += 1
+                continue
+        elif t1_lock is not None and pos is not None:
             try:
                 if t1_lock(getattr(pos, "open_date", None), today):
                     record(engine, done, oid, ST_REJECT, "T+1 锁定（当日买入不可卖）",
