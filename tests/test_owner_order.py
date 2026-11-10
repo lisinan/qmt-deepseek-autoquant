@@ -264,6 +264,65 @@ def test_sell_handler_returning_false_is_rejected():
         assert e.done()["s5"]["status"] == oo.ST_REJECT
 
 
+# ---------------------------------------------------------------- 卖出价格下限
+# 2026-11-10 新增 price_floor：OWNER 要「涨到成本以上再卖」，而原来只有买单的
+# price_cap（不追高），没有镜像字段 ⇒ 挂上去会无条件按下一笔现价成交。
+def test_sell_price_floor_waits_below_floor():
+    """现价低于下限 ⇒ skip：不落单、不记账、不消耗 id。"""
+    with _Env() as e:
+        e.eng._positions["510050.SH"] = _Pos(500, open_date=datetime(2026, 11, 3, 9, 30))
+        e.queue({"id": "f1", "code": "510050.SH", "side": "SELL",
+                 "lots": 100, "price_floor": 3.0})
+        st = _run(e, ticks={"510050.SH": _Tick(2.9)})
+        assert e.eng.sells == []
+        assert st["skip"] == 1 and st["submit"] == 0
+        assert e.done() == {}          # ★ 关键：没记账，下一轮还能再看
+
+
+def test_sell_price_floor_executes_at_or_above_floor():
+    with _Env() as e:
+        e.eng._positions["510050.SH"] = _Pos(500, open_date=datetime(2026, 11, 3, 9, 30))
+        e.queue({"id": "f2", "code": "510050.SH", "side": "SELL",
+                 "lots": 100, "price_floor": 2.9})
+        _run(e, ticks={"510050.SH": _Tick(2.9)})   # 恰好等于下限 ⇒ 执行
+        assert e.eng.sells == ["510050.SH"]
+        assert e.done()["f2"]["status"] == oo.ST_OK
+
+
+def test_sell_price_floor_survives_waiting_days():
+    """等待期间不消耗每日条数：等多久都不影响 max_per_day。"""
+    with _Env() as e:
+        e.eng._positions["510050.SH"] = _Pos(500, open_date=datetime(2026, 11, 3, 9, 30))
+        e.queue({"id": "f3", "code": "510050.SH", "side": "SELL",
+                 "lots": 100, "price_floor": 3.0})
+        for _ in range(20):                         # 模拟 20 轮 tick 都没涨到
+            _run(e, ticks={"510050.SH": _Tick(2.95)})
+        assert e.eng._owner_day_n == 0 and e.done() == {}
+        _run(e, ticks={"510050.SH": _Tick(3.01)})   # 涨过了下限
+        assert e.eng.sells == ["510050.SH"]
+        assert e.eng._owner_day_n == 1
+
+
+def test_sell_without_price_floor_stays_immediate():
+    """兼容旧指令：不给 price_floor 就按原样立刻卖，行为零变化。"""
+    with _Env() as e:
+        e.eng._positions["510050.SH"] = _Pos(500, open_date=datetime(2026, 11, 3, 9, 30))
+        e.queue({"id": "f4", "code": "510050.SH", "side": "SELL", "lots": 100})
+        _run(e, ticks={"510050.SH": _Tick(2.1)})    # 价格很低也照卖
+        assert e.eng.sells == ["510050.SH"]
+
+
+def test_sell_price_floor_still_respects_t1_lock():
+    """下限满足但当日买入 ⇒ 仍必须被 T+1 拦下（两道闸门不许互相覆盖）。"""
+    with _Env() as e:
+        e.eng._positions["510050.SH"] = _Pos(100, open_date=datetime(2026, 11, 10, 13, 4))
+        e.queue({"id": "f5", "code": "510050.SH", "side": "SELL",
+                 "lots": 100, "price_floor": 2.0})
+        _run(e, ticks={"510050.SH": _Tick(5.0)})
+        assert e.eng.sells == []
+        assert "T+1" in e.done()["f5"]["reason"]
+
+
 # ---------------------------------------------------------------- 鲁棒性
 def test_broken_json_line_does_not_block_others():
     with _Env() as e:

@@ -252,6 +252,36 @@ def sanitize_peak_equity(stored_peak, credible_max) -> float:
     return min(stored, cred)
 
 
+def fixed_lots(amount: float, price: float) -> int:
+    """固定金额 → 可买股数（向下取整到 100 股）。价格或金额不可用时返回 0。
+
+    【2026-11-10 P1】必须带浮点容差，否则会**拒绝本来合法的整数手**：
+
+    ``fixed_amount`` 在两条通道里都是「股数 × 现价」反算出来的
+    （``core/owner_order.py`` 的 ``qty * price``、观察篮同理），
+    于是 ``amount / price / 100`` 的理论值恰好是整数；但二进制浮点常把它算到
+    整数**下方 1 个 ULP**：
+
+        price=2.902, amount=290.2  →  0.99999999999999988898  →  int() = 0 手
+        price=2.897, amount=289.7  →  1.00000000000000000000  →  100 股（运气好）
+
+    实测 2026-11-10 13:23:15 实盘撞上：`BUY 拒绝 510050.SH: fixed_amount=290元
+    不足一手(290元/手)`，而 290.2 元明明够买一手。同一段代码观察篮（manual_entry）
+    也在用，属随机复发型缺陷，不是某个价格的特例。
+
+    1e-9 的容差远小于任何真实资金差（1 分钱的百分之一），只抵消浮点误差，
+    不会把"确实买不起"放行。
+    """
+    try:
+        a = float(amount or 0.0)
+        p = float(price or 0.0)
+    except (TypeError, ValueError):
+        return 0
+    if a <= 0.0 or p <= 0.0:
+        return 0
+    return int(a / p / 100 + 1e-9) * 100
+
+
 def _read_last_timeline_date(path: Path) -> str:
     """读 gate_timeline.jsonl **最后一行**的 date；文件不存在/损坏返回 ""。
 
@@ -3537,7 +3567,7 @@ class EventEngine:
         # 【2026-10-29】观察篮固定金额建仓（小额链路验证）。默认 0 ⇒ 完全跳过。
         _fixed_qty = 0
         if fixed_amount and fixed_amount > 0:
-            _fixed_qty = int(fixed_amount / price / 100) * 100
+            _fixed_qty = fixed_lots(fixed_amount, price)
             if _fixed_qty <= 0:
                 self._log_reject_once(
                     sig.code,

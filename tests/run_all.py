@@ -525,7 +525,11 @@ def _collect_tests():
             # 【2026-11-10】OWNER 指令单：允许加仓与卖出，落单仍走唯一落单口
             "tests.test_owner_order",
             # 【2026-11-10】行情从 mock 恢复后强制重建日线特征（否则假日线跑一天）
-            "tests.test_daily_rebuild_on_reattach"]
+            "tests.test_daily_rebuild_on_reattach",
+            # 【2026-11-10 P1】固定金额→股数的浮点截断：实盘 13:23 用
+            #   `fixed_amount=290.2 / price=2.902` 被判「不足一手」拒单，
+            #   真因是 0.99999999999999 被 int() 截成 0 手。观察篮同源代码。
+            "tests.test_fixed_lots"]
     tests = []
     import_errors = []
     for m in mods:

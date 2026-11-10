@@ -31,6 +31,7 @@ T+1、建仓保护期、`max_positions` 全部照旧生效——这条是设计�
     lots        股数（必须是 100 的整数倍）；与 amount 二选一
     amount      买入金额（元），按现价向下取整到 100 股
     price_cap   买入价格上限（>0 时不追高，现价高于它就一直等，不消耗 id）
+    price_floor 卖出价格下限（>0 时现价低于它就一直等，不消耗 id）
     valid_until 有效期（"YYYY-MM-DD"，含当天）；过期标记 expired 不再重试
     note        备注，写进信号 reason 与日志
 
@@ -257,6 +258,12 @@ def decide(ins: dict, *, now: datetime, positions: Dict[str, Any],
         return ST_REJECT, "卖出 %d 股超过持仓 %d 股" % (lots, held), 0
     if price <= 0:
         return ST_SKIP, "暂无行情价", 0
+    # 卖出价格下限（2026-11-10 新增）：OWNER 常要「涨到成本以上再卖」，
+    # 而只有 price_cap（买单不追高）没有镜像字段。低于下限时返回 skip ——
+    # 不记账、不消耗 id、不计入每日条数，下一轮继续看。
+    floor = _float(ins.get("price_floor")) or 0.0
+    if floor > 0 and price < floor:
+        return ST_SKIP, "现价 %.3f 低于卖出下限 %.3f，等涨" % (price, floor), 0
     return ST_SUBMIT, "", lots
 
 
