@@ -822,6 +822,20 @@ class EventEngine:
         # 放在最后追加（dict.fromkeys 保留首次出现顺序），不改变既有订阅顺序。
         codes += [c for c, p in (getattr(self, "_positions", None) or {}).items()
                   if getattr(p, "quantity", 0) > 0]
+        # 【2026-11-10 P1】OWNER 指令队列里**还没记账**的代码也必须订阅。
+        # 为什么不是"按需临时取一次行情"就够了：tushare 适配器的
+        # `get_ticks()` 有个 8s 节流窗口（MIN_REFRESH_SEC），而引擎自己每轮
+        # 都在刷新 ⇒ 外部再插一次调用几乎必然落在窗口内被跳过，返回空字典。
+        # 实测买 510300 时通道一直 `skip / 暂无行情价`，根因就是它。
+        # 把代码并进订阅 = 直接进入引擎既有的批量抓取（不额外增加一次调用，
+        # 也就不会额外撞 rt_tick 频率上限），下一轮就能拿到 tick。
+        # 记账后该代码自然从这里消失；成交后则由上面的持仓分支长期保留。
+        try:
+            from core.owner_order import pending_codes as _owner_pending
+            codes += [c for c in _owner_pending(self)
+                      if c and c not in codes]
+        except Exception as e:                      # noqa: BLE001
+            logger.debug("_subscribe_codes 取 OWNER 指令代码失败(忽略): %s", e)
         return list(dict.fromkeys(codes))
 
     def _refresh_universe_async(self) -> None:
@@ -2175,7 +2189,23 @@ class EventEngine:
             _rt_prev = _now
 
         # 1) 拉 tick
-        raw = qmt_client.get_ticks(codes)
+        # 【2026-11-10 P1】把 OWNER 指令队列里还没记账的代码并进本轮抓取。
+        # 必须在这里并、而不是靠 `_owner_order_step` 里再单独调一次 get_ticks：
+        # tushare 适配器有 8s 节流窗口（MIN_REFRESH_SEC），引擎自己每轮都在刷新
+        # ⇒ 外部追加的那次调用几乎必然落在窗口内被跳过、返回空字典。实测买
+        # 510300/510500 时通道一直 `skip / 暂无行情价` 就是这个原因。
+        # 并进 codes 只是把代码塞进**已有的**那一次批量请求，不新增调用，
+        # 因此不会额外消耗 rt_tick 的 10 次/分钟配额。
+        _codes = codes
+        try:
+            from core.owner_order import pending_codes as _owner_pending
+            _extra = [c for c in _owner_pending(self) if c and c not in codes]
+            if _extra:
+                _codes = list(codes) + _extra
+                logger.debug("[OWNER指令] 本轮并进抓取: %s", _extra)
+        except Exception as _e:                     # noqa: BLE001
+            logger.debug("[OWNER指令] 取待补代码失败(忽略): %s", _e)
+        raw = qmt_client.get_ticks(_codes)
         _mark("ticks")
         if not raw:
             return
