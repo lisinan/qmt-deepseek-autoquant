@@ -93,3 +93,27 @@ config/settings.py.proposed-*
 # ============================================================================
 *.bak-20*
 
+
+# ============================================================================
+# 【2026-11-10】OWNER 指令队列：**运行时状态，不是源码**
+# ----------------------------------------------------------------------------
+# `storage/owner_orders.jsonl` 是 OWNER 手写下单的追加队列，
+# `storage/owner_orders_done.json` 是它的幂等账本（记 id / 状态 / 成交原因）。
+# 两者都含**真实委托号**（如 0165315089）与逐笔成交价量 —— 本仓库是 public，
+# 这类信息属于账户交易细节，不入库。
+# 副作用说明：忽略它们不影响功能 —— 通道按路径读写磁盘文件，与 git 无关。
+# 需要留档的指令请写进 `reports/` 下的复盘，而不是把队列提交上来。
+# ============================================================================
+storage/owner_orders.jsonl
+storage/owner_orders_done.json
+storage/owner_orders*.json.tmp
+storage/owner_orders_done.json.tmp
+storage_paper/owner_orders.jsonl
+storage_paper/owner_orders_done.json
+
+# 临时产物（2026-11-10 清理）：`nul` 是 Windows 重定向写坏的 0 字节文件，
+# `t.json*` 是手工探针的草稿输出，`logs/_tmp/` 是沙箱副本（整份仓库快照）。
+nul
+t.json
+t.json.new
+logs/_tmp/
