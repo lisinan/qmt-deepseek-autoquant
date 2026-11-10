@@ -40,6 +40,23 @@ LOOKBACK = int(STRATEGY_PARAMS.get("momentum_lookback", 60) or 60)
 TOP_N = int(STRATEGY_PARAMS.get("momentum_top_n", 3) or 3)
 
 
+def _panel_last_date(panel) -> str:
+    """面板里各票末根日期的最大值（'YYYYMMDD' 字符串）；取不到返回 ''。"""
+    best = ""
+    try:
+        for v in (panel or {}).values():
+            d = (v or {}).get("date") or []
+            if not d:
+                continue
+            last = d[-1]
+            s = str(last)[:10].replace("-", "")
+            if s > best:
+                best = s
+    except Exception:  # noqa: BLE001
+        return ""
+    return best
+
+
 def main() -> None:
     from data.dynamic_universe import DynamicUniverse
     dyn = DynamicUniverse()
@@ -115,12 +132,39 @@ def main() -> None:
     print(f"  动量>{MIN_MOM:.2f} : {st['mom_pass_n']} 只")
 
     print("\n--- 收盘价比对（live vs tushare 面板末日）---")
-    diff = [r for r in rows if r["close_diff_pct"] not in (None, 0.0)]
-    print(f"  可比值 {len([r for r in rows if r['close_diff_pct'] is not None])} 只，"
-          f"不一致 {len(diff)} 只")
+    # 【2026-11-10 DAILY-REVIEW SAFE 修复】原实现把「live 今日收盘」与「面板末根」
+    # 直接相减判定「不一致」，但两者**日期根本不同**（面板末根 2026-10-28，落后 9 个
+    # 交易日）⇒ 每天必然报「可比值 19 只，不一致 19 只」，看上去像行情错，实则纯日期
+    # 错位；而它每次都全红，反而掩盖了真正的价格错误（如 fill_data 前值填充的假 bar）。
+    # 现在：① 打印面板真实末根日期；② 只有日期相同的行才判「不一致」；
+    # ③ 日期不同的行单列为「跨日不可比」。纯观测脚本，不受控于引擎，无需重启。
+    pdate = _panel_last_date(panel)
+    try:
+        live_asof = DailyContext._expected_last_trade_date().strftime("%Y%m%d")
+    except Exception:  # noqa: BLE001
+        live_asof = ""
+    print(f"  面板末根 = {pdate or '未知'} ｜ 应有末根 = {live_asof or '未知'}")
+    if pdate and live_asof and pdate != live_asof:
+        # 面板是研究侧快照（只报不刷），落后时**整段比对无意义**；
+        # 这里只报「落后几天 + 示例价差」，不再产出「不一致 N 只」这种会误导的结论。
+        print(f"  ⚠ 面板落后（{pdate} < {live_asof}）⇒ 今日不做逐票一致性判定，"
+              f"否则每天都报「全部不一致」而掩盖真实价格错误")
+        same, diff, stale = [], [], [r for r in rows if r["close_diff_pct"] is not None]
+    else:
+        same = [r for r in rows if r["panel_date"] == pdate]
+        diff = [r for r in same if r["close_diff_pct"] not in (None, 0.0)]
+        stale = [r for r in rows if r["close_diff_pct"] is not None
+                 and r["panel_date"] != pdate]
+    print(f"  同日可比 {len(same)} 只，不一致 {len(diff)} 只；"
+          f"跨日不可比 {len(stale)} 只")
     for r in diff[:12]:
         print(f"  {r['code']:<11} live {r['live_close']:>9.3f}  "
               f"panel {r['panel_close']:>9.3f}  差 {r['close_diff_pct']:+.3f}%")
+    if stale and not diff:
+        r0 = stale[0]
+        print(f"  （示例）{r0['code']} live {r0['live_close']:.3f} vs "
+              f"panel {r0['panel_date']} {r0['panel_close']:.3f} "
+              f"差 {r0['close_diff_pct']:+.3f}% ⇒ 日期差，非价格错")
 
     print("\n--- trend_up=True 明细 ---")
     for r in [x for x in rows if x["trend_up"]]:

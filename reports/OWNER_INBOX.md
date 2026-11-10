@@ -1592,3 +1592,61 @@ python scripts/seed_zone_timeline.py --to paper --apply    # 实际写（幂等�
 - [待 OWNER 裁决] `risk_per_trade` 0.040→0.030（Calmar 23.68→26.31、IS MDD −12.95%→−10.58%，
   代价 IS 收益 −28.4pt）。详见 `reports/EXPOSURE_PROPOSAL_20261110.md`。
   在 300308 清仓前不建议动它 —— 一手即占 78.43% 权益，降 rpt 救不了存量集中度。
+
+---
+
+## DAILY-REVIEW 2026-11-10（15:40 归集任务，去重后新增）
+
+- [P0] [FORBIDDEN] **上午 09:19–11:34 引擎处于 `data_mode=mock` ⇒ 全部买卖被禁止，2 小时 15 分零委托**
+  根因：`QMT_QUOTE_SOURCE=auto` 启动瞬间探 xtdata，大 QMT 下必然 `not authenticated` ⇒ 回落 **mock**（不是 tushare），且不自动再切。
+  当日 4 笔委托最早 13:04:39；11:35:39 重启后才变 `数据源=tushare`。与 11-08 零成交事故同型，**已从偶发变成常态**
+  — 证据：`logs/quant_system.log` 09:18:46 / 09:19:07 / 11:35:39 三行 — 发现于 DAILY-REVIEW 2026-11-10
+
+- [P0] [FORBIDDEN] **今日 3 次熔断里有 2 次回撤读数不可能成立（假熔断）：`max_drawdown -20.93%` / `-34.11%`**
+  13:57:14 同时写出两条，均在 13:57:04 重启后 **10 秒**；当日 219 条快照最低 57,058.58 / 最高 61,766.18，
+  以 `peak_asset=67,453.62` 计全天真回撤最深 −15.41% ⇒ 两条读数无任何快照可支撑。
+  机制指向「重启后持仓/资产未回灌即参与风控」，与 14:17 那次已定性的「少算一个持仓」同源
+  — 证据：`logs/review_2026-11-10.json::risk.halt_events` · `equity_snapshots` 2026-11-10 min/max — 发现于 DAILY-REVIEW 2026-11-10
+
+- [P0] [FORBIDDEN] **熔断态带过夜：`halted=true / halt_day=2026-11-10`，次日开盘前须确认已解除**
+  今日 11 次重启熔断态全程保留（未因重启丢失，这点是对的），但「冷却 1 日自动恢复」需次日实证；不解除则全天不能开仓
+  — 证据：`storage/qmt.db::engine_state.risk_state` — 发现于 DAILY-REVIEW 2026-11-10
+
+- [P0] [FORBIDDEN] **OWNER 手工落单的 100 股不进 `fills`/`orders` ⇒ 现金差 316.31 元、持仓差 100 股**
+  11-09 收现金 11,611.49 → 今日 8,817.48（−2,794.01），`fills` 净额仅 −2,477.70 ⇒ 缺口 −316.31
+  = 未记账买入 100×2.902（290.20）+ 手续费 ≈26.11，**逐分对上**。持仓由 `fills` 反推 200 股、券商实际 **300 股**。
+  连带：`open_date` 只认 `fills` 回灌 ⇒ 该笔 T+1/保护期基准缺失；`review.fills_n=4` 少计 1 笔。
+  代码已自认风险（`core/owner_order.py:12`），但今日真实发生且无任何告警
+  — 证据：`storage/owner_orders_done.json::buy-20261110-2` · `fills` 391-394 · 桥 `QUERY_POSITION` 15:04:54 — 发现于 DAILY-REVIEW 2026-11-10
+
+- [P1] [FORBIDDEN] **【升级前条】ETF 日线「两条路全断」今日已成事实**：`_fetch_daily('510050.SH')` 与
+  `('510500.SH')` 今日实测**均返回 None**（xtdata 侧 `get_market_data_ex` 抛 `not authenticated`，tushare 侧 `pro.daily` 不含 ETF）。
+  后果落到真实持仓：今日新建 510500（3,347 元 / 5.55%）在 DailyContext 里零特征 ⇒ `trend_broken`/`atr_pct` 恒缺省，
+  退出只剩 `stop_price` 一条腿。改法：`pro.daily` 空表时回落 `pro.fund_daily`，指数回落 `index_daily`（需重启）
+  — 证据：`strategy/daily_context.py:142-174` · 实测 `fund_daily(20261109)` 2,184 条含 510050 — 发现于 DAILY-REVIEW 2026-11-10（承接 2026-11-09）
+
+- [P1] [FORBIDDEN] **重启后前 1~2 轮不应用作风控/漏斗判定**：今日 11 次重启，每轮重启后漏斗「宇宙 22/25/26/28」
+  均为假基数（< 订阅 38），且 13:57 那轮重启 10 秒后就打出了两条假回撤熔断。
+  建议：重启后首轮跳过回撤/日亏两类判定（与 `ENABLE_V7` 去抖同批做，避免两条独立改动互相掩盖）
+  — 证据：`logs/quant_system.log` 13:51:41 / 13:55:15 / 13:57:06 / 15:02:49 — 发现于 DAILY-REVIEW 2026-11-10
+
+- [P2] [FORBIDDEN] **「实盘券商已连接 (XtQuantTrader)」文案与事实不符**：桥方案下仍打这句（今日 11 次），
+  排查时会把方向引到 xttrader/白名单上去 — 证据：`logs/notices.log` 2026-11-10 同模板 11 条 · `engine/event_engine.py` — 发现于 DAILY-REVIEW 2026-11-10
+
+- [P2] [FORBIDDEN] **【复现第 4 天】`account_pct` 分母仍是 paper 1,000,000**（真实账户 60,119.78 会被算成 −93.99%），
+  叠加面板末日 2026-10-28（落后 9 个交易日）⇒ `excess_pct` / `universe_bh_pct` 今日仍不可用
+  — 证据：`logs/review_2026-11-10.json::compare` 无基准字段 · `storage/hist_cache/ts_panel_25_901_...20261028.pkl` — 发现于 DAILY-REVIEW 2026-11-10
+
+- [P1] [SAFE-已修] **量测卫生脚本在 xtdata 不可用时整体抛 RuntimeError，「日线末根」当日完全取不到值**
+  新增 `_bars_via_tushare()` 兜底（`pro.daily` + `pro.fund_daily` 按日全市场取，3~5 次请求），
+  并把「落后」判据基准在无日历时回落为样本内最新末根。修复后立刻测出 510050 恢复 20261109（34/38 末根 20261109）
+  — 证据：`scripts/_hygiene_bar_dates2.py`（新增 `_bars_via_tushare`） — 发现于 DAILY-REVIEW 2026-11-10
+
+- [P2] [SAFE-已修] **「收盘价比对」每天必然全红**：原实现把 live 当日收盘与面板末根（2026-10-28）直接相减，
+  恒得「可比值 19 只，不一致 19 只」，全红反而掩盖真实价格错误。改为先打印面板末根/应有末根，日期不同则整段不判定
+  — 证据：`scripts/_why_no_entry_live.py`（新增 `_panel_last_date` + 跨日分支） — 发现于 DAILY-REVIEW 2026-11-10
+
+- [INFO] [INFO] **本任务停摆 4 天**：上次执行 2026-11-06，**11-09（周一，交易日）未运行** ⇒ review/账本/归因全缺，
+  已用 `record_ledger --backfill` 补记 11-09（+0.70%）与 11-10（+3.18%）。guardian 11-09 心跳连续 ⇒ 非整机休眠，
+  归因 `awake_no_artifact`（宿主未触发），需 OWNER 核对 11-09 的自动化触发记录
+  — 证据：本任务 memory 末条 2026-11-06 · `logs/evolution_ledger.jsonl` 缺 11-09 行 — 发现于 DAILY-REVIEW 2026-11-10
