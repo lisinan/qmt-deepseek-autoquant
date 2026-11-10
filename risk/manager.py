@@ -47,6 +47,15 @@ DAILY_LOSS_UNION_MAX = True
 
 
 class RiskManager:
+    # 【2026-11-10 P0】日内强平必须连续 N 轮确认才动作。
+    # 动机：买入成交后的亚秒窗口里「资金已扣、持仓未刷新」会让总资产瞬间少算
+    # 一个持仓 —— 2026-11-10 14:17:21 买 510500 500 股（3,347 元）后，14:17:36
+    # 即读出 daily_stop −7.04%（真实约 −1.7%）⇒ 假熔断 + flatten_requested，
+    # 随后每 ~4.5s 空转强平到收盘。主循环约 4.5s/轮 ⇒ 3 轮 ≈ 13.5s，
+    # 足以跨过该窗口；真实崩跌持续越线，13.5s 后仍会强平。
+    # 用类常量而非 RISK_PARAMS 键：不触发参数契约登记，也不当旋钮重扫。
+    DAILY_STOP_CONFIRM_ROUNDS = 3
+
     def __init__(self, params: Optional[dict] = None):
         self.p = dict(RISK_PARAMS)
         if params:
@@ -87,6 +96,8 @@ class RiskManager:
         # 【2026-09-16 优化】日内硬止损+强平标志。当日账户相对开盘资产亏损达
         #   daily_stop_flatten_pct 时置位，引擎据此强平全部可卖持仓（不只停牌）。
         self._flatten_requested: bool = False
+        # 连续越线轮数（见 DAILY_STOP_CONFIRM_ROUNDS）：越线 +1、回到线内清零。
+        self._daily_stop_streak: int = 0
         self._day_open_asset: float = 0.0
 
     # ---------- 每日重置 ----------
@@ -100,6 +111,7 @@ class RiskManager:
             # 日切不重置连续亏损与 peak_asset
             # 日内强平标志随新交易日复位（开盘资产口径会重新校准）
             self._flatten_requested = False
+            self._daily_stop_streak = 0
             self._day_open_asset = 0.0
 
     # ---------- 资金 ----------
@@ -145,7 +157,15 @@ class RiskManager:
             #   daily_stop_flatten_pct 即置 flatten_requested 并停牌，引擎据此强平全部可卖持仓。
             if self._day_open_asset > 0:
                 dlp = (total_asset - self._day_open_asset) / self._day_open_asset
+                # 【2026-11-10 P0】连续确认去抖（见 DAILY_STOP_CONFIRM_ROUNDS）。
+                # 单轮瞬态读数（买入在途少算一个持仓）**不得**强平真仓。
                 if dlp <= self.p.get("daily_stop_flatten_pct", -0.06):
+                    self._daily_stop_streak += 1
+                else:
+                    self._daily_stop_streak = 0
+                if (dlp <= self.p.get("daily_stop_flatten_pct", -0.06)
+                        and self._daily_stop_streak
+                        >= self.DAILY_STOP_CONFIRM_ROUNDS):
                     if not self._flatten_requested:
                         logger.warning("RiskManager 日内硬止损触发: 当日亏损 %.2f%%",
                                       dlp * 100)

@@ -63,6 +63,9 @@ ANCHORS = [
     ("tests/run_all.py", "tests.test_20261110_landing_guards", "B6 守卫入册"),
     # OWNER 2026-11-10 自己落的那条（不在本批补丁内，但必须一起去验）
     ("core/owner_order.py", "lots=qty", "OWNER 自己的 SELL lots 修复在位"),
+    # V7（2026-11-10 晚）：日内硬止损连续确认去抖
+    ("risk/manager.py", "DAILY_STOP_CONFIRM_ROUNDS = 3", "V7 连续确认常量"),
+    ("risk/manager.py", "self._daily_stop_streak", "V7 去抖计数"),
 ]
 
 

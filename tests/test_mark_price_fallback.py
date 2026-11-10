@@ -276,7 +276,11 @@ def test_cost_fallback_would_have_halted():
 
     rm = RiskManager()
     rm.on_asset_update(PEAK, PEAK)
-    rm.on_asset_update(total, PEAK)
+    # 【2026-11-10 P0】daily_stop 改为连续 DAILY_STOP_CONFIRM_ROUNDS 轮确认
+    # （防「买入在途少算一个持仓」造成的假强平）。坏口径是**结构性**的、会持续
+    # 越线 ⇒ 喂满确认轮数后仍必须熔断并置强平，正向对照的意图不变。
+    for _ in range(rm.DAILY_STOP_CONFIRM_ROUNDS):
+        rm.on_asset_update(total, PEAK)
     assert rm.is_halted, (
         "对照组本该熔断却没有 —— 说明风控已加守卫，请复核兜底的必要性")
     # ★ 实测危害比「熔断」更高：day_open_asset 若也取到成本价口径，

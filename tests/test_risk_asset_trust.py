@@ -167,9 +167,17 @@ def test_positive_control_old_path_still_halts():
     assert abs(naive - BAD_TOTAL) < 0.01, f"用例前提不成立：naive={naive}"
     rm = RiskManager()
     rm.on_asset_update(DAY_OPEN, DAY_OPEN)
-    rm.on_asset_update(naive, DAY_OPEN, equity_daily_pnl=True)
+    # 【2026-11-10 P0】daily_stop 改为连续 DAILY_STOP_CONFIRM_ROUNDS 轮确认
+    # （防「买入在途少算一个持仓」造成的假强平）。拼装坏口径是**结构性**的、
+    # 会持续越线 ⇒ 喂满确认轮数后仍必须熔断，正向对照的意图不变。
+    # 注：此时 `_halt_reason` 可能是 "max_drawdown ..."（同一次越线也会命中回撤
+    # 熔断，且 _halt 对已熔断状态早退、先到者占位）⇒ 这里断言**熔断发生**而不是
+    # 断言具体 reason，否则会变成对调用顺序的脆弱依赖。
+    for _ in range(rm.DAILY_STOP_CONFIRM_ROUNDS):
+        rm.on_asset_update(naive, DAY_OPEN, equity_daily_pnl=True)
     assert rm.is_halted, "旧路径喂 6,953（对开盘 −89.25%）本应熔断"
-    assert "daily_stop" in rm._halt_reason
+    assert rm.flatten_requested, (
+        "日内强平标志未置起 —— daily_stop 的保护失效（结构性坏口径必须强平）")
 
 
 # ------------------------------------------------ 6. 面板可见性

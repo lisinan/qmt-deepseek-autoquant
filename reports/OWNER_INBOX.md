@@ -1650,3 +1650,48 @@ python scripts/seed_zone_timeline.py --to paper --apply    # 实际写（幂等�
   已用 `record_ledger --backfill` 补记 11-09（+0.70%）与 11-10（+3.18%）。guardian 11-09 心跳连续 ⇒ 非整机休眠，
   归因 `awake_no_artifact`（宿主未触发），需 OWNER 核对 11-09 的自动化触发记录
   — 证据：本任务 memory 末条 2026-11-06 · `logs/evolution_ledger.jsonl` 缺 11-09 行 — 发现于 DAILY-REVIEW 2026-11-10
+
+### 2026-11-10 夜间结算（主理人）
+
+- [P0-已落地] **日内硬止损加连续确认，杜绝单轮瞬态读数强平真仓**
+  `RiskManager.DAILY_STOP_CONFIRM_ROUNDS = 3`：`_daily_stop_streak` 越线 +1、
+  回到线内清零，连续 3 轮才置 `_flatten_requested` 并熔断（主循环约 4.5s/轮
+  ⇒ ≈13.5s，足以跨过「买入在途」窗口；真崩跌持续越线仍会强平）。
+  用类常量而非 `RISK_PARAMS` 键：不触发参数契约登记，也不当旋钮重扫。
+  **4 条既有测试同步改为「喂满确认轮数后仍必须触发」**（不是放松断言）：
+  `test_daily_hard_stop_flatten_triggers` / `..._reset_on_resume` /
+  `test_cost_fallback_would_have_halted` / `test_risk_asset_trust.
+  test_positive_control_old_path_still_halts`（正向对照保住了——结构性坏口径
+  会持续越线，仍熔断）。
+  新增反向断言 `test_daily_hard_stop_single_transient_reading_does_not_flatten`：
+  单轮瞬态不得置强平；恢复后计数必须清零（防零散瞬态累加成真熔断）。
+
+- [P0-归因完成] **13:52:30 那笔 `SELL 510050 500` 不是假熔断，是指令单 5× 超卖的真实事故**
+  日志 `13:52:09` 三行可复核：
+  ```
+  [LIVE] SELL 510050.SH x 500 @ 2.898 → ok=True order_id=0165958027
+  [系统提示][交易] 提交卖出委托 ... ×500 ... 理由=owner_order(验证卖出链路-卖一手510050)
+  [OWNER指令] sell-20261110-t1 拒绝: 落单口未成交（保护期/委托失败/零仓位）
+  ```
+  ⇒ OWNER 的指令是「卖一手 = 100 股」，旧代码丢 `lots` 提交了 **500 股**，
+  **超额 400 股 ≈ 1,159 元**（与 T1 早前推算的 1,157 元吻合），且账本反记成 `reject`。
+  持仓账完全对上：500（11-03）+ 100（手工）= 600 → 今日 13:04 +100、13:36 +100 = 800
+  → 13:52 卖 500 = **300**（当前值）。
+  ★ 这条为「OWNER 指令单丢 lots」提供了**实盘铁证**（不再只是推算），
+  该缺陷已由 OWNER 于当日 13:26~14:02 用 `lots=` + `_last_sell_placed` 修掉。
+
+- [验收] 全量回归 **1113 通过 / 36 失败 / 1149 例**（V7 前 1112/36/1148
+  ⇒ 失败数不变，新增 1 例是上面的反向断言）。七项验收 A1~A4/A6/A7 全 PASS，
+  A5（宽度日志出现 `口径=universe`）需下一交易日开盘触发才可见。
+  引擎 20:06:07 重启，已加载 V7；恢复 `peak=67,453.62`。
+
+- [状态] 账户 `halted=true`（今日 14:17 的假 daily_stop），`halt_day=2026-11-10`、
+  `halt_recover_days=1` ⇒ **明日首次资产更新自动解除**。持仓 3 只：
+  510050 300 / 510500 500 / 300308 100。`_dd_rearm_floor=0.0`（daily_stop 非回撤类，
+  按设计不武装该阈值，峰值保持 67,453.62 不变）。
+
+- [待办·下一轮] ① 明日开盘核实 `halted` 是否自动解除、宽度日志是否出现 `口径=universe`；
+  ② `trend_up` b 分量两侧不同（回测 MA20>MA60 / 生产 close>MA60）——修后生产宽度 ≥ 回测宽度；
+  ③ 无 order_id 场景的 `fills` 回填（需实测 `QUERY_TRADE` 是否返回 DEAL 记录，
+  桥侧 DEAL 自带真 `m_strOrderSysID`）；
+  ④ `risk_per_trade` 0.040→0.030 待 OWNER 裁决（`reports/EXPOSURE_PROPOSAL_20261110.md`）。

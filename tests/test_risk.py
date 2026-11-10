@@ -182,12 +182,34 @@ def test_drawdown_halt_recovers_after_dd_recover_days():
 
 def test_daily_hard_stop_flatten_triggers():
     """2026-09-16 优化：当日账户亏损（相对开盘）达 daily_stop_flatten_pct
-    即置 flatten_requested 并停牌，引擎据此强平全部可卖持仓。"""
+    即置 flatten_requested 并停牌，引擎据此强平全部可卖持仓。
+
+    【2026-11-10 P0】改为**连续 N 轮确认**（`DAILY_STOP_CONFIRM_ROUNDS`）：
+    单轮瞬态读数会因「买入在途、资金已扣持仓未刷新」而误判（实盘 14:17 事故：
+    读出 −7.04% 而真实 −1.7%，直接置 flatten 并空转强平到收盘）。
+    本用例仍断言「**持续** −7% 必须强平」——保护没有放松，只是要求越线不是瞬态。
+    """
     r = RiskManager({"daily_stop_flatten_pct": -0.06})
-    # 开盘 100000，跌到 93000（-7% <= -6%）→ 应触发强平+停牌
-    r.on_asset_update(93000, day_open_asset=100000)
-    assert r.flatten_requested, "当日 -7% 应触发日内硬止损强平"
+    # 开盘 100000，跌到 93000（-7% <= -6%）→ 连续 N 轮后应触发强平+停牌
+    for _ in range(r.DAILY_STOP_CONFIRM_ROUNDS):
+        r.on_asset_update(93000, day_open_asset=100000)
+    assert r.flatten_requested, "持续 −7% 应触发日内硬止损强平"
     assert r.is_halted, "日内硬止损应同时暂停新开仓"
+
+
+def test_daily_hard_stop_single_transient_reading_does_not_flatten():
+    """★ 反向断言（2026-11-10 实盘事故）：单轮瞬态越线**不得**强平。
+
+    14:17:21 买 510500 500 股（3,347 元）→ 14:17:36 资产更新少算一个持仓
+    → 读出 daily_stop −7.04%（真实 −1.7%）→ 假熔断并空转强平。
+    """
+    r = RiskManager({"daily_stop_flatten_pct": -0.06})
+    r.on_asset_update(93000, day_open_asset=100000)      # 单轮瞬态
+    assert not r.flatten_requested, "单轮瞬态读数就置了强平标志 ⇒ 假强平复发"
+    r.on_asset_update(99500, day_open_asset=100000)      # 恢复 → 计数清零
+    r.on_asset_update(93000, day_open_asset=100000)      # 再来一次瞬态
+    assert not r.flatten_requested, "计数未随恢复清零 ⇒ 零散瞬态会被累加成真熔断"
+
 
 
 def test_daily_hard_stop_no_trigger_in_normal_drawdown():
@@ -201,7 +223,8 @@ def test_daily_hard_stop_no_trigger_in_normal_drawdown():
 def test_daily_hard_stop_flatten_reset_on_resume():
     """手动 resume 应同时清除 flatten_requested（恢复后不再强平）。"""
     r = RiskManager({"daily_stop_flatten_pct": -0.06})
-    r.on_asset_update(93000, day_open_asset=100000)
+    for _ in range(r.DAILY_STOP_CONFIRM_ROUNDS):      # 连续确认后才触发
+        r.on_asset_update(93000, day_open_asset=100000)
     assert r.flatten_requested
     r.resume("manual")
     assert not r.flatten_requested
