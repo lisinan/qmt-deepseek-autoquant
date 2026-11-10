@@ -45,6 +45,14 @@ T+1、建仓保护期、`max_positions` 全部照旧生效——这条是设计�
     reject  —— 明确不执行（超上限/无持仓/T+1/非法字段），**记账**，不再重试
     submit  —— 已交给落单口（买入）；**记账**，同 id 不再提交
     ok      —— 卖出确认成交（`_handle_sell` 返回 True）；记账
+
+## 池外代码怎么拿到行情（2026-11-10 补）
+
+`_subscribe_codes()` 只订阅「UNIVERSE + VALIDATION_UNIVERSE + 动态池 + 持仓」，
+所以「盘中买一只池外代码」时没有 tick，`decide()` 会永远 `skip / 暂无行情价`。
+`fill_missing_ticks()` 由引擎在 `run_step` 之前调用，按需给这些代码补一条行情，
+**不改订阅清单**；成交后持仓会把该代码带进 `_subscribe_codes()`，由持仓同步
+那条自愈路径接管常态订阅。
 """
 from __future__ import annotations
 
@@ -185,6 +193,112 @@ def _float(v: Any) -> Optional[float]:
         return float(v)
     except (TypeError, ValueError):
         return None
+
+
+def pending_codes(engine, logger=None) -> List[str]:
+    """队列里**尚未记账**的指令代码（去重、只保留 BUY/SELL）。
+
+    唯一用途：让引擎给「订阅清单之外的代码」按需补行情，见 ``fill_missing_ticks``。
+    不做任何记账、不落单、不改状态。
+    """
+    done = load_done(engine, logger=logger)
+    out: List[str] = []
+    for ins in read_instructions(engine, logger=logger):
+        oid = str(ins.get("id") or "").strip()
+        if not oid or oid in done:
+            continue
+        if not _norm_side(ins.get("side")):
+            continue
+        code = str(ins.get("code") or "").strip().upper()
+        if code:
+            out.append(code)
+    return list(dict.fromkeys(out))
+
+
+def fill_missing_ticks(engine, ticks: Dict[str, Any], *, get_ticks=None,
+                       to_tick=None, logger=None, max_codes: int = 5) -> int:
+    """给指令队列里「不在 ``ticks`` 中」的代码按需补一条行情；返回补齐只数。
+
+    ## 为什么必须有这一步（2026-11-10，真实卡点）
+
+    行情订阅清单由 ``engine._subscribe_codes()`` 决定：
+    ``UNIVERSE + VALIDATION_UNIVERSE + 动态活跃池 + 持仓``。
+    OWNER 想在盘中买一只**池外代码**（实测 510300.SH）时，它不在这四项里
+    ⇒ 没有 tick ⇒ ``decide()`` 永远返回 ``skip / 暂无行情价``，通道看起来
+    「活着但什么也不做」。而绕开它的两种做法都不可接受：
+      · 改 ``config/settings.py`` 加白名单 —— 盘中改配置必须重启实盘，且该文件
+        对 Agent 只读（WinError 5）；
+      · 直接手写 ``signal.json`` —— 绕过引擎账本，无 ``fills`` 行 ⇒
+        ``open_date`` 回灌失效 ⇒ T+1 与建仓保护期对该仓双双失效。
+
+    而 ``tushare`` 适配器的 ``get_ticks()`` 本来就能按需拉任意代码（冷代码走
+    ``_fetch_realtime_quote``），只是没人调它。所以这里只补「缺的那几只」，
+    不动订阅清单本身 —— 一旦成交，持仓会把该代码带进 ``_subscribe_codes()``，
+    由券商持仓同步那条自愈路径接管常态订阅。
+
+    ## 边界
+      · 只读队列，不记账；行情取不到就返回 0，本轮按「无行情」照常 skip；
+      · 任何异常都不外抛（这是挂在主循环里的东西）；
+      · 单轮最多补 ``max_codes`` 只，防止队列里塞了几百条时每轮打一轮网络。
+    """
+    if not isinstance(ticks, dict) or get_ticks is None or to_tick is None:
+        return 0
+    try:
+        missing = [c for c in pending_codes(engine, logger=logger) if c not in ticks]
+    except Exception as e:                          # noqa: BLE001
+        if logger:
+            logger.debug("[OWNER指令] 待补行情代码解析失败(忽略): %s", e)
+        return 0
+    if not missing:
+        return 0
+    if len(missing) > max_codes:
+        if logger:
+            logger.warning("[OWNER指令] 待补行情 %d 只超过单轮上限 %d，本轮只补前 %d 只",
+                           len(missing), max_codes, max_codes)
+        missing = missing[:max_codes]
+    try:
+        raw = get_ticks(missing) or {}
+    except Exception as e:                          # noqa: BLE001
+        if logger:
+            logger.warning("[OWNER指令] 按需取行情失败（本轮按无行情处理）: %s", e)
+        return 0
+
+    # 同一只票「每轮都要补」是常态（等 price_cap / price_floor 期间），
+    # 所以 INFO 只按「代码 + 交易日」打一次，其余降 DEBUG，避免 8s 一行刷屏。
+    _day = datetime.now().date().isoformat()
+    if getattr(engine, "_owner_fill_day", "") != _day:
+        engine._owner_fill_day = _day
+        engine._owner_fill_logged = set()
+    logged = getattr(engine, "_owner_fill_logged", None)
+    if not isinstance(logged, set):
+        logged = set()
+        engine._owner_fill_logged = logged
+
+    added = 0
+    for code in missing:
+        r = raw.get(code)
+        if not isinstance(r, dict):
+            continue
+        try:
+            t = to_tick(code, r)
+        except Exception as e:                      # noqa: BLE001
+            if logger:
+                logger.debug("[OWNER指令] 组装 tick 失败 %s: %s", code, e)
+            continue
+        if t is None or not getattr(t, "is_valid", False):
+            continue
+        ticks[code] = t
+        added += 1
+        if logger:
+            if code in logged:
+                logger.debug("[OWNER指令] %s 按需行情 @%.3f", code,
+                             float(getattr(t, "price", 0) or 0))
+            else:
+                logged.add(code)
+                logger.info("[OWNER指令] %s 不在订阅清单，已按需补行情 @%.3f（源=%s）",
+                            code, float(getattr(t, "price", 0) or 0),
+                            getattr(t, "source", "?"))
+    return added
 
 
 def decide(ins: dict, *, now: datetime, positions: Dict[str, Any],

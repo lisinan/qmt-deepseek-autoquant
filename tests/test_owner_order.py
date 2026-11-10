@@ -569,3 +569,140 @@ def test_sell_blocked_without_order_still_records_reject():
         st = _run(e, ticks={"510050.SH": _Tick(2.9)})
         assert st["reject"] == 1
         assert e.done()["lp3"]["status"] == oo.ST_REJECT
+
+
+# ------------------------------------- 池外代码按需补行情（2026-11-10 P1）
+# 背景：订阅清单 = UNIVERSE + VALIDATION_UNIVERSE + 动态池 + 持仓。
+# OWNER 盘中想买池外代码（实测 510300.SH）时没有 tick ⇒ decide() 永远
+# "skip / 暂无行情价"，通道活着但什么也不做。fill_missing_ticks 负责补。
+
+
+class _TickV(object):
+    """带 is_valid / source 的 tick，形状与 core.data_models.Tick 一致。"""
+
+    def __init__(self, price, source="tushare"):
+        self.price = price
+        self.source = source
+
+    @property
+    def is_valid(self):
+        return self.price > 0
+
+
+def _to_tick(price_map):
+    def _f(code, raw):
+        return _TickV(float(raw.get("lastPrice") or 0))
+    return _f
+
+
+def test_pending_codes_only_returns_unrecorded_actionable():
+    """已记账的、side 非法的、坏行都不能进补行情清单。"""
+    with _Env() as e:
+        e.queue(
+            {"id": "p1", "code": "510300.sh", "side": "BUY", "lots": 500},
+            {"id": "p2", "code": "510050.SH", "side": "SELL", "lots": 100},
+            {"id": "p3", "code": "300308.SZ", "side": "HOLD"},
+            {"id": "p4", "code": "000001.SH", "side": "BUY", "lots": 100},
+        )
+        # p4 已记账 ⇒ 不该再补行情
+        oo.record(e.eng, oo.load_done(e.eng), "p4", oo.ST_SUBMIT, "已提交")
+        codes = oo.pending_codes(e.eng)
+        # 代码统一大写 + 去重保序；HOLD / 已记账 被剔除
+        assert codes == ["510300.SH", "510050.SH"], codes
+
+
+def test_pending_codes_dedup_same_code():
+    with _Env() as e:
+        e.queue(
+            {"id": "d1", "code": "510300.SH", "side": "BUY", "lots": 100},
+            {"id": "d2", "code": "510300.SH", "side": "BUY", "lots": 200},
+        )
+        assert oo.pending_codes(e.eng) == ["510300.SH"]
+
+
+def test_fill_missing_ticks_adds_outsider_code():
+    """核心用例：订阅里没有 510300，补一条后 decide() 才能拿到价格。"""
+    with _Env() as e:
+        # 500 股 × 4.139 ≈ 2,069.5 > 全局 max_amount=1000 ⇒ 必须用逐条覆盖，
+        # 否则这条通道对"池外的贵代码"永远只会在 decide() 里被金额上限拒掉。
+        e.queue({"id": "f1", "code": "510300.SH", "side": "BUY", "lots": 500,
+                 "max_amount": 2500.0})
+        ticks = {}
+        calls = []
+
+        def get_ticks(codes):
+            calls.append(list(codes))
+            return {"510300.SH": {"lastPrice": 4.139}}
+
+        n = oo.fill_missing_ticks(e.eng, ticks, get_ticks=get_ticks,
+                                  to_tick=_to_tick(None))
+        assert n == 1 and calls == [["510300.SH"]]
+        assert ticks["510300.SH"].price == 4.139
+        # 补完再走 run_step，条件单应当真的落单，而不是 skip
+        st = _run(e, ticks=ticks)
+        assert st["submit"] == 1, st
+        assert e.eng.buys == [("510300.SH", 500 * 4.139)], e.eng.buys
+
+
+def test_fill_missing_ticks_skips_already_subscribed():
+    """已订阅代码不重复取行情（每轮少一次网络往返）。"""
+    with _Env() as e:
+        e.queue({"id": "f2", "code": "510050.SH", "side": "BUY", "lots": 100})
+        ticks = {"510050.SH": _TickV(2.9)}
+        calls = []
+        n = oo.fill_missing_ticks(
+            e.eng, ticks, get_ticks=lambda c: calls.append(list(c)) or {},
+            to_tick=_to_tick(None))
+        assert n == 0 and calls == []
+
+
+def test_fill_missing_ticks_tolerates_quote_failure():
+    """取行情抛异常绝不能外抛 —— 它在主循环里。"""
+    with _Env() as e:
+        e.queue({"id": "f3", "code": "510300.SH", "side": "BUY", "lots": 100})
+        ticks = {}
+
+        def boom(codes):
+            raise RuntimeError("tushare down")
+
+        assert oo.fill_missing_ticks(e.eng, ticks, get_ticks=boom,
+                                     to_tick=_to_tick(None)) == 0
+        assert ticks == {}
+
+
+def test_fill_missing_ticks_caps_codes_per_round():
+    """队列里塞几百条时单轮最多补 5 只，否则每轮打一轮网络。"""
+    with _Env() as e:
+        items = [{"id": "c%d" % i, "code": "5103%02d.SH" % i, "side": "BUY",
+                  "lots": 100} for i in range(7)]
+        e.queue(*items)
+        calls = []
+        n = oo.fill_missing_ticks(
+            e.eng, {}, get_ticks=lambda c: calls.append(list(c)) or {},
+            to_tick=_to_tick(None), max_codes=5)
+        assert n == 0 and len(calls[0]) == 5, calls
+
+
+def test_fill_missing_ticks_ignores_invalid_quote():
+    """价格为 0 / 非 dict 的返回一律不写入 ticks（宁可不买，也不按 0 价下）。"""
+    with _Env() as e:
+        e.queue(
+            {"id": "g1", "code": "510300.SH", "side": "BUY", "lots": 100},
+            {"id": "g2", "code": "510500.SH", "side": "BUY", "lots": 100},
+        )
+        ticks = {}
+        n = oo.fill_missing_ticks(
+            e.eng, ticks,
+            get_ticks=lambda c: {"510300.SH": {"lastPrice": 0},
+                                 "510500.SH": "not-a-dict"},
+            to_tick=_to_tick(None))
+        assert n == 0 and ticks == {}
+
+
+def test_fill_missing_ticks_noop_without_getter():
+    """引擎没提供取行情函数时必须是纯 no-op（paper / 旧调用方）。"""
+    with _Env() as e:
+        e.queue({"id": "h1", "code": "510300.SH", "side": "BUY", "lots": 100})
+        ticks = {}
+        assert oo.fill_missing_ticks(e.eng, ticks, to_tick=_to_tick(None)) == 0
+        assert ticks == {}

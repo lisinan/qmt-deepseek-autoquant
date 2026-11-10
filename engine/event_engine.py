@@ -2755,6 +2755,19 @@ class EventEngine:
             return
         try:
             from core.owner_order import run_step as _owner_run_step
+            from core.owner_order import fill_missing_ticks as _owner_fill_ticks
+            # 【2026-11-10 P1】池外代码按需补行情。
+            # 订阅清单只含 UNIVERSE + VALIDATION_UNIVERSE + 动态池 + 持仓，
+            # OWNER 想买的池外代码（实测 510300.SH）拿不到 tick，decide() 会
+            # 永远 skip / 暂无行情价 —— 通道"活着但什么也不做"。
+            # tushare 适配器本来就能按需拉任意代码，这里只补缺的那几只。
+            # 就地写进 ticks 是刻意的：同一轮的价格映射 / 持仓市值也该看到它。
+            try:
+                _owner_fill_ticks(
+                    self, ticks, get_ticks=qmt_client.get_ticks,
+                    to_tick=_to_tick, logger=logger)
+            except Exception as _fill_err:  # noqa: BLE001
+                logger.debug("[OWNER指令] 按需补行情异常(忽略): %s", _fill_err)
             _owner_run_step(
                 self, ticks, current_prices, cfg=cfg, logger=logger,
                 notify=system_notice, signal_cls=Signal,
