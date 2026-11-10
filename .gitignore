@@ -75,3 +75,8 @@ scripts/_probe_xttrader_admin.py
 scripts/_probe_admin.bat
 scripts/_probe_admin_result.txt
 scripts/_repro_qmt_launch.py
+
+# Agent 生成的配置提议文件：与 settings.py 逐字节同源，仅供 OWNER cp，不入库
+# （否则同一份配置在历史里存两遍，且会随 settings 漂移）
+config/settings.py.proposed-*
+*.proposed-*
