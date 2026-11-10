@@ -30,6 +30,13 @@ def create_app(engine: EventEngine = None) -> Flask:
 
     from web.routes import bp
     app.register_blueprint(bp)
+    # 【2026-11-10】实盘区买卖交易模块（/trade）。
+    # 它**只写** core.owner_order 的指令队列，落单仍走引擎的 _handle_buy/_handle_sell
+    # （唯一落单口）；见 web/trade_api.py 模块 docstring 的五条红线。
+    # 单独成 blueprint 而不并进 routes.py：routes.py 已是 480 行纯只读聚合，
+    # 把「写队列」这类动作混进去会让「哪些端点会改状态」变得不可 grep。
+    from web.trade_api import bp as trade_bp
+    app.register_blueprint(trade_bp)
     logger.info("Flask app 创建完成")
     return app
 

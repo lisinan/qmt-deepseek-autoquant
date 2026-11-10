@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>qmtIDE · 实盘买卖</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/main.css') }}">
+</head>
+<body>
+  <header>
+    <h1>实盘买卖
+      <span class="badge" id="zone-badge">zone: ?</span>
+      <span class="badge" id="channel-badge">channel: ?</span>
+      <span class="badge" id="risk-badge">risk: ?</span>
+      <span class="conn-status" id="conn-status">● 连接中</span>
+    </h1>
+    <div class="actions">
+      <a class="btn-like" href="/">返回仪表盘</a>
+      <button id="btn-refresh">刷新</button>
+    </div>
+  </header>
+
+  <main>
+    <!-- ============ 顶部：账户与通道状态 ============ -->
+    <section class="panel span-12">
+      <h2>账户与通道</h2>
+      <div class="kv" id="account-box">
+        <div><label>总资产</label><span id="kv-total">—</span></div>
+        <div><label>可用现金</label><span id="kv-cash">—</span></div>
+        <div><label>今日已用指令</label><span id="kv-used">—</span></div>
+        <div><label>单笔上限</label><span id="kv-cap">—</span></div>
+      </div>
+      <div class="warn" id="risk-warn" style="display:none"></div>
+      <table class="tbl" id="pos-tbl">
+        <thead><tr><th>代码</th><th>持仓</th><th>可用</th><th>成本</th><th>现价</th><th></th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </section>
+
+    <!-- ============ 下单表单 ============ -->
+    <section class="panel span-6">
+      <h2>下单</h2>
+      <form id="order-form" autocomplete="off">
+        <div class="field">
+          <label>方向</label>
+          <div class="seg">
+            <label><input type="radio" name="side" value="BUY" checked> 买入</label>
+            <label><input type="radio" name="side" value="SELL"> 卖出</label>
+          </div>
+        </div>
+        <div class="field">
+          <label>代码</label>
+          <input id="f-code" list="code-list" placeholder="600000.SH" required>
+          <datalist id="code-list"></datalist>
+        </div>
+        <div class="field">
+          <label>股数（lots）</label>
+          <input id="f-lots" type="number" min="1" step="100" value="100" required>
+          <span class="hint" id="hint-lots"></span>
+        </div>
+        <div class="field">
+          <label>价格上限（可选，买入不追高）</label>
+          <input id="f-cap" type="number" step="0.001" placeholder="留空=不限价">
+        </div>
+        <div class="field">
+          <label>有效期</label>
+          <input id="f-valid" type="date" required>
+        </div>
+        <div class="field">
+          <label>备注</label>
+          <input id="f-note" maxlength="80" placeholder="最多 80 字">
+        </div>
+        <div class="field">
+          <label>预估金额</label>
+          <span id="est-amount" class="mono">—</span>
+        </div>
+        <div class="form-msg" id="form-msg"></div>
+        <button type="submit" id="btn-submit">下单（需二次确认）</button>
+      </form>
+    </section>
+
+    <!-- ============ 队列状态 ============ -->
+    <section class="panel span-6">
+      <h2>指令队列与状态 <span class="hint">（pending = 引擎尚未处理）</span></h2>
+      <table class="tbl" id="queue-tbl">
+        <thead><tr><th>id</th><th>代码</th><th>方向</th><th>股数</th><th>状态</th><th>原因</th><th></th></tr></thead>
+        <tbody></tbody>
+      </table>
+      <p class="hint">
+        状态含义：<b>pending</b> 未处理 · <b>submit</b> 已交落单口待成交 ·
+        <b>reject</b> 被拒（原因见右列）· <b>ok</b> 已确认成交 ·
+        <b>cancelled</b> 面板上取消。
+      </p>
+    </section>
+  </main>
+
+  <script>
+    // 与 index.html 同一注入约定（代码候选池 / 名称映射给前端做 datalist 与提示）
+    window.UNIVERSE = {{ universe | tojson }};
+    window.STOCK_NAMES = {{ stock_names | tojson }};
+  </script>
+  <script src="{{ url_for('static', filename='js/trade.js') }}"></script>
+</body>
+</html>

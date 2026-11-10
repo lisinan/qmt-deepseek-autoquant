@@ -542,7 +542,10 @@ def _collect_tests():
             # 【2026-11-10 主理人】本批落盘的反向断言：峰值基线不被熔断恢复下移 /
             #   回撤熔断解除后不立即再熔断 / peak 兜底按 mode 过滤 / 未知态占位
             #   按墙钟自解且先于 get_trades / 宽度闸门用全量池口径。
-            "tests.test_20261110_landing_guards"]
+            "tests.test_20261110_landing_guards",
+            # 【2026-11-10】实盘区买卖交易模块：只写队列不碰 broker / 预检复用引擎
+            #   同一份 decide() / 一次性令牌 / paper 区默认禁用 / 取消只作用于未记账 id
+            "tests.test_trade_panel"]
     tests = []
     import_errors = []
     for m in mods:

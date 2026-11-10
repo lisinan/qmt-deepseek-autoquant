@@ -1695,3 +1695,52 @@ python scripts/seed_zone_timeline.py --to paper --apply    # 实际写（幂等�
   ③ 无 order_id 场景的 `fills` 回填（需实测 `QUERY_TRADE` 是否返回 DEAL 记录，
   桥侧 DEAL 自带真 `m_strOrderSysID`）；
   ④ `risk_per_trade` 0.040→0.030 待 OWNER 裁决（`reports/EXPOSURE_PROPOSAL_20261110.md`）。
+
+### 2026-11-10 新增：实盘区买卖交易模块（主理人）
+
+- [已落地] **live 面板新增 `/trade` 下单页**（`web/trade_api.py` + `templates/trade.html`
+  + `static/js/trade.js`），入口在仪表盘 header 的「买卖」按钮。
+  **它不是新通道**：只往 `storage/owner_orders.jsonl` 追加一行，
+  落单仍由 `core/owner_order.run_step` 交给 `_handle_buy` / `_handle_sell`（唯一落单口）。
+
+- **五条红线（都有测试钉住，17 例全绿）**
+  1. **绝不碰 broker**：`test_module_never_touches_broker` 用 **AST** 断言模块不 import
+     `qmt_broker/core.broker*/core.qmt_client/xtquant`、不调 `place_order/passorder/
+     cancel_order_stock`。（第一版用字符串 grep，被自己 docstring 里的「本模块不 import
+     qmt_broker」判成假红 —— 这条已写进测试注释。）
+  2. **校验只有一份**：提交预检直接调 `core.owner_order.decide()`，与引擎执行时同一个
+     纯函数 ⇒ 面板说「会被拒」与引擎真拒绝必然一致。
+  3. **被引擎会拒的指令不入队**（否则队列堆满永不执行的单，人以为已下单）。
+  4. **append-only**，历史行一个字节都不改写。
+  5. **取消靠 done 账本**：已记账的 id 不得被取消（否则把「已提交」洗成「没下过单」）。
+
+- **一次性令牌**：`POST /api/trade/token` 发 120 秒、单次有效令牌，
+  `submit/cancel` 必须带 `X-Trade-Token`。目的不是加密，是防误触与防跨站
+  —— 这个接口动的是真实资金。
+
+- ★ **实测抓到一个真 bug 并已修**：原先写 `done = OO.load_done(e) or {}`。
+  `load_done` 把账本缓存在 `engine._owner_done`，**账本为空时它是假值** ⇒ `or {}`
+  把缓存对象换成了临时 dict ⇒ `record()` 写入只落文件、内存缓存仍空 ⇒
+  同一进程内后续读取看不到刚写的状态（表现为「取消」可以重复成功）。
+  已改为显式 `isinstance` 判定，并补 `test_load_done_cache_is_not_dropped_by_or_default`
+  反向断言。
+
+- ★ **另一条实测修正**：面板原先会把 live 引擎刚启动时的构造初值
+  （`cash=1,000,000`、无持仓）当「可用现金」显示。现改为按风控层同一字段
+  `_broker_total_asset > 0` 判定「券商资产是否可信」；不可信时现金/总资产返回 `null`、
+  持仓返回空，前端显示「未同步券商」并出警告条。
+  理由：对着假数字决定真金白银的仓位，是这类面板最危险的失败方式。
+  正向对照测试 `test_asset_trusted_shows_real_numbers` 防「一律隐藏把面板做成废物」。
+
+- **开关**：`QMT_TRADE_UI=0` 一键关闭（`/trade` 与全部 `/api/trade/*` 返回 403）；
+  paper 区默认禁用，需 `QMT_TRADE_UI_ALLOW_PAPER=1`。改完**必须重启引擎**
+  （Flask app 在引擎启动时创建）。已重启并 HTTP 实测：`/trade` 200、
+  `asset_trusted=False`（收盘后未同步券商，正确）、`channel.enabled=True`。
+
+- [验收] 全量回归 **1128 通过 / 36 失败 / 1164 例**（新增 15+2 例，失败数不变 36）。
+  文档 `docs/TRADE_PANEL.md`（含五条红线、API、状态语义、已知限制）。
+
+- ⚠ [需 OWNER 知道] 队列里现在有 **1 条未执行指令**：
+  `sell-20261110-2　SELL 510050.SH 100 股　valid_until 2026-11-13`（备注「上涨过 2.91 卖一手-验证卖出链路」）。
+  它在明日开盘后会被执行（`lots` 修复已上线，会按 100 股而不是整仓提交）。
+  如不想让它执行，可在 `/trade` 页面点「取消」，或删掉队列里那一行。
