@@ -70,14 +70,21 @@ def apply_transform(src: str) -> str:
     anchor_method = "    def _owner_reentry_step(self, ticks: Dict[str, Tick],"
     if src.count(anchor_method) != 1:
         raise ValueError("方法插入点命中 %d 次（应为 1）" % src.count(anchor_method))
-    out = src.replace(ANCHOR_REENTRY, ANCHOR_REENTRY + "        self._owner_order_step(ticks, current_prices)\n")
+    # ★ 传 inline 字典，不要传 current_prices：
+    #   挂载点位于「入场决策 5 分钟节流」**之前**，而 current_prices 在那行之后
+    #   才赋值 ⇒ 直接引用会 UnboundLocalError（2026-11-10 首次落盘即被测试抓到）。
+    #   与相邻的 _owner_reentry_step 保持同一写法，也顺手避免顺序耦合。
+    out = src.replace(ANCHOR_REENTRY, ANCHOR_REENTRY +
+                      "        self._owner_order_step(ticks, "
+                      "{c: t.price for c, t in ticks.items()})\n")
     out = out.replace(anchor_method, METHOD + anchor_method)
     return out
 
 
 def revert_transform(src: str) -> str:
     """反向还原（用于自检 3）。"""
-    out = src.replace("        self._owner_order_step(ticks, current_prices)\n", "")
+    out = src.replace("        self._owner_order_step(ticks, "
+                     "{c: t.price for c, t in ticks.items()})\n", "")
     start = src.find(METHOD)
     if start >= 0:
         out = out.replace(METHOD, "")

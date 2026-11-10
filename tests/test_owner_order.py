@@ -292,7 +292,8 @@ def test_mount_point_references_only_existing_names():
     sys.path.insert(0, "scripts")
     import patch_owner_order as patcher
     patched = patcher.apply_transform(src)
-    assert patched != src
+    # 注意：apply_transform 是幂等的 —— 已挂载时原样返回。所以这里**不能**断言
+    # patched != src（落盘后就恒等了）；合法性由下面的 AST 结构与名字检查来证明。
 
     tree = ast.parse(patched)
     # 1) 方法必须存在，且被调用一次

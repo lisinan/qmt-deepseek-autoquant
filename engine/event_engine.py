@@ -2686,6 +2686,35 @@ class EventEngine:
                     f"（{getattr(self, 'exec_mode', 'paper')}，绕过信号闸门，"
                     f"风控/现金夹紧照旧）")
 
+    # ==== OWNER 指令单挂载点（由 scripts/patch_owner_order.py 插入）====
+    def _owner_order_step(self, ticks, current_prices) -> None:
+        """执行 OWNER 手工指令（storage/owner_orders.jsonl）。
+
+        与既有两条通道的区别：manual_entry 跳过已持仓、owner_reentry 只补空仓，
+        两条都**故意**拒绝加仓；本通道允许加仓，也允许卖出。
+
+        红线（一条都不放开）：落单只走 ``_handle_buy`` / ``_handle_sell``，
+        因此熔断、日内次数、现金夹紧、行情新鲜度、总资产可信度、T+1、
+        建仓保护期、max_positions 全部照旧生效。逻辑本体在 core/owner_order.py。
+
+        关闭时（STRATEGY_PARAMS["owner_order"]["enabled"] 为假）立即返回，
+        不读文件、不打日志 —— 这是本改动的第一验收项。
+        """
+        cfg = STRATEGY_PARAMS.get("owner_order") or {}
+        if not isinstance(cfg, dict) or not cfg.get("enabled"):
+            return
+        try:
+            from core.owner_order import run_step as _owner_run_step
+            _owner_run_step(
+                self, ticks, current_prices, cfg=cfg, logger=logger,
+                notify=system_notice, signal_cls=Signal,
+                get_name=get_stock_name, t1_lock=is_t1_locked,
+                save_signal=self._save_signal,
+                handle_buy=self._handle_buy, handle_sell=self._handle_sell)
+        except Exception as e:  # noqa: BLE001 - 指令通道异常绝不许拖垮主循环
+            logger.warning("[OWNER指令] 本轮异常（已忽略，不影响策略）: %s", e)
+    # ==== OWNER 指令单挂载点 END ====
+
     def _owner_reentry_step(self, ticks: Dict[str, Tick],
                             current_prices: Dict[str, float]) -> None:
         """按 ``STRATEGY_PARAMS["owner_reentry"]`` 在指定价格区间回补 OWNER 底仓。
@@ -2818,6 +2847,7 @@ class EventEngine:
         #   不做评分，每 tick 调用开销可忽略；内部对「触发但未成交」有 60s 节流，
         #   不会因为反复失败而刷屏。
         self._owner_reentry_step(ticks, {c: t.price for c, t in ticks.items()})
+        self._owner_order_step(ticks, {c: t.price for c, t in ticks.items()})
         # 节流：日线 score 不会变快于 DailyContext 刷新；避免每 tick 重复评分。
         now = time.time()
         if (now - self._last_entry_decision_ts
