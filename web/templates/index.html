@@ -3,28 +3,37 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#0a0f15">
   <title>qmtIDE-deepseek 实时仪表板</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='css/main.css') }}">
 </head>
-<body>
+<body id="top">
   <header>
-    <h1>qmtIDE-deepseek
-      <span class="badge" id="data-mode">data: ?</span>
-      <span class="badge" id="broker-mode">broker: ?</span>
-      <span class="badge" id="exec-mode">exec: ?</span>
-      <span class="badge" id="strat-mode">strategy: ?</span>
-      <span class="conn-status" id="conn-status">● 离线</span>
-    </h1>
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <h1>qmtIDE-deepseek
+        <span class="badge-group">
+          <span class="badge" id="data-mode">data: ?</span>
+          <span class="badge" id="broker-mode">broker: ?</span>
+          <span class="badge" id="exec-mode">exec: ?</span>
+          <span class="badge" id="strat-mode">strategy: ?</span>
+        </span>
+        <span class="conn-status" id="conn-status">● 离线</span>
+      </h1>
+    </div>
     <div class="actions">
       <button id="btn-start">启动</button>
       <button id="btn-stop" class="danger">停止</button>
       <button id="btn-rerank">LLM 重排序</button>
-      <a class="btn-like" href="/trade" title="实盘买卖：写入 OWNER 指令队列，落单仍走引擎唯一落单口">买卖</a>
+      <a class="btn-like btn-accent" href="#trade" title="实盘买卖：写入 OWNER 指令队列，落单仍走引擎唯一落单口">买卖</a>
       <button id="btn-refresh">刷新</button>
     </div>
   </header>
 
   <main>
+    <!-- ══ 01 今日决策 ══ -->
+    <div class="section-divider"><span class="section-index">01</span><span class="section-title">今日决策</span><span class="section-note">策略状态与未开仓归因</span></div>
+
     <!-- ① 今日决策条：为何没开仓 / 是否降级 / AI 否决 / 相对基准超额 -->
     <section class="panel span-12" id="decision-panel">
       <div class="dec-strip">
@@ -50,6 +59,104 @@
         </div>
       </div>
     </section>
+
+    <!-- ══ 02 实盘买卖（原 /trade 页，2026-11-10 合并入主页） ══
+         元素、文案、id 全部沿用 trade.html，仅把与主页冲突的
+         conn-status / btn-refresh 改名为 trade-conn-status / btn-trade-refresh，
+         trade.js 已同步。API 端点与二次确认流程完全不变。 -->
+    <div class="section-divider" id="trade">
+      <span class="section-index">02</span>
+      <span class="section-title">实盘买卖</span>
+      <span class="section-note">OWNER 指令通道 · 只写队列，落单仍走引擎唯一落单口</span>
+      <span class="section-actions">
+        <a class="btn-like" href="/">返回仪表盘</a>
+        <button id="btn-trade-refresh" class="mini">刷新</button>
+      </span>
+    </div>
+
+    <!-- ============ 账户与通道状态 ============ -->
+    <section class="panel span-12" id="trade-account-panel">
+      <h2>账户与通道
+        <span class="trade-status-group">
+          <span class="badge" id="zone-badge">zone: ?</span>
+          <span class="badge" id="channel-badge">channel: ?</span>
+          <span class="badge" id="risk-badge">risk: ?</span>
+          <span class="conn-status" id="trade-conn-status">● 连接中</span>
+        </span>
+      </h2>
+      <div class="kv" id="account-box">
+        <div><label>总资产</label><span id="kv-total">—</span></div>
+        <div><label>可用现金</label><span id="kv-cash">—</span></div>
+        <div><label>今日已用指令</label><span id="kv-used">—</span></div>
+        <div><label>单笔上限</label><span id="kv-cap">—</span></div>
+      </div>
+      <div class="warn" id="risk-warn" style="display:none"></div>
+      <table class="tbl" id="pos-tbl">
+        <thead><tr><th>代码</th><th>持仓</th><th>可用</th><th>成本</th><th>现价</th><th></th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </section>
+
+    <!-- ============ 下单表单 ============ -->
+    <section class="panel span-5" id="trade-form-panel">
+      <h2>下单</h2>
+      <form id="order-form" class="trade-form" autocomplete="off">
+        <div class="field">
+          <label>方向</label>
+          <div class="seg">
+            <label><input type="radio" name="side" value="BUY" checked> 买入</label>
+            <label><input type="radio" name="side" value="SELL"> 卖出</label>
+          </div>
+        </div>
+        <div class="field">
+          <label>代码</label>
+          <input id="f-code" list="code-list" placeholder="600000.SH" required>
+          <datalist id="code-list"></datalist>
+        </div>
+        <div class="field">
+          <label>股数（lots）</label>
+          <input id="f-lots" type="number" min="1" step="100" value="100" required>
+          <span class="hint" id="hint-lots"></span>
+        </div>
+        <div class="field">
+          <label>价格上限（可选，买入不追高）</label>
+          <input id="f-cap" type="number" step="0.001" placeholder="留空=不限价">
+        </div>
+        <div class="field">
+          <label>有效期</label>
+          <input id="f-valid" type="date" required>
+        </div>
+        <div class="field">
+          <label>备注</label>
+          <input id="f-note" maxlength="80" placeholder="最多 80 字">
+        </div>
+        <div class="field field-wide">
+          <label>预估金额</label>
+          <span id="est-amount" class="mono">—</span>
+        </div>
+        <div class="form-msg" id="form-msg"></div>
+        <button type="submit" id="btn-submit" class="btn-submit">下单（需二次确认）</button>
+      </form>
+    </section>
+
+    <!-- ============ 队列状态 ============ -->
+    <section class="panel span-7" id="trade-queue-panel">
+      <h2>指令队列与状态 <span class="hint">（pending = 引擎尚未处理）</span></h2>
+      <div class="scroll scroll-x h-300">
+      <table class="tbl" id="queue-tbl">
+        <thead><tr><th>id</th><th>代码</th><th>方向</th><th>股数</th><th>状态</th><th>原因</th><th></th></tr></thead>
+        <tbody></tbody>
+      </table>
+      </div>
+      <p class="hint">
+        状态含义：<b>pending</b> 未处理 · <b>submit</b> 已交落单口待成交 ·
+        <b>reject</b> 被拒（原因见右列）· <b>ok</b> 已确认成交 ·
+        <b>cancelled</b> 面板上取消。
+      </p>
+    </section>
+
+    <!-- ══ 03 监控与诊断 ══ -->
+    <div class="section-divider"><span class="section-index">03</span><span class="section-title">监控与诊断</span><span class="section-note">闸门 · 资产 · 通道 · 行情</span></div>
 
     <!-- ② 入场闸门逐只明细（学习/排障主面板）：为什么今天一只都没买 -->
     <section class="panel span-12" id="gate-panel">
@@ -242,6 +349,9 @@
       </div>
     </section>
 
+    <!-- ══ 04 分析与记录 ══ -->
+    <div class="section-divider"><span class="section-index">04</span><span class="section-title">分析与记录</span><span class="section-note">推荐池 · 成交 · 深度分析</span></div>
+
     <!-- ④ 推荐池：列多，独立整行 + 横向滚动 -->
     <section class="panel span-12" id="rec-panel">
       <h2>推荐池 <span class="muted" id="rec-pool-summary">--</span></h2>
@@ -318,5 +428,19 @@
     window.STOCK_NAMES = {{ stock_names | tojson }};
   </script>
   <script src="{{ url_for('static', filename='js/dashboard.js') }}"></script>
+  <script src="{{ url_for('static', filename='js/trade.js') }}"></script>
+  <script>
+    // 【2026-11-10 合并】实盘买卖已并入主页 /。旧链接 /trade 仍由后端渲染同一份
+    // 主页（返回 200，开关与 403 语义不变），这里不重载、只把地址归一到 /#trade
+    // 并滚动定位，避免「两个页面」造成的状态与样式分叉。
+    (function () {
+      if (location.pathname !== '/trade') return;
+      try { history.replaceState(null, '', '/#trade'); } catch (e) {}
+      window.addEventListener('DOMContentLoaded', function () {
+        var el = document.getElementById('trade');
+        if (el && el.scrollIntoView) el.scrollIntoView();
+      });
+    })();
+  </script>
 </body>
 </html>

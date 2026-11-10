@@ -3,8 +3,11 @@
 
 ## 它是什么 / 不是什么
 
-**是**：live 面板（:5000）上的 `/trade` 页 + 3 个 API，让 OWNER 用表单而不是手写
-JSONL 来下「买/卖 N 股某代码」。
+**是**：live 面板（:5000）主页上的「实盘买卖」区 + 交易 API，让 OWNER 用表单
+而不是手写 JSONL 来下「买/卖 N 股某代码」。
+【2026-11-10 合并】原独立页 `/trade` 已并入主页 `/`（锚点 `#trade`），
+`/trade` 仅作兼容入口渲染同一份主页，返回码与开关判定不变；
+三个页面级差异（模板 / CSS / JS）因此收敛为一套，避免样式与交互分叉。
 
 **不是**：一条新的下单通道。它**只做一件事**——往既有的
 ``storage/owner_orders.jsonl`` 追加一行，然后由引擎主循环里的
@@ -314,6 +317,11 @@ def _consume_token(tok: str) -> bool:
 
 @bp.route("/trade")
 def trade_page():
+    """兼容入口：实盘买卖已合并进主页 /，本路由渲染同一份主页（见 trade.html）。
+
+    开关（QMT_TRADE_UI=0 / paper 分区）与 200/403 返回码保持原语义不变；
+    页面加载后由 index.html 末尾脚本把地址归一到 /#trade 并滚动定位。
+    """
     if not ui_enabled():
         return ("实盘交易面板已被 QMT_TRADE_UI=0 关闭", 403)
     e = _engine()

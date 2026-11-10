@@ -99,8 +99,9 @@
         "<td></td>";
       var btn = document.createElement("button");
       btn.textContent = "卖出";
+      btn.className = "mini btn-sell";
       btn.onclick = function () {
-        document.querySelector("input[name=side][value=SELL]").checked = true;
+        document.querySelector("#order-form input[name=side][value=SELL]").checked = true;
         $("f-code").value = p.code;
         $("f-lots").value = Math.min(100, p.quantity);
         updateEstimate();
@@ -125,7 +126,7 @@
       if (q.status === "pending") {
         var cb = document.createElement("button");
         cb.textContent = "取消";
-        cb.className = "danger";
+        cb.className = "danger mini";
         cb.onclick = function () { cancelOrder(q.id); };
         tr.lastChild.appendChild(cb);
       }
@@ -154,13 +155,13 @@
       return r.json();
     }).then(function (j) {
       ST = j;
-      $("conn-status").textContent = "● 在线";
-      $("conn-status").className = "conn-status ok";
+      $("trade-conn-status").textContent = "● 在线";
+      $("trade-conn-status").className = "conn-status ok";
       renderStatus();
       updateEstimate();
     }).catch(function (e) {
-      $("conn-status").textContent = "● 离线";
-      $("conn-status").className = "conn-status bad";
+      $("trade-conn-status").textContent = "● 离线";
+      $("trade-conn-status").className = "conn-status bad";
       setMsg(String(e.message || e), "bad");
     });
   }
@@ -178,7 +179,7 @@
 
   function onSubmit(ev) {
     ev.preventDefault();
-    var side = document.querySelector("input[name=side]:checked").value;
+    var side = document.querySelector("#order-form input[name=side]:checked").value;
     var body = {
       side: side,
       code: ($("f-code").value || "").trim().toUpperCase(),
@@ -244,7 +245,7 @@
     $("f-valid").value = todayISO();
     initCodeList();
     $("order-form").addEventListener("submit", onSubmit);
-    $("btn-refresh").addEventListener("click", load);
+    $("btn-trade-refresh").addEventListener("click", load);
     ["f-code", "f-lots"].forEach(function (id) {
       $(id).addEventListener("input", updateEstimate);
     });
