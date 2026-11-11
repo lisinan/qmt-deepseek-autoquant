@@ -653,13 +653,23 @@ def _parse_equity_from_notices(notices: list) -> list:
 
 def _load_equity_series(c: sqlite3.Connection, target: str,
                         notices: list):
-    """返回 (series, source)。series: [(ts, total_asset, cash), ...]"""
+    """返回 (series, source)。series: [(ts, total_asset, cash, market_value), ...]
+
+    【2026-11-11】第 4 位 ``market_value`` 是**新增**的（旧消费方按索引 0/1/2
+    取值，不受影响）。加它是因为下游 ``market_value = total - cash`` 在有冻结
+    资金时是错的：北交所打新预缴会让 ``total`` 仍含该笔钱而 ``cash`` 只剩可用，
+    相减把 58,800 冻结算成「持仓市值」（11-11 实测 59,664 vs 真实 864）。
+    notices 来源没有该字段，补 None，下游走旧算法兜底。
+    """
     rows = _rows(c, "equity_snapshots", target)
     if len(rows) >= 2:
         series = [(r["ts"], float(r["total_asset"] or 0.0),
-                   float(r["cash"] or 0.0)) for r in rows]
+                   float(r["cash"] or 0.0),
+                   (float(r["market_value"]) if r.get("market_value") is not None
+                    else None)) for r in rows]
         return series, "equity_snapshots"
-    series = _parse_equity_from_notices(notices)
+    series = [tuple(s) + (None,) * (4 - len(s)) if len(s) < 4 else tuple(s)
+              for s in _parse_equity_from_notices(notices)]
     return series, "notices(心跳)"
 
 
@@ -1785,13 +1795,19 @@ def main():
     equity = _equity_stats(eq_series)
 
     # EOD 汇总：优先用权益序列末点，其次心跳
+    _last_mv = None
     if eq_series:
         eod_total = eq_series[-1][1]
         eod_cash = eq_series[-1][2]
+        _last_mv = eq_series[-1][3] if len(eq_series[-1]) > 3 else None
     else:
         eod_total = 0.0
         eod_cash = 0.0
-    market_value = round(eod_total - eod_cash, 2)
+    # 【2026-11-11 P1】持仓市值优先取快照里落库的 market_value。
+    # 只有 notices 来源（无该字段）才退回 `total - cash` —— 那个算法在有冻结
+    # 资金时会把打新预缴算成持仓（11-11：59,664 vs 真实 864）。
+    market_value = (round(float(_last_mv), 2) if _last_mv is not None
+                    else round(eod_total - eod_cash, 2))
     unrealized = round(market_value - pnl["cost_basis"], 2)
     # 账户真实当日收益率/盈亏：用 equity_snapshots 跨日口径（含隔夜重估，透明可靠），
     # 作为「账户真实表现」基准，而非只用 equity 日内涨跌（会漏隔夜缺口）。
@@ -1865,7 +1881,9 @@ def main():
         "risk": risk,
         "equity": equity,
         "equity_source": eq_source,
-        "equity_series": [{"ts": s[0], "total_asset": s[1], "cash": s[2]} for s in eq_series],
+        "equity_series": [{"ts": s[0], "total_asset": s[1], "cash": s[2],
+                           "market_value": (s[3] if len(s) > 3 else None)}
+                          for s in eq_series],
         "eod": eod,
         "account_state": state_acct,
         "account_daily": acct_daily,

@@ -142,6 +142,24 @@ def frozen_adjusted_total(cash: float, frozen: float,
     return _t + _f if _t < _c + _f else _t
 
 
+def _fmt_dt(v, fmt: str = "%Y-%m-%d %H:%M") -> str:
+    """``datetime | None`` → 人类可读串，None 打 ``-``。
+
+    【为什么需要】所有 ``f"{dt:%H:%M}"`` 形式在 dt 为 None 时抛
+    ``TypeError: unsupported format string passed to NoneType.__format__``。
+    live 场景下这个 None 是**常态**：`open_date` 目前没有「DB→内存回灌」，
+    引擎重启后券商同步回来的持仓 open_date 就是 None。
+    2026-11-11 实测：T+1 / 建仓保护期两条拦截日志都用了这种格式串，
+    一旦触发就在 `_handle_sell` 里抛异常 ⇒ **该卖的仓卖不出去**（止损失效）。
+    """
+    if v is None:
+        return "-"
+    try:
+        return v.strftime(fmt)
+    except (AttributeError, ValueError):
+        return str(v)
+
+
 def is_in_entry_protection(open_date, protect_minutes: int,
                            now: Optional[datetime] = None) -> bool:
     """建仓保护期：仓位是否仍处于「首个可卖交易日开盘后 protect_minutes 分钟内」。
@@ -800,7 +818,7 @@ class EventEngine:
             self._save_engine_state()
             self.storage.save_equity_snapshot(
                 self._total_asset() or capital, self._cash,
-                self._market_value(), len(self._positions), 0.0)
+                self._positions_market_value(), len(self._positions), 0.0)
         except Exception as e:
             logger.warning("复位后落盘失败: %s", e)
         flag.unlink(missing_ok=True)
@@ -3856,6 +3874,11 @@ class EventEngine:
             self._daily_trade_count, allow_large_position=owner_reentry)
         if not ok:
             self._log_reject_once(sig.code, reason)
+            # 【2026-11-11 P1】把风控/闸门的拒绝原因留痕，供 OWNER 指令通道
+            # 在账本里写清「为什么没买成」。原先 `_handle_buy` 恒返回 None，
+            # `core/owner_order.py:469` 无条件记 `submit 已交落单口` ⇒ 买入被
+            # 任一闸门拦下时，面板显示"已交落单口"，实际一股没买（假成功）。
+            self._last_buy_block_reason = str(reason or "")
             return
         self._last_reject.pop(sig.code, None)   # 放行后复位，下次拒绝可再记
         if self.analyst.enabled:
@@ -3864,6 +3887,17 @@ class EventEngine:
         if self.exec_mode == "live":
             res = qmt_broker.place_order(sig.code, "BUY", qty, price, "cash")
             logger.info("[LIVE] BUY %s x %s @ %s → %s", sig.code, qty, price, res)
+            # 【2026-11-11 P0 对称化】SELL 侧早有 `_last_sell_placed`（:4157），
+            # BUY 侧一直没有 ⇒ `core/owner_order.py` 只能无条件记「已交落单口」。
+            # 这里补一个同形态留痕，让调用方能区分三态：
+            #   未产生新值 = 落单口根本没走到下单（闸门拦下）
+            #   ok=False   = 走到下单但桥/券商拒绝
+            #   ok=True    = 委托已提交（成交另由 _reconcile_pending_orders 落实）
+            self._last_buy_placed = {
+                "ts": datetime.now(), "code": sig.code, "qty": qty,
+                "order_id": str(res.get("order_id") or ""),
+                "ok": bool(res.get("ok")),
+            }
             system_notice(
                 "SUCCESS", "交易",
                 f"提交买入委托 {sig.code} {sig.name} ×{qty} @{price:.3f} "
@@ -3918,6 +3952,12 @@ class EventEngine:
             logger.info("[PAPER] BUY %s x %s @ %s (止损%.2f 目标%.2f) cash=%.2f",
                         sig.code, qty, price, stop_price, target_price,
                         self._cash)
+            # 与 live 分支同形态留痕（见上面 _last_buy_placed 的注释）：
+            # paper 下"下单"即成交，ok 恒 True、无委托号。
+            self._last_buy_placed = {
+                "ts": datetime.now(), "code": sig.code, "qty": qty,
+                "order_id": "", "ok": True,
+            }
             system_notice(
                 "SUCCESS", "交易",
                 f"买入成交 {sig.code} {sig.name} ×{qty} @{price:.3f} "
@@ -3967,7 +4007,10 @@ class EventEngine:
         if self._sell_block_notice_day != today:
             self._sell_block_notice_cache.clear()
             self._sell_block_notice_day = today
-        key = f"{pos.code}|{pos.open_date:%Y-%m-%d %H:%M}|{block_type}"
+        key = "%s|%s|%s" % (pos.code,
+                            (pos.open_date.strftime("%Y-%m-%d %H:%M")
+                             if pos.open_date else "-"),
+                            block_type)
         if self._sell_block_notice_cache.get(key) == today:
             return False
         self._sell_block_notice_cache[key] = today
@@ -4061,8 +4104,10 @@ class EventEngine:
             if self._should_emit_block_notice(pos, "T1"):
                 system_notice(
                     "WARNING", "交易",
-                    f"[T+1 拦截] {pos.code} 于 {pos.open_date:%Y-%m-%d %H:%M} 买入，"
-                    f"当日不可卖出（锁定至下一交易日）；跳过理由={getattr(sig, 'reason', '')}")
+                    "[T+1 拦截] %s 于 %s 买入，"
+                    "当日不可卖出（锁定至下一交易日）；跳过理由=%s"
+                    % (pos.code, _fmt_dt(pos.open_date),
+                       getattr(sig, "reason", "")))
             return False
         # ---- 建仓保护期（2026-09-14，叠加于 T+1）----
         # 首个可卖交易日开盘后 ENTRY_PROTECT_MINUTES 分钟内不退出，避免轮动换入候选
@@ -4079,9 +4124,11 @@ class EventEngine:
             if self._should_emit_block_notice(pos, "PROT"):
                 system_notice(
                     "WARNING", "交易",
-                    f"[保护期拦截] {pos.code} 于 {pos.open_date:%Y-%m-%d %H:%M} 买入，"
-                    f"首个可卖日开盘后 {self.entry_protect_minutes} 分钟内不退出"
-                    f"（防分钟级误伤）；跳过理由={getattr(sig, 'reason', '')}")
+                    "[保护期拦截] %s 于 %s 买入，"
+                    "首个可卖日开盘后 %d 分钟内不退出"
+                    "（防分钟级误伤）；跳过理由=%s"
+                    % (pos.code, _fmt_dt(pos.open_date),
+                       self.entry_protect_minutes, getattr(sig, "reason", "")))
             return False
         # ---- B2-3 卖出量：显式 lots 优先，再夹紧到券商可用量（仅 live）----
         # 【2026-11-10 P0】`lots` 是 OWNER 指令单传进来的"本次卖多少"。
@@ -4275,6 +4322,23 @@ class EventEngine:
 
     # ============================================================ 持仓同步
 
+    def _positions_market_value(self) -> float:
+        """持仓市值 = Σ(quantity × last_price)，取自 ``Position.market_value``。
+
+        【为什么必须这样算】``total_asset − cash`` 在有冻结资金时是错的：
+        打新/申购预缴会让 ``total`` 仍含该笔钱、而 ``cash`` 只剩可用，相减就把
+        冻结额算成「持仓市值」（2026-11-11 实测差 58,800.03）。本方法只反映
+        **真持仓**，与冻结、在途、待交收完全无关。
+        零点漂移容忍：quantity<=0 的占位仓不计入。
+        """
+        try:
+            return round(sum(float(getattr(p, "market_value", 0.0) or 0.0)
+                             for p in self._positions.values()
+                             if int(getattr(p, "quantity", 0) or 0) > 0), 2)
+        except Exception as e:                       # noqa: BLE001
+            logger.debug("持仓市值汇总失败(按 0 处理): %s", e)
+            return 0.0
+
     def _persist_equity(self, total_asset: float) -> None:
         """节流持久化权益快照（~60s 一次）到 storage.qmt.db。
 
@@ -4286,7 +4350,13 @@ class EventEngine:
         if now - self._last_equity_ts < 60.0:
             return
         self._peak_equity = max(self._peak_equity, total_asset)
-        market_value = total_asset - self._cash
+        # 【2026-11-11 P1】严禁用 total_asset − cash 充当持仓市值。
+        # 打新/申购冻结会把钱从「可用 cash」划到「冻结」，而 total 里仍有它：
+        #   11-11 实测 total=63,188.35 / cash=3,524.05 ⇒ 相减 59,664.30，
+        #   而真实持仓只有 510050×300 ≈ 864 —— 差额 58,800.03 是北交所打新预缴。
+        # 这个错值会经 save_equity_snapshot 写进 equity_snapshots.market_value，
+        # 直接污染盘后复盘的「持仓市值 / 未实现盈亏」两条线。
+        market_value = self._positions_market_value()
         positions_count = len([p for p in self._positions.values()
                                 if p.quantity > 0])
         dd = ((total_asset - self._peak_equity) / self._peak_equity

@@ -55,14 +55,22 @@ QMT 升级到 2.1.32.0 后新增「框架/进程白名单」，外部 python 被
 ================================================================================
 限频与缓存（本模块最容易踩的坑）
 ================================================================================
-引擎主循环 ``REFRESH_INTERVAL=3s``。若每轮都打一次 API，1 分钟就是 20 次，
-**超过 ``rt_tick`` 的 10 次上限**。因此四道闸：
+引擎主循环 ``REFRESH_INTERVAL=3s``。若每轮都打一次 API，1 分钟就是 20 次。
+**2026-11-11 实测到的真实额度（tushare 原文）**：
 
-1. ``MIN_REFRESH_SEC`` 全局节流（默认 8s ⇒ 上限 7.5 次/分钟，留 25% 余量）；
-2. 滑动窗口计数，``rt_tick`` 满 ``RT_TICK_PER_MIN - 1`` 次即停手（留 1 次给探活）；
+    pro.rt_tick        「频率超限(100次/小时)」 + 「频率超限(200次/天)」
+    ts.realtime_quote  连续 150 次 / 324 秒 零失败，无可见日限额
+
+⇒ rt_tick 根本扛不住盘中轮询（8s 节流 = 450 次/小时，开盘 13 分钟打穿小时额度、
+27 分钟打穿全天 200 次）。因此**主辅易位**：realtime_quote 供 8s 快照，
+rt_tick 只做 180s 一次的低频校准（当日累计 OHLC/成交量）。四道闸：
+
+1. ``MIN_REFRESH_SEC`` 主路节流（默认 8s）；
+2. ``RT_TICK_MIN_INTERVAL`` + 双窗口计数（小时 ≤95、全天 ≤190），任一条逼近即停手；
 3. 节流期间**读缓存**，不是返回空 —— 见下条；
 4. 撞到「频率超限」记 ``_backoff_until``，60s 内不再重试（否则每轮都撞、
-   每轮都刷一条 warning）。
+   每轮都刷一条 warning）；**并且这一期间无条件回落 realtime_quote**
+   （原实现只给「无缓存」标的补价 ⇒ 38 只全冻、行情整段停摆，11-11 事故）。
 
 ================================================================================
 绝不返回空（R9 血泪）
@@ -240,9 +248,27 @@ class TushareQuoteClient:
 
     mode = "tushare"
 
-    # ---- 限频（实测值，不要凭感觉调大）----
-    RT_TICK_PER_MIN = 10          # pro.rt_tick 官方/实测上限
-    MIN_REFRESH_SEC = 8.0         # 全局节流：60/8 = 7.5 次/分钟 < 10
+    # ---- 限频（2026-11-11 实测原文，**不要凭感觉改大**）----
+    #   pro.rt_tick          「抱歉，您访问接口(rt_tick)频率超限(100次/小时)」
+    #                        「抱歉，您访问接口(rt_tick)频率超限(200次/天)」
+    #   ts.realtime_quote    连续 150 次 / 324 秒 零失败，无可见日限额
+    #                        （走 waditu 封装的新浪源，覆盖沪市 ETF）
+    #
+    # 【原实现的致命假设】写成 ``RT_TICK_PER_MIN = 10``（10 次/分钟），
+    # 于是 8 秒节流（7.5 次/分钟 = 450 次/小时）被认为「有 25% 余量」。
+    # 真实额度是 100 次/小时 + 200 次/天 ⇒ 450 次/小时：
+    #   · 开盘 13 分钟打穿小时额度（11-11 13:00:25 开市 → 13:15:24 撞限）
+    #   · 最近一次重启后约 27 分钟打穿**全天** 200 次
+    # 打穿之后进入「撞限-静默 60s-再撞限」死循环，而 `_refresh` 又只给
+    # 「无缓存」标的补价 ⇒ 38 只全冻 ⇒ 13:17「行情源失效，已暂停建仓」。
+    # 结果：当天下午既不能建仓，也判不了止损。
+    #
+    # 新分工：**realtime_quote 为主路（8s），rt_tick 只做低频校准（180s）**。
+    # rt_tick 的价值是「当日累计 OHLC + 成交量」，不需要 8s 粒度。
+    RT_TICK_PER_HOUR = 100        # 实测原文
+    RT_TICK_PER_DAY = 200         # 实测原文（更严的那条）
+    RT_TICK_MIN_INTERVAL = 180.0  # 20 次/小时、约 160 次/天，两条限额内留余量
+    MIN_REFRESH_SEC = 8.0         # 主路 realtime_quote 的节流（实测无频率压力）
     BACKOFF_SEC = 60.0            # 撞到「频率超限」后的静默期
 
     # ---- 陈旧度（与 _XtdClient 对齐，引擎按同一阈值判 _stale）----
@@ -264,6 +290,8 @@ class TushareQuoteClient:
         self._miss_at: Dict[str, float] = {}
         self._hist_cache: Dict[str, tuple] = {}
         self._tick_calls: List[float] = []
+        self._tick_calls_day: List[float] = []   # 日窗（rt_tick 真实额度 200/天）
+        self._last_tick_ts = 0.0                 # 上次成功的 rt_tick 时刻
         self._last_refresh = 0.0
         self._backoff_until = 0.0
         self._rt_tick_ok = True       # 探活后确认；无权限则整源回落新浪
@@ -377,14 +405,24 @@ class TushareQuoteClient:
     # ---------------------------------------------------------- 限频
 
     @staticmethod
-    def _prune(calls: List[float], now: float) -> int:
-        cutoff = now - 60.0
+    def _prune(calls: List[float], now: float, window: float = 60.0) -> int:
+        cutoff = now - window
         calls[:] = [t for t in calls if t > cutoff]
         return len(calls)
 
     def _tick_quota_ok(self, now: float) -> bool:
-        used = self._prune(self._tick_calls, now)
-        return used < (self.RT_TICK_PER_MIN - 1)
+        """rt_tick 是否还有额度：距上次 ≥180s，且小时 ≤95、全天 ≤190。
+
+        三条都要过 —— tushare 对 rt_tick 同时挂「100 次/小时」和「200 次/天」
+        两道闸，先撞哪条报哪条（11-11 两种原文都实测到了）。只按分钟计数
+        （原实现）等于两条都不设防。
+        """
+        if self._last_tick_ts and (now - self._last_tick_ts) < self.RT_TICK_MIN_INTERVAL:
+            return False
+        used_h = self._prune(self._tick_calls, now, 3600.0)
+        used_d = self._prune(self._tick_calls_day, now, 86400.0)
+        return (used_h < (self.RT_TICK_PER_HOUR - 5)
+                and used_d < (self.RT_TICK_PER_DAY - 10))
 
     # ---------------------------------------------------------- 取数
 
@@ -409,6 +447,8 @@ class TushareQuoteClient:
             return {}
 
         self._tick_calls.append(now)
+        self._tick_calls_day.append(now)
+        self._last_tick_ts = now
         out: Dict[str, dict] = {}
         for row in _iter_rows(df):
             code = str(row.get("ts_code") or "").strip()
@@ -510,17 +550,18 @@ class TushareQuoteClient:
 
         rest = [c for c in pending if c not in filled]
         if rest:
-            if tick_ok or not self._rt_tick_ok:
-                # 正常路径：rt_tick 不覆盖的标的（沪市 ETF / 部分指数）用新浪补
-                filled.update(self._fetch_realtime_quote(rest, now))
-            else:
-                # rt_tick 停摆（无权限 / 配额耗尽 / 频率静默）：
-                # 只给**从没拿到过**的标的补一次新浪，避免返回空；
-                # 已有缓存的继续用缓存 —— 不把整个宇宙每轮都推给另一个
-                # provider（既慢又让同一轮里两套快照时点混在一起）。
-                cold = [c for c in rest if c not in self._cache]
-                if cold:
-                    filled.update(self._fetch_realtime_quote(cold, now))
+            # 【2026-11-11 P0】撞限/无权限/静默期**一律**回落 realtime_quote。
+            #
+            # 原实现在这条分支上只给「从没拿到过价」的标的补新浪（cold），
+            # 已有缓存的继续用旧缓存 —— 理由写在旧注释里：「不把整个宇宙每轮
+            # 都推给另一个 provider」。这个取舍在 rt_tick 只是偶尔限频时成立，
+            # 但真实额度是 100/小时 + 200/天，打穿后是**永久**停摆：
+            #   11-11 13:15 起 38 只快照全部冻结，13:17 引擎报「行情源失效，
+            #   已暂停建仓」，此后既不能建仓，也无法判止损（_market_stale 拦强平）。
+            #
+            # realtime_quote 实测连续 150 次 / 324 秒零失败，且覆盖沪市 ETF，
+            # 本来就是设计里的兜底源 —— 兜底就该在主子路挂掉时无条件接管。
+            filled.update(self._fetch_realtime_quote(rest, now))
 
         with self._lock:
             for code, ent in filled.items():
@@ -797,8 +838,12 @@ class TushareQuoteClient:
         return {
             "mode": self.mode,
             "rt_tick_ok": bool(self._rt_tick_ok),
-            "rt_tick_used_1min": self._prune(self._tick_calls, now),
-            "rt_tick_limit": self.RT_TICK_PER_MIN,
+            # 2026-11-11：键名带窗口，避免再出现「按分钟计数去防小时额度」这类量纲错误
+            "rt_tick_used_1h": self._prune(self._tick_calls, now, 3600.0),
+            "rt_tick_limit_1h": self.RT_TICK_PER_HOUR,
+            "rt_tick_used_1d": self._prune(self._tick_calls_day, now, 86400.0),
+            "rt_tick_limit_1d": self.RT_TICK_PER_DAY,
+            "rt_tick_min_interval": self.RT_TICK_MIN_INTERVAL,
             "backoff_sec": round(max(0.0, self._backoff_until - now), 1),
             "cached_codes": cached,
             "last_fetch_age_sec": (round(now - last, 1) if last else None),

@@ -219,8 +219,14 @@ def test_min_refresh_serves_cache():
     assert first == 1
 
 
-def test_rate_limit_stops_before_hitting_server_cap():
-    """即使节流被调到 0，也必须自我限制在 10 次/分钟以内。"""
+def test_rt_tick_rate_limited_and_fallback_takes_over():
+    """rt_tick 额度极小 ⇒ 必须自我限制在低频；静默期由 realtime_quote 无条件接管。
+
+    【2026-11-11 改写】原用例断言「配额耗尽时不应改用新浪顶全量标的」，
+    那条正是事故根因：撞限后只给「无缓存」标的补价，38 只全有缓存 ⇒ 全冻。
+    实测原文：rt_tick 限「100 次/小时」+「200 次/天」，realtime_quote
+    连续 150 次 / 324 秒零失败。所以正确契约是「rt_tick 低频 + 兜底无条件接管」。
+    """
     pro = FakePro(tick_rows=[_tick_row("300308.SZ", 448.0, 493.33)])
     c = _client(pro)
     c.MIN_REFRESH_SEC = 0.0      # 人工取消节流，逼出滑动窗口限频
@@ -229,10 +235,13 @@ def test_rate_limit_stops_before_hitting_server_cap():
     for _ in range(25):
         c.get_ticks(["300308.SZ"])
 
-    assert pro.tick_calls <= c.RT_TICK_PER_MIN - 1, (
-        f"rt_tick 调用数 {pro.tick_calls} 必须 <= {c.RT_TICK_PER_MIN - 1}"
-        f"（留 1 次给探活）；否则线上会撞『频率超限』")
-    assert pro.quote_calls == 0, "配额耗尽时不应改用新浪顶全量标的"
+    assert pro.tick_calls == 1, (
+        f"180s 内只允许 1 次 rt_tick（实际 {pro.tick_calls}）——"
+        f"按分钟计数去防小时额度就是 11-11 事故的成因")
+    assert pro.quote_calls >= 20, (
+        f"rt_tick 静默期间必须由 realtime_quote 接管（实际 {pro.quote_calls} 次），"
+        f"否则行情冻结")
+    assert c._prune(c._tick_calls, time.time(), 3600.0) <= c.RT_TICK_PER_HOUR - 5
 
 
 def test_rate_limit_message_triggers_backoff():
@@ -581,3 +590,42 @@ if __name__ == "__main__":
             print(f"  FAIL {name}: {type(e).__name__}: {e}")
     print(f"\n{len(fns) - failed}/{len(fns)} passed")
     sys.exit(1 if failed else 0)
+
+
+# ============================================================ 3b. 11-11 事故回归
+def test_hourly_cap_does_not_freeze_cached_codes():
+    """rt_tick 撞限后，**已有缓存**的标也必须由 realtime_quote 拿到新价。
+
+    2026-11-11 真实事故：13:00:25 开市，rt_tick 限额 100 次/小时被 8s 节流
+    （450 次/小时）打穿 ⇒ `_backoff_until=+60s` ⇒ 旧实现只给「无缓存」标的
+    补新浪 ⇒ 38 只全有缓存 ⇒ 价格全部冻结到 13:15 那一刻，13:17 引擎报
+    「行情源失效：38 只快照陈旧 2 分钟，已暂停建仓」。此后建仓停、止损判不了。
+
+    本用例钉住：撞限 ≠ 行情停止。
+    """
+    pro = FakePro(tick_rows=[_tick_row("300308.SZ", 448.0, 493.33)])
+    quote_rows = {
+        "300308.SZ": {
+            "TS_CODE": "300308.SZ", "DATE": "20261111", "TIME": "13:20:00",
+            "PRICE": 449.5, "OPEN": 452.0, "HIGH": 455.0, "LOW": 440.0,
+            "PRE_CLOSE": 448.0, "VOLUME": 9_000, "AMOUNT": 4.0e6,
+        }
+    }
+    c = _client(pro, quote_rows)
+
+    # 第一轮：rt_tick 正常，价格 448
+    first = c.get_ticks(["300308.SZ"])
+    assert float(first["300308.SZ"]["lastPrice"]) == 448.0
+    assert pro.quote_calls == 0, "rt_tick 有额度时不该走兜底"
+
+    # 第二轮：服务端开始报「频率超限(100次/小时)」，且缓存已过 8s 节流
+    pro.tick_error = "抱歉，您访问接口(rt_tick)频率超限(100次/小时)"
+    c._last_tick_ts = 0.0            # 绕开 180s 间隔，模拟额度耗尽后再次尝试
+    c._cache["300308.SZ"]["_fetched_at"] -= c.MIN_REFRESH_SEC + 1
+    c._last_refresh -= c.MIN_REFRESH_SEC + 1
+
+    second = c.get_ticks(["300308.SZ"])
+    assert c._backoff_until > time.time(), "撞限后应进入静默期"
+    assert pro.quote_calls >= 1, "撞限后必须由 realtime_quote 接管"
+    assert float(second["300308.SZ"]["lastPrice"]) == 449.5, (
+        "已有缓存的标的也必须拿到新价，否则就是 11-11 的行情冻结")

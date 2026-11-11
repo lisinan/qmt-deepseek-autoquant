@@ -71,6 +71,13 @@ class _Eng(object):
     def _handle_buy(self, sig, tick, prices, fixed_amount=0.0, owner_reentry=False):
         self.buys.append((sig.code, fixed_amount))
         self.buy_large.append(owner_reentry)
+        # 【2026-11-11】真实 `_handle_buy` 现在会在两个下单分支留 `_last_buy_placed`
+        # （live :3864 附近 / paper :3934 附近），`run_step` 靠它区分「没下单」与
+        # 「下单被拒」与「已提交」。桩必须同样留痕，否则测的就不是真实契约。
+        self._last_buy_placed = {
+            "ts": datetime.now(), "code": sig.code, "qty": 0,
+            "order_id": "", "ok": True,
+        }
 
     def _handle_sell(self, sig, pos, now=None, lots=None):
         self.sells.append(sig.code)
@@ -706,3 +713,61 @@ def test_fill_missing_ticks_noop_without_getter():
         ticks = {}
         assert oo.fill_missing_ticks(e.eng, ticks, to_tick=_to_tick(None)) == 0
         assert ticks == {}
+
+
+# ------------------------------------------------ 买入失败不得记成成功（2026-11-11）
+def test_buy_blocked_by_gate_records_reject_not_submit():
+    """落单口根本没下单 ⇒ 必须记 reject。
+
+    2026-11-11 前的实现无条件 `record(..., ST_SUBMIT, "已交落单口")`，而
+    `_handle_buy` 恒返回 None。于是「被闸门拦下（行情陈旧/熔断/现金不足）」
+    在账本上与「已提交」完全无法区分 —— 11-10 三条 BUY 全是 submit。
+    """
+    with _Env() as e:
+        e.queue(BUY_ONE)
+
+        def _blocked(sig, tick, prices, fixed_amount=0.0, owner_reentry=False):
+            e.eng.buys.append((sig.code, fixed_amount))
+            e.eng._last_buy_block_reason = "行情陈旧：38 只快照 404s > 120s"
+            # 故意不设 _last_buy_placed —— 等于落单口没走到下单
+
+        e.eng._handle_buy = _blocked
+        _run(e, ticks={"510050.SH": _Tick(2.9)})
+        row = e.done()["t1"]
+        assert row["status"] == oo.ST_REJECT, row
+        assert "未下单" in row["reason"] and "行情陈旧" in row["reason"], row
+
+
+def test_buy_rejected_by_bridge_records_reject():
+    """桥/券商回执 ok=False ⇒ reject，且原因说明是拒单而不是闸门。"""
+    with _Env() as e:
+        e.queue(BUY_ONE)
+
+        def _rejected(sig, tick, prices, fixed_amount=0.0, owner_reentry=False):
+            e.eng.buys.append((sig.code, fixed_amount))
+            e.eng._last_buy_placed = {
+                "ts": datetime.now(), "code": sig.code, "qty": 100,
+                "order_id": "", "ok": False,
+            }
+
+        e.eng._handle_buy = _rejected
+        _run(e, ticks={"510050.SH": _Tick(2.9)})
+        row = e.done()["t1"]
+        assert row["status"] == oo.ST_REJECT, row
+        assert "拒绝" in row["reason"], row
+
+
+def test_buy_stale_placement_from_previous_round_is_ignored():
+    """上一轮残留的 _last_buy_placed 不得被当成本轮下单成功（is 判等）。"""
+    with _Env() as e:
+        e.queue(BUY_ONE)
+        stale = {"ts": datetime.now(), "code": "510050.SH", "qty": 100,
+                 "order_id": "OLD", "ok": True}
+        e.eng._last_buy_placed = stale
+
+        def _blocked(sig, tick, prices, fixed_amount=0.0, owner_reentry=False):
+            e.eng.buys.append((sig.code, fixed_amount))
+
+        e.eng._handle_buy = _blocked
+        _run(e, ticks={"510050.SH": _Tick(2.9)})
+        assert e.done()["t1"]["status"] == oo.ST_REJECT, e.done()["t1"]

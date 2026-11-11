@@ -152,8 +152,12 @@ def test_live_sell_increments_daily_trade_count():
     orig = EE.qmt_broker
     EE.qmt_broker = fake
     try:
+        # 【2026-11-11】必须显式给 `available`：11-10 起 `_handle_sell` 以券商
+        # 可用量优先（`m_nCanUseVolume` 已扣当日买入），available=0 会被 T+1
+        # 闸门拦下（"券商可用量=0（当日买入/冻结部分不可卖）"），本用例本意是
+        # 测「卖出成功后日内计数 +1」，不是测 T+1。
         eng._positions["300308.SZ"] = Position(
-            code="300308.SZ", name="中际旭创", quantity=100,
+            code="300308.SZ", name="中际旭创", quantity=100, available=100,
             avg_cost=150.0, last_price=160.0, peak_price=160.0,
             stop_price=120.0)
         sig = Signal(ts=datetime.now(), code="300308.SZ", name="中际旭创",

@@ -454,6 +454,9 @@ def run_step(engine, ticks: Dict[str, Any], current_prices: Dict[str, float],
             if save_signal:
                 save_signal(sig)
             # 用金额锁定股数：fixed_amount 在 _handle_buy 内「÷现价向下取整到 100 股」
+            _prev_buy = getattr(engine, "_last_buy_placed", None)
+            # 清掉上一轮的拦截原因，避免把旧原因读成本轮原因
+            engine._last_buy_block_reason = ""
             if handle_buy:
                 # allow_large_position（2026-11-10）：显式股数 + 绕过「单仓上限 40%」。
                 # 走 _handle_buy 既有的 owner_reentry 分支 —— 该分支本来就是为
@@ -466,13 +469,47 @@ def run_step(engine, ticks: Dict[str, Any], current_prices: Dict[str, float],
                                fixed_amount=qty * price, owner_reentry=True)
                 else:
                     handle_buy(sig, tick, current_prices, fixed_amount=qty * price)
-            record(engine, done, oid, ST_SUBMIT, "买入 %d 股 @%.3f 已交落单口" % (qty, price),
-                   logger=logger, notify=notify)
-            engine._owner_day_n = day_n = day_n + 1
-            stats["submit"] += 1
+            _now_buy = getattr(engine, "_last_buy_placed", None)
+            # 只有本轮**新产生**的留痕才算数（复用 SELL 侧同一判据，见 :516）
+            _placed_buy = (_now_buy
+                           if (_now_buy is not None and _now_buy is not _prev_buy)
+                           else None)
+            _block = str(getattr(engine, "_last_buy_block_reason", "") or "")
+
+            if _placed_buy and _placed_buy.get("ok"):
+                record(engine, done, oid, ST_SUBMIT,
+                       "买入 %d 股已提交（委托号 %s，成交待回报）"
+                       % (int(_placed_buy.get("qty") or qty),
+                          _placed_buy.get("order_id") or "-"),
+                       logger=logger, notify=notify)
+                engine._owner_day_n = day_n = day_n + 1
+                stats["submit"] += 1
+                if logger:
+                    logger.warning("[OWNER指令] %s 买入 %s %d 股 @%.3f（%s）",
+                                   oid, code, int(_placed_buy.get("qty") or qty),
+                                   price, note or "-")
+                continue
+
+            # 【2026-11-11 P0】买入失败不再记成成功。
+            # 原实现无条件 `record(..., ST_SUBMIT, "已交落单口")`，而 _handle_buy
+            # 恒返回 None、被任一闸门拦下也照样记 submit ⇒ 面板/账本显示"已交落单口"
+            # 但账户一股没买（11-10 三条 BUY 全 status=submit，实际是否成交无法区分）。
+            if _placed_buy:
+                _why = "买入委托被券商/桥拒绝（ok=False）"
+                record(engine, done, oid, ST_REJECT, _why,
+                       logger=logger, notify=notify)
+                stats["reject"] += 1
+                if logger:
+                    logger.warning("[OWNER指令] %s 买入被拒：%s", oid, _why)
+                continue
+
+            _why = ("落单口未下单：%s" % _block) if _block else (
+                "落单口未下单（行情陈旧/熔断/现金不足/持仓上限等闸门拦截，"
+                "详见引擎日志同刻行）")
+            record(engine, done, oid, ST_REJECT, _why, logger=logger, notify=notify)
+            stats["reject"] += 1
             if logger:
-                logger.warning("[OWNER指令] %s 买入 %s %d 股 @%.3f（%s）",
-                               oid, code, qty, price, note or "-")
+                logger.warning("[OWNER指令] %s 买入未下单：%s", oid, _why)
             continue
 
         # SELL：T+1 与保护期的判定交给 _handle_sell，这里先做一次显式预检，
@@ -544,8 +581,15 @@ def run_step(engine, ticks: Dict[str, Any], current_prices: Dict[str, float],
                                oid, code, int(_placed.get("qty") or qty), price,
                                note or "-")
         else:
-            record(engine, done, oid, ST_REJECT, "落单口未成交（保护期/委托失败/零仓位）",
-                   logger=logger, notify=notify)
+            # 【2026-11-11 P1】这句仍是兜底（落单口只回布尔、不带原因），但至少
+            # 把闸门清单与排查入口写全；真正的「哪一闸」需要在
+            # `engine/event_engine.py::_handle_sell` 的各个 return False 前留痕，
+            # 属下一步（见 reports/OPEN_DECISIONS.md）。别再往里加新原因混进来。
+            _why = ("落单口未成交（建仓保护期/T+1/行情陈旧/委托失败/零仓位，"
+                    "详见 logs/quant_system.log 同刻行）")
+            if _placed and not _placed.get("ok"):
+                _why = "卖出委托被券商/桥拒绝（ok=False，详见 broker_bridge 日志）"
+            record(engine, done, oid, ST_REJECT, _why, logger=logger, notify=notify)
             stats["reject"] += 1
 
     return stats

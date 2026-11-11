@@ -115,7 +115,14 @@
         </div>
         <div class="field">
           <label>股数（lots）</label>
-          <input id="f-lots" type="number" min="1" step="100" value="100" required>
+          <!-- 【2026-11-11 铁证】原为 min="1" step="100"。HTML 规定 step 基准优先取 min
+               而不是 value ⇒ 合法值变成 1、101、201…，**整手 100/200/300/500 一律被判非法**，
+               浏览器弹原生气泡「两个最接近的有效值为 1 和 101」，提交根本到不了服务端。
+               OWNER 全天只成功提交过一单，正是 09:46 的 501 股（501=1+5×100，唯一能过校验的值），
+               随后被服务端以「lots 必须是 100 的整数倍」拒掉 —— 「总提示 101」就是这么来的。
+               权威校验在服务端（core/owner_order.py:378-380，含「等于全部持仓」的零股例外），
+               前端不得复制业务规则，故 step 改为 1，只拦非整数。 -->
+          <input id="f-lots" type="number" min="1" step="1" value="100" required>
           <span class="hint" id="hint-lots"></span>
         </div>
         <div class="field">
