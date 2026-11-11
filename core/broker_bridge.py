@@ -96,6 +96,12 @@ class BridgeBroker:
         self._signal_path = os.path.join(self._root, "signal.json")
         self._result_path = os.path.join(self._root, "result.json")
         self._hb_path = os.path.join(self._root, "heartbeat.json")
+        # 【2026-11-11】最后一次请求失败的**原文**。
+        # 为什么需要：`_request` 失败只返回 None，`result.json` 里的 message
+        # 被 `logger.warning` 吃掉就丢了，`place_order` 只能回一句硬编码的
+        # 「bridge timeout/error（详见日志）」⇒ OWNER 指令账本里全是这种无信息
+        # 的 reject（11-10 `sell-20261110-t1` 就是这样）。留一个属性把原文带出去。
+        self._last_error = ""
 
         self._lock = threading.RLock()
         self._connected = False
@@ -221,11 +227,13 @@ class BridgeBroker:
         deadline = time.time() + self._timeout
         with self._lock:
             self._stats["requests"] += 1
+            self._last_error = ""
             try:
                 _atomic_write_json(self._signal_path, payload)
             except Exception as e:
                 logger.warning("写 signal 失败: %s", e)
                 self._stats["error"] += 1
+                self._last_error = "写 signal 失败: %s" % e
                 return None
 
             while time.time() < deadline:
@@ -235,13 +243,17 @@ class BridgeBroker:
                         self._stats["ok"] += 1
                         return res.get("data")
                     self._stats["error"] += 1
-                    logger.warning("桥接执行失败 action=%s: %s", action,
-                                   res.get("message"))
+                    _msg = str(res.get("message") or "").strip() or "-"
+                    logger.warning("桥接执行失败 action=%s: %s", action, _msg)
+                    # 带 action 前缀：同一时刻可能连续下两笔，只有 action 能定位
+                    self._last_error = "%s 执行失败: %s" % (action, _msg)
                     return None
                 time.sleep(POLL_INTERVAL)
 
             self._stats["timeout"] += 1
             logger.warning("桥接超时 action=%s（%.1fs 无 result）", action, self._timeout)
+            self._last_error = "%s 桥接超时（%.1fs 无 result，QMT 可能未运行策略）" % (
+                action, self._timeout)
         # 超时视为通道异常，标记断开并触发上层回调（引擎据此安排重连）
         self._mark_disconnected()
         return None
@@ -408,7 +420,8 @@ class BridgeBroker:
         })
         if not isinstance(data, dict):
             return {"ok": False, "order_id": None,
-                    "reason": "bridge timeout/error（详见 broker_bridge 日志）"}
+                    "reason": "bridge error: %s" % (self._last_error
+                                                    or "详见 broker_bridge 日志")}
         oid = data.get("order_id")
         if not oid and before is not None:
             # passorder 无返回值 ⇒ 反查。这是本方法唯一的安全兜底。

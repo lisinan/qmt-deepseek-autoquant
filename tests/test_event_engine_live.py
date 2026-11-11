@@ -173,3 +173,27 @@ def test_live_sell_increments_daily_trade_count():
 if __name__ == "__main__":
     import pytest
     raise SystemExit(pytest.main([__file__, "-q"]))
+
+
+# ------------------------------------------------ 持仓市值口径（2026-11-11）
+def test_equity_market_value_excludes_frozen_cash():
+    """`_persist_equity` 落库的 market_value 必须是真持仓，不是 total−cash。
+
+    2026-11-11 事故：北交所打新预缴 58,800.03 把可用现金压到 185.55，
+    旧实现 `market_value = total_asset - cash = 59,664`，而真实持仓只有
+    510050×300 ≈ 864 —— 差额全是冻结资金，会把 equity_snapshots 的
+    「持仓市值 / 未实现盈亏」整条曲线污染掉。
+    """
+    eng = _make_engine()
+    # 复刻 11-11 收盘真实数值
+    eng._cash = 3_524.05
+    eng._broker_total_asset = 63_188.65          # 可用 3,524.05 + 市值 864.60 + 冻结 58,800.00
+    eng._positions = {
+        "510050.SH": Position(code="510050.SH", quantity=300, available=300,
+                              avg_cost=2.938, last_price=2.882),
+    }
+    mv = eng._positions_market_value()
+    assert abs(mv - 864.60) < 0.01, f"持仓市值应为 300×2.882=864.60，实际 {mv}"
+    naive = eng._broker_total_asset - eng._cash
+    assert naive > 59_000, "旧算法（total-cash）会把冻结资金算成持仓，这正是要防的"
+    assert abs(mv - naive) > 58_000, "两者必须显著不同，否则本用例没有意义"
