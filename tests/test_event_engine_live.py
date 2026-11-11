@@ -197,3 +197,27 @@ def test_equity_market_value_excludes_frozen_cash():
     naive = eng._broker_total_asset - eng._cash
     assert naive > 59_000, "旧算法（total-cash）会把冻结资金算成持仓，这正是要防的"
     assert abs(mv - naive) > 58_000, "两者必须显著不同，否则本用例没有意义"
+
+
+def test_total_asset_local_fallback_keeps_frozen():
+    """券商口径过期（>120s）时的本地拼装兜底，必须把冻结资金加回来。
+
+    2026-11-11 17:36 实测：重启后引擎转非交易时段 60s 休眠，券商 total 超过
+    120s 未刷新 ⇒ `_total_asset()` 落到 `cash + Σ市值` = 4,388.65（真值
+    63,188.65），差的就是 58,800 打新冻结。这个假值一旦被权益快照落库，
+    盘后曲线会出现一根 −93% 的假悬崖。
+    """
+    eng = _make_engine()
+    eng._cash = 3_524.05
+    eng._broker_frozen = 58_800.00
+    eng._positions = {
+        "510050.SH": Position(code="510050.SH", quantity=300, available=300,
+                              avg_cost=2.938, last_price=2.882),
+    }
+    # 券商口径“从未刷新” ⇒ 走本地拼装
+    eng._broker_total_asset = 0.0
+    eng._broker_total_ts = 0.0
+    total = eng._total_asset()
+    assert abs(total - 63_188.65) < 0.05, (
+        f"兜底口径必须含冻结 58,800：期望 63,188.65，实际 {total}")
+    assert total > 60_000, "掉到 4,388 就是丢了整块冻结资金"

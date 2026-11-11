@@ -580,6 +580,11 @@ class EventEngine:
         # 断链时归零 ⇒ 自动回落到本地拼装口径。回滚：删除本行与两处赋值即可。
         self._broker_total_asset: float = 0.0
         self._broker_total_ts: float = 0.0
+        # 【2026-11-11 P1】最近一次同步到的**冻结资金**（打新预缴 / 挂单冻结）。
+        # `_total_asset()` 的本地拼装兜底要用它 —— 否则券商口径过期（收盘后
+        # 引擎转 60s 休眠，>120s 必然发生）时，兜底值会凭空少掉整块冻结额
+        # （实测 4,388.65 vs 真实 63,188.65，即 −93% 的假悬崖）。
+        self._broker_frozen: float = 0.0
         # ★【2026-11-02 P0】熔断/强平专用的「可信总资产」状态（live 才有意义）。
         # 见 _risk_total_asset()：券商口径不可用时**跳过判定**，绝不回落到
         # 「现金 + 本地持仓」的拼装值 —— 2026-11-02 正是拼装值塌成纯现金
@@ -4782,6 +4787,7 @@ class EventEngine:
                 self._broker_total_asset = frozen_adjusted_total(
                     _cash, _frozen, _ta)
                 self._broker_total_ts = time.time()
+                self._broker_frozen = _frozen
             # 【2026-10-21 C4】区分「未知」(None) 与「空仓」([])：None=查询失败，
             # 本轮不改动本地账本；[]=确认无持仓，照常清空。连续 3 次失败按日告警。
             raw = qmt_broker.get_positions("cash")
@@ -5199,7 +5205,14 @@ class EventEngine:
             # 避免一个陈旧的总资产长期主导风控。
             if bt > 0 and (time.time() - ts) <= 120:
                 return bt
-        v = self._cash
+        # 【2026-11-11 P1】本地拼装也必须把**冻结资金**加回来。
+        # 券商口径过期（>120s，收盘后 engine 转 60s 休眠就会发生）时走这条兜底，
+        # 而 `_cash` 是"可用"，不含打新/申购冻结 ⇒ 兜底值凭空少 58,800：
+        #   实测 17:36 total=4,388.65（cash 3,524.05 + 市值 864.60），
+        #   真实 63,188.65。这个假值一旦被 `_persist_equity` 落库，
+        #   权益曲线就会出现一根 −93% 的假悬崖，且从 63,188 直接算出 −93.5% 回撤。
+        # 冻结额用最近一次同步到的值（`_broker_frozen`，收盘后不会变）。
+        v = self._cash + float(getattr(self, "_broker_frozen", 0.0) or 0.0)
         for p in self._positions.values():
             v += p.market_value
         return v
