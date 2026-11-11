@@ -101,6 +101,47 @@ def is_t1_locked(open_date, trade_date: date) -> bool:
         return False
 
 
+def frozen_adjusted_total(cash: float, frozen: float,
+                          total_asset: float) -> float:
+    """券商总资产补回被吞掉的**冻结资金**（打新预缴 / 挂单冻结）。
+
+    ## 为什么必须有这一步（2026-11-11 实盘铁证）
+
+    11:25:43 北交所打新全额预缴 58,800.03 元，券商把资金从「可用」划到「冻结」：
+    ``m_dAvailable``(可用) 58,985.55 → **185.55**，``m_dFrozenCash`` 0 → 58,800.03。
+    桥侧 ``_total_asset_of()`` 用 ``cash + 市值`` 算出自洽口径 4,392.25，与券商
+    口径差 93% 被判为坏值后**回落到 4,392.25** ⇒ 引擎算出 max_drawdown −93.49%
+    ⇒ 触发熔断 + 日内硬止损 −92.86% ⇒ **真实卖出 510500×500 @6.687**。
+
+    判据只有一条，且不需要知道券商字段语义：**任何账户的总资产都不可能小于
+    「可用资金 + 冻结资金」**。若拿到的总资产小于该下限，说明这一层的口径里
+    冻结整块缺席（桥侧 ``derived = cash + 市值`` 不含冻结）—— 把冻结额补回去
+    即可与账户真值一致：``derived + frozen = 可用 + 市值 + 冻结``。
+
+    幂等性：冻结为 0 时逐位返回原值；桥侧已把 frozen 计入 ``derived`` 之后
+    ``total_asset >= cash + frozen`` 恒成立 ⇒ 本函数不再触发，不会重复计。
+
+    Args:
+        cash: 可用资金（券商 ``m_dAvailable``）。
+        frozen: 冻结资金（券商 ``m_dFrozenCash``）。
+        total_asset: 上游算出的总资产（可能已含冻结，也可能不含）。
+
+    Returns:
+        补回冻结额后的总资产。异常输入一律原样返回，不改造上游数据。
+    """
+    try:
+        _c = float(cash or 0.0)
+        _f = float(frozen or 0.0)
+        _t = float(total_asset or 0.0)
+    except (TypeError, ValueError):
+        return total_asset
+    if _f <= 0:
+        return _t
+    # 总资产 < 可用 + 冻结 ⇒ 冻结整块没算进来，补上（不是"补齐到下限"：
+    # 下限不含持仓市值，只补齐会少算 mv，实测少 4,206.70 ⇒ 回撤 -12.55%）。
+    return _t + _f if _t < _c + _f else _t
+
+
 def is_in_entry_protection(open_date, protect_minutes: int,
                            now: Optional[datetime] = None) -> bool:
     """建仓保护期：仓位是否仍处于「首个可卖交易日开盘后 protect_minutes 分钟内」。
@@ -4645,14 +4686,31 @@ class EventEngine:
         try:
             asset = qmt_broker.get_asset("cash")
             if asset:
-                self._cash = float(asset.get("cash") or 0.0)
+                _cash = float(asset.get("cash") or 0.0)
+                _frozen = float(asset.get("frozen") or 0.0)
+                _ta = float(asset.get("total_asset") or 0.0)
+                self._cash = _cash
                 # 【2026-10-30 P0】券商权威总资产，供 _total_asset() 直接使用。
                 # 为什么必须用它：cash 与 positions 是两次独立查询，买入成交后的
                 # 亚秒级窗口里资金已扣、持仓未刷新 ⇒ 本地拼装会凭空少一个持仓，
                 # 实测把总资产算成 8,387（真实 65,187）⇒ 误触发 −6% 日内强平。
                 # 见 _total_asset() 的完整说明。回滚：删本行（_total_asset 会自动
                 # 回落到本地拼装口径）。
-                self._broker_total_asset = float(asset.get("total_asset") or 0.0)
+                #
+                # ★★★【2026-11-11 P0 · 打新预缴冻结】冻结资金必须计入总资产。
+                # 实盘铁证：11:25 北交所打新全额预缴 58,800.03 ⇒ 券商把资金从
+                # 「可用」划到「冻结」，`m_dAvailable` 只剩 185.55；桥侧
+                # `_total_asset_of()`（qmt_bridge/qmtide_bridge.py:633）此时按
+                # `cash + 市值` 算出 4,392，与券商口径差 93% 被判定为坏值后回落到
+                # 4,392 ⇒ 本函数得到 4,392 ⇒ max_drawdown −93.49% + 日内 −92.86%
+                # ⇒ **真实强平 510500×500 @6.687**（已成交，白亏 13.5 元）。
+                # 判据：任何账户的总资产都不可能小于「可用 + 冻结」，出现缺额即说明
+                # 冻结被某一层吞掉了，把缺额补回即可得到与账户一致的总资产。
+                # 幂等性：桥侧补丁（derived = cash + frozen + mv）上线后
+                # `_ta >= _cash + _frozen` 恒成立 ⇒ 本行不再触发，不会重复计。
+                # 回滚：删掉下面这 1 行（_broker_total_asset 直接取 _ta）。
+                self._broker_total_asset = frozen_adjusted_total(
+                    _cash, _frozen, _ta)
                 self._broker_total_ts = time.time()
             # 【2026-10-21 C4】区分「未知」(None) 与「空仓」([])：None=查询失败，
             # 本轮不改动本地账本；[]=确认无持仓，照常清空。连续 3 次失败按日告警。
