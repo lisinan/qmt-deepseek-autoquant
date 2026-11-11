@@ -113,7 +113,7 @@ _dict_warned = set()          # 去重「只报一次」的日志，避免 500ms
 #   但 QMT 已加载的旧代码不会自己更新 —— 只部署文件不重新运行策略，改动等于没做。
 #   有了这个字段，一条 PING 就能回答「新代码生效了吗」，不用猜。
 #   约定：改动了会影响实盘数值/下单的逻辑就换一个值（时间戳格式）。
-CODE_REV = "2026-11-09T1125-write-retry"
+CODE_REV = "2026-11-11T2005-frozen-in-total"
 _io_selftest_ran = [False]    # IO 权限矩阵每个模块实例只探一次
 SKIP_SOCKET_PROBE = False     # 测试置 True：省掉每次 connect 的 0.5s 等待
 
@@ -630,7 +630,8 @@ def _total_asset_of(a, cash, mv):
     max_drawdown 熔断永久失效；risk_per_trade / max_single_position_pct /
     daily_stop_flatten_pct 同步放大 2.37 倍。
     """
-    derived = cash + mv
+    frozen = _f(_attr(a, ["m_dFrozenCash", "m_dFrozen"], 0))
+    derived = cash + frozen + mv
     broker = _f(_attr(a, ["m_dTotalAsset"], 0), 0.0)
     if broker <= 0:
         broker = _f(_attr(a, ["m_dBalance"], 0), 0.0)

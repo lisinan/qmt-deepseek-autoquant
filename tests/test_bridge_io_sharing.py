@@ -323,8 +323,12 @@ def test_b1_code_rev_is_bumped():
     rev = revs[0]
     assert rev != "2026-11-08T21:31-mv-from-positions", \
         "必须 bump CODE_REV，否则重载后 heartbeat 的 rev 不变、验收失效"
-    assert rev.startswith("2026-11-09T"), \
-        "格式应为 2026-11-09T<HHMM>-<slug>，实际 %r" % (rev,)
+    # 【2026-11-11】原断言写死 startswith("2026-11-09T")，于是 11-11 打 frozen
+    # 补丁把 rev 推到 2026-11-11T2005-frozen-in-total 时，这条**本该验证格式**
+    # 的用例把「日期前进」误判成失败。rev 本来就该一直往前走 —— 改为校验格式：
+    # YYYY-MM-DDTHHMM-<slug>（slug 小写字母/数字/连字符，纯 ASCII）。
+    assert re.match(r"^\d{4}-\d{2}-\d{2}T\d{4}-[a-z0-9][a-z0-9-]*$", rev), \
+        "格式应为 YYYY-MM-DDTHHMM-<slug>，实际 %r" % (rev,)
     assert rev.isascii(), "CODE_REV 必须纯 ASCII（部署版是 GBK，非 ASCII 会被写成 ?）"
     assert src.count('"rev": CODE_REV') == 3, \
         "heartbeat / 心跳 / PONG 三处引用必须都指向 CODE_REV 常量"

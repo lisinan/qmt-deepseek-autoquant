@@ -343,6 +343,20 @@ def build_blocks(which: str, codec: str, nl: bytes):
     return out
 
 
+def _is_rev_block(which: str, idx: int) -> bool:
+    """该块是不是「CODE_REV 版本戳」（1-based，与 build_blocks 的下标一致）。
+
+    rev 块与其它块语义不同：其它块是**代码结构**，必须严格幂等；
+    rev 是**一次性版本号**，只要文件里已是更新的 rev，就不该再被本补丁改写，
+    更不该让「rev 已推进」变成一次 ABORT（2026-11-11 frozen 补丁就撞在这上面）。
+    """
+    if which != "b1":
+        return False
+    spec = PATCH_SPECS["b1"]
+    return idx <= len(spec["blocks"]) and \
+        spec["blocks"][idx - 1] == (B1B_OLD, B1B_NEW)
+
+
 def transform(raw: bytes, which: str):
     """纯函数：把补丁作用在字节串上。返回 (new_raw, status, codec, nl)。
 
@@ -360,6 +374,14 @@ def transform(raw: bytes, which: str):
             continue                       # 该块已打过
         n = cur.count(old)
         if n != 1:
+            # 【2026-11-11】CODE_REV 块是**一次性版本戳**：它只能被往前推，
+            # 不该成为幂等的障碍。2026-11-11 打 frozen 补丁把 rev 推到
+            # `2026-11-11T2005-frozen-in-total` 后，本脚本的 B1B_OLD 就再也
+            # 命不中了 —— 那不是"补丁写错"，是版本本来就该继续往前。
+            # 因此 rev 块允许「命中 0 次」= 已被后续补丁推进过，跳过即可。
+            # （仍禁止命中 >1 次：那说明文件里有两个 CODE_REV，是真故障。）
+            if _is_rev_block(which, i) and n == 0:
+                continue
             raise SystemExit(
                 "[ABORT] %s block %d: old block matched %d times (must be exactly 1)"
                 % (which, i, n))
@@ -384,6 +406,10 @@ def _verify(raw: bytes, new_raw: bytes, which: str) -> list:
     cur = new_raw
     for i, (old, new) in enumerate(reversed(blocks), 1):
         if cur.count(new) != 1:
+            # rev 块可能已被更新的版本戳取代（见 transform 里的说明），
+            # 反向还原时同样跳过，不算校验失败。
+            if _is_rev_block(which, len(blocks) - i + 1):
+                continue
             errs.append("new block (from the end, #%d) must appear exactly 1 time" % i)
             continue
         cur = cur.replace(new, old, 1)

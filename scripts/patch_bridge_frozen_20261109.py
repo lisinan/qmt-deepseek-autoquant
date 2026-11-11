@@ -9,22 +9,23 @@
    的符号，一旦「读成 str → 改 → 整文件写回」，这些字符会被替换成 ``?``，
    注释与日志串全毁。所以本脚本一律 **rb 读 / ASCII 子串替换 / wb 写**，
    全程不解码、不重排、不规范化行尾。
-2. **必须证明「只改了该改的」**：写盘前对三处目标串各断言**恰好命中 1 次**，
+2. **必须证明「只改了该改的」**：写盘前对每处目标串各断言**恰好命中 1 次**，
    任一 ≠1 立即中止且**不写盘**（避免把补丁打到错误的上下文里）。
-3. **写盘后回读自校验**：用 difflib 逐行对比，要求「除首行编码头外，只有 3 处
+3. **写盘后回读自校验**：用 difflib 逐行对比，要求「除首行编码头外，只有预期处数
    预期改动，其余逐行等价」。这等价于手工 diff，但不依赖人眼。
 
-## 三处改动（详见 reports/PATCH_bridge_frozen_20261109.md）
+## 改动（详见 reports/PATCH_bridge_frozen_20261109.md）
 
 | # | 位置 | 作用 | 级别 |
 |---|---|---|---|
 | A | ``_total_asset_of()`` 内 | ``derived = cash + frozen + mv``（原漏 frozen） | **P0** |
-| B | ``_write_heartbeat()`` 内 | ``account`` 复用 ``_account_of()`` 的 globals 回退 | P2 |
-| C | 模块级 ``CODE_REV`` | 递增版本戳，供 heartveat/PING 证明新代码已加载 | 必做 |
+| C | 模块级 ``CODE_REV`` | 递增版本戳，供 heartbeat/PING 证明新代码已加载 | 必做 |
+
+> 原 B 项（heartbeat 账号回退）已于 2026-11-11 撤销，理由见 `PATCHES` 下方的注释。
 
 ## 用法（默认 dry-run，必须显式 --apply 才写盘）
 
-    # 1) 先预演（不写盘），看三处命中与预期改动
+    # 1) 先预演（不写盘），看各处命中与预期改动
     python scripts/patch_bridge_frozen_20261109.py
 
     # 2) 正式写盘（自动备份 + 回读校验）
@@ -63,8 +64,8 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 REPO_TARGET = REPO_ROOT / "qmt_bridge" / "qmtide_bridge.py"
 DEPLOY_TARGET = Path(r"C:\pazq_qmt\python\QMTIDE_BRIDGE.py")
 
-OLD_REV = b'CODE_REV = "2026-11-08T21:31-mv-from-positions"'
-NEW_REV = b'CODE_REV = "2026-11-09T0915-frozen-in-total"'
+OLD_REV = b'CODE_REV = "2026-11-09T1125-write-retry"'
+NEW_REV = b'CODE_REV = "2026-11-11T2005-frozen-in-total"'
 
 # (标签, 旧字节串, 新行列表)  —— 新行不带行尾，写盘时按目标文件的行尾风格拼
 PATCHES = [
@@ -77,18 +78,18 @@ PATCHES = [
         ],
     ),
     (
-        # 一律用**整行**做 old/new（含行首缩进）。若只替换行内子串，
-        # 新内容会叠在原缩进之后（12+12=24 空格），回读自校验就会报「意外改动」。
-        "B/heartbeat_account",
-        b'            "account": getattr(ContextInfo, "accountID", DEFAULT_ACCOUNT_ID),',
-        [b'            "account": _account_of(ContextInfo, None)[0],'],
-    ),
-    (
         "C/code_rev",
         OLD_REV,
         [NEW_REV],
     ),
 ]
+# 【2026-11-11 为什么删掉原 B 项（heartbeat 账号回退）】
+# 原 B 项把 `"account": getattr(ContextInfo, "accountID", DEFAULT_ACCOUNT_ID),`
+# 换成 `_account_of(ContextInfo, None)[0]`。看着更准，但它把一个纯 getattr
+# 换成了函数调用 —— `_account_of` 要查 QMT globals，一旦在 timer 线程里抛异常，
+# `_write_heartbeat()` 整个挂掉 ⇒ 心跳停 ⇒ `bridge_health.py` 判死、引擎判通道断开。
+# 为一个纯展示字段冒这个风险不值得。账户解析对不对看 `boot.log` 的
+# `init done. account=(...STOCK)` 更直接（11-11 19:57 实测那里已是 3268******98）。
 
 
 def _say(msg: str) -> None:
@@ -127,7 +128,7 @@ def _backup_path(target: Path, stamp: str) -> Path:
 
 
 def _verify(old_text: str, new_text: str) -> list:
-    """回读自校验：除预期 3 处外逐行等价。返回错误列表（空 = 通过）。
+    """回读自校验：除预期改动外逐行等价。返回错误列表（空 = 通过）。
 
     注意：**不能按 PATCHES 的列表顺序逐 hunk 对齐**。PATCHES 是按「重要性/编号」
     排的（A/B/C），而它们在文件里的物理位置是 C(:116) → B(:465) → A(:614)。
@@ -177,7 +178,7 @@ def patch_one(target: Path, apply: bool) -> int:
     _say("[INFO] size=%d codec=%s newline=%s bytes=%d"
          % (len(raw), codec, "CRLF" if nl == b"\r\n" else "LF", raw.count(nl)))
 
-    # ---- 1) 三处目标串各断言恰好命中 1 次；任一不符立即中止，绝不写盘 ----
+    # ---- 1) 每处目标串各断言恰好命中 1 次；任一不符立即中止，绝不写盘 ----
     # 先判「是否已打过」：否则重复执行会以「matched 0 times」报错，容易误读成
     # 「文件不对」，掩盖真正的结论「已经打过了」。
     if raw.count(b"derived = cash + frozen + mv") > 0:
@@ -216,7 +217,8 @@ def patch_one(target: Path, apply: bool) -> int:
     old_lines = old_text.splitlines()
     _say("[CHECK] lines %d -> %d (expect +%d)"
          % (len(old_lines), len(new_lines), sum(len(p[2]) for p in PATCHES) - len(PATCHES)))
-    _say("[CHECK] self-check OK: only 3 expected hunks changed, all other lines identical")
+    _say("[CHECK] self-check OK: only %d expected hunks changed, all other lines identical"
+         % len(PATCHES))
 
     if not apply:
         _say("[DRY-RUN] no write. re-run with --apply to patch this file.")

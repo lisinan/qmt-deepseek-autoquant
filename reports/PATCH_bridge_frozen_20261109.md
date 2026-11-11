@@ -68,7 +68,7 @@ new = b'            "account": _account_of(ContextInfo, None)[0],'
 
 依据：`_account_of()`（`:516-533`）会依次试 `ContextInfo.accountID` →
 `ContextInfo.account_id` → **模块全局 `account`**，最后才回落常量。QMT 把账号注入成
-模块全局变量（`boot.log` 实测 `qmt_globals account='326819285998'`），所以原写法
+模块全局变量（`boot.log` 实测 `qmt_globals account='3268******98'`），所以原写法
 **永远**落到 `DEFAULT_ACCOUNT_ID="000000000000"`，该字段零信息量。
 改后与下单路径（`:773 aid, atype = _account_of(ContextInfo, None)`）同源
 ⇒「心跳里的账号」≡「实际下单用的账号」。
@@ -303,3 +303,36 @@ logs/engine_stdout.log:
 **别被 `***** xtdata连接成功` 那行骗**：它只说明 socket 连上，不说明能取数；
 判断行情源可用性要看 `getFullTick` 探针是否通过。
 要修只能动 QMT 白名单/升级客户端 —— OWNER 级动作，代码补不了。
+
+---
+
+## 2026-11-11 20:05 已实际部署（OWNER 批准）
+
+**做了什么**：`scripts/patch_bridge_frozen_20261109.py --repo --apply`
+
+| 目标 | 备份 | 结果 |
+|---|---|---|
+| `C:/pazq_qmt/python/QMTIDE_BRIDGE.py`（部署版 GBK/CRLF） | `.bak-20261111-2003` | 48,066 → 48,141 字节，仅 +1 行 |
+| `qmt_bridge/qmtide_bridge.py`（仓库版 UTF-8/LF） | `_backup/patch_bridge_20261109/...bak-20261111-2003` | 49,470 → 49,544 字节 |
+
+**改动**（2 处，回读自校验通过、其余逐行等价）：
+
+1. `_total_asset_of()`：`derived = cash + mv` → 先取 `frozen`，再 `derived = cash + frozen + mv`
+2. `CODE_REV`：`2026-11-09T1125-write-retry` → **`2026-11-11T2005-frozen-in-total`**
+
+**原 B 项（heartbeat 账号回退）已撤销**：它把纯 `getattr` 换成 `_account_of()` 函数调用，
+一旦在 timer 线程抛异常会让 `_write_heartbeat()` 整体挂掉 ⇒ 心跳停 ⇒ 引擎判通道断开。
+为一个纯展示字段不值得。账户解析看 `boot.log` 的 `init done. account=(...)` 更直接。
+
+**顺带修的两处测试基建**（都被这次 rev 前进撞红）：
+- `patch_bridge_sharing_20261109.py`：rev 块改为「命中 0 次=已被后续补丁推进，跳过」，
+  否则一个历史补丁脚本会把「版本号往前走」误判成 ABORT，进而让 `run_all.py` 整轮中断。
+- `test_bridge_io_sharing.py::test_b1_code_rev_is_bumped`：原断言写死
+  `startswith("2026-11-09T")`，改为校验 `YYYY-MM-DDTHHMM-<slug>` 格式。
+
+**验收（必须由 OWNER 手动完成）**：在 QMT 里「停止策略 → 运行策略」，然后：
+- `python scripts/bridge_health.py` → 期望 `rev=2026-11-11T2005-frozen-in-total`
+- `python scripts/bridge_health.py` 同一次输出里 `age` 应为个位数秒
+- 查资产 → 期望 `total_asset = 63,188.65`（补丁前这里是 4,388.65，少 58,800）
+
+**回滚**：`copy /Y "C:/pazq_qmt/python/QMTIDE_BRIDGE.py.bak-20261111-2003" "C:/pazq_qmt/python/QMTIDE_BRIDGE.py"`，再重载策略。
